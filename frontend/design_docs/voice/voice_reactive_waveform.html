@@ -1,0 +1,157 @@
+<h2 class="sr-only" style="position:absolute;width:1px;height:1px;overflow:hidden;">當使用者說話時,畫面中央會出現隨音量與音高變化的圓形聲波動態視覺效果</h2>
+<div style="display:flex;flex-direction:column;align-items:center;gap:1.25rem;padding:2rem 0;">
+  <div style="position:relative;width:320px;height:320px;">
+    <canvas id="wave-canvas" width="320" height="320" style="width:320px;height:320px;"></canvas>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <button id="mic-btn" style="display:flex;align-items:center;gap:6px;padding:8px 18px;">
+      <i class="ti ti-microphone" aria-hidden="true" style="font-size:16px;"></i>
+      <span id="mic-label">開始聆聽</span>
+    </button>
+    <span id="status-text" style="font-size:13px;color:var(--text-secondary);">尚未啟用麥克風</span>
+  </div>
+</div>
+<script>
+(function(){
+  const canvas = document.getElementById('wave-canvas');
+  const ctx = canvas.getContext('2d');
+  const btn = document.getElementById('mic-btn');
+  const label = document.getElementById('mic-label');
+  const status = document.getElementById('status-text');
+  const W = canvas.width, H = canvas.height, CX = W/2, CY = H/2;
+
+  let audioCtx, analyser, source, stream, rafId;
+  let running = false;
+  let smoothVolume = 0;
+
+  const teal = [29,158,117];
+  const purple = [127,119,221];
+  const coral = [216,90,48];
+
+  function mix(a,b,t){
+    return a.map((v,i)=> Math.round(v + (b[i]-v)*t));
+  }
+
+  function drawIdle(t){
+    ctx.clearRect(0,0,W,H);
+    const pulse = 46 + Math.sin(t/900)*4;
+    const grad = ctx.createRadialGradient(CX,CY,0,CX,CY,pulse*2.2);
+    grad.addColorStop(0,'rgba(29,158,117,0.35)');
+    grad.addColorStop(1,'rgba(29,158,117,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(CX,CY,pulse*2.2,0,Math.PI*2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(CX,CY,pulse,0,Math.PI*2);
+    ctx.fillStyle = 'rgba(29,158,117,0.55)';
+    ctx.fill();
+  }
+
+  let idleRaf;
+  function idleLoop(t){
+    drawIdle(t || 0);
+    idleRaf = requestAnimationFrame(idleLoop);
+  }
+  idleLoop(0);
+
+  function draw(){
+    if(!running) return;
+    rafId = requestAnimationFrame(draw);
+    const freqData = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteFrequencyData(freqData);
+    const timeData = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(timeData);
+
+    let sum = 0;
+    for(let i=0;i<timeData.length;i++){
+      const v = (timeData[i]-128)/128;
+      sum += v*v;
+    }
+    const rms = Math.sqrt(sum/timeData.length);
+    smoothVolume += (rms - smoothVolume)*0.15;
+
+    ctx.clearRect(0,0,W,H);
+
+    const baseR = 42 + smoothVolume*70;
+    const glow = ctx.createRadialGradient(CX,CY,0,CX,CY,baseR*2.6);
+    const glowColor = mix(teal, purple, Math.min(smoothVolume*2.2,1));
+    glow.addColorStop(0, 'rgba('+glowColor.join(',')+',0.4)');
+    glow.addColorStop(1, 'rgba('+glowColor.join(',')+',0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(CX,CY,baseR*2.6,0,Math.PI*2);
+    ctx.fill();
+
+    const bars = 96;
+    const maxLen = 110;
+    for(let i=0;i<bars;i++){
+      const angle = (i/bars)*Math.PI*2;
+      const dataIndex = Math.floor((i/bars)*freqData.length*0.6);
+      const amp = freqData[dataIndex]/255;
+      const len = 6 + amp*maxLen;
+      const r1 = baseR*0.62;
+      const r2 = r1 + len;
+      const x1 = CX + Math.cos(angle)*r1;
+      const y1 = CY + Math.sin(angle)*r1;
+      const x2 = CX + Math.cos(angle)*r2;
+      const y2 = CY + Math.sin(angle)*r2;
+      const t = Math.min(amp*1.4,1);
+      const c1 = mix(teal, coral, t);
+      ctx.strokeStyle = 'rgba('+c1.join(',')+','+(0.55+amp*0.45)+')';
+      ctx.lineWidth = 3.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+      ctx.stroke();
+    }
+
+    const coreR = baseR*0.62;
+    const coreGrad = ctx.createRadialGradient(CX,CY,0,CX,CY,coreR);
+    const coreColor = mix(teal, purple, Math.min(smoothVolume*2.2,1));
+    coreGrad.addColorStop(0, 'rgba('+coreColor.join(',')+',0.95)');
+    coreGrad.addColorStop(1, 'rgba('+coreColor.join(',')+',0.65)');
+    ctx.fillStyle = coreGrad;
+    ctx.beginPath();
+    ctx.arc(CX,CY,coreR,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  async function start(){
+    try{
+      status.textContent = '請求麥克風權限中';
+      stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.8;
+      source.connect(analyser);
+      running = true;
+      cancelAnimationFrame(idleRaf);
+      label.textContent = '停止聆聽';
+      btn.querySelector('i').className = 'ti ti-microphone-off';
+      status.textContent = '正在聆聽,說話試試看';
+      draw();
+    }catch(err){
+      status.textContent = '無法取得麥克風權限,請確認瀏覽器設定';
+    }
+  }
+
+  function stop(){
+    running = false;
+    cancelAnimationFrame(rafId);
+    if(stream){ stream.getTracks().forEach(tr=>tr.stop()); }
+    if(audioCtx){ audioCtx.close(); }
+    label.textContent = '開始聆聽';
+    btn.querySelector('i').className = 'ti ti-microphone';
+    status.textContent = '已停止';
+    idleLoop(0);
+  }
+
+  btn.addEventListener('click', function(){
+    if(running){ stop(); } else { start(); }
+  });
+})();
+</script>
