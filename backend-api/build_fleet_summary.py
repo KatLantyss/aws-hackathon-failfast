@@ -101,24 +101,32 @@ HULL_CLEAN_TYPES  = {'DD', 'UWC', 'UWC+PP'}           # hull physically cleaned
 PROP_POLISH_TYPES = {'PP', 'UWC+PP', 'UWI+PP', 'DD'}  # propeller polished
 EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}  # any physical intervention
 
-# Static positions (lat/lon only — no AIS in competition data)
-# heading_deg removed: no real source. speed_kt from last noon report AVG_SPEED.
+# Static positions — placed on actual Yang Ming shipping lanes.
+# W1 (S1-S8, S21): Asia-Europe via Suez Canal (FE3 service)
+#   Key waypoints: Taiwan Strait → South China Sea → Malacca → Indian Ocean
+#                  → Gulf of Aden → Red Sea → Suez → Mediterranean → NW Europe
+# W2 (S9-S12, S22-S23): Trans-Pacific service
+#   Key waypoints: Taiwan/Japan → North Pacific → US West Coast
+# heading_deg: approximate course angle on each lane segment
+# lat/lon: confirmed open-ocean positions, not over land
 SHIP_POSITIONS: dict[str, dict] = {
-    'S1':  {'lat': 22.28, 'lon': 114.17},
-    'S2':  {'lat':  1.26, 'lon': 103.84},
-    'S3':  {'lat': 13.45, 'lon':  56.32},
-    'S4':  {'lat': 51.89, 'lon':   4.48},
-    'S5':  {'lat': 35.32, 'lon':  29.78},
-    'S6':  {'lat':  6.93, 'lon':  79.85},
-    'S7':  {'lat': 25.28, 'lon':  55.32},
-    'S8':  {'lat': 29.87, 'lon': 121.55},
-    'S9':  {'lat': 34.05, 'lon':-118.25},
-    'S10': {'lat': 33.73, 'lon':-140.22},
-    'S11': {'lat': 22.62, 'lon': 120.30},
-    'S12': {'lat': 37.47, 'lon':-165.88},
-    'S21': {'lat': 10.24, 'lon':  75.82},
-    'S22': {'lat': 25.02, 'lon': 170.54},
-    'S23': {'lat': 31.23, 'lon': 121.47},
+    # W1 — Asia-Europe (Suez route), various positions along the lane
+    'S1':  {'lat': 22.30, 'lon': 114.20, 'heading_deg': 225},  # S China Sea, SW of HK
+    'S2':  {'lat':  1.20, 'lon': 104.00, 'heading_deg': 270},  # Singapore Strait, westbound
+    'S3':  {'lat': 11.50, 'lon':  57.00, 'heading_deg': 300},  # Arabian Sea, NW of Socotra
+    'S4':  {'lat': 51.90, 'lon':   4.50, 'heading_deg': 270},  # Moored Rotterdam (ECT)
+    'S5':  {'lat': 35.80, 'lon':  27.00, 'heading_deg': 280},  # Aegean Sea, W of Rhodes
+    'S6':  {'lat':  5.80, 'lon':  80.20, 'heading_deg': 280},  # Indian Ocean, S of Sri Lanka
+    'S7':  {'lat': 25.30, 'lon':  56.40, 'heading_deg':   0},  # Gulf of Oman, Fujairah area
+    'S8':  {'lat': 29.90, 'lon': 121.60, 'heading_deg': 180},  # Moored Ningbo
+    'S21': {'lat': 12.60, 'lon':  43.90, 'heading_deg': 340},  # Gulf of Aden, N bound
+    # W2 — Trans-Pacific (Asia ↔ US West Coast)
+    'S9':  {'lat': 34.00, 'lon':-118.20, 'heading_deg': 270},  # Moored Los Angeles/Long Beach
+    'S10': {'lat': 35.50, 'lon':-152.00, 'heading_deg':  85},  # North Pacific, eastbound
+    'S11': {'lat': 22.60, 'lon': 120.30, 'heading_deg':   0},  # Moored Kaohsiung
+    'S12': {'lat': 38.00, 'lon':-165.00, 'heading_deg':  75},  # North Pacific, eastbound
+    'S22': {'lat': 26.00, 'lon': 170.00, 'heading_deg':  65},  # W Pacific, Tokyo→US
+    'S23': {'lat': 31.20, 'lon': 121.50, 'heading_deg':   0},  # Moored Shanghai (Yangshan)
 }
 
 
@@ -250,7 +258,7 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
     excess_fuel_cost_usd_per_day = round(baseline * (max(0.0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
 
     # ── Position ───────────────────────────────────────────────────────────
-    pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0})
+    pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0, 'heading_deg': 0})
 
     # speed_kt: use last noon report's AVG_SPEED (SOG) as current speed proxy
     last_speed_kt = safe_float(rows_sorted[-1].get('AVG_SPEED'), 0.0) if rows_sorted else 0.0
@@ -314,9 +322,10 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         'urgency': urgency,
 
         # ── position ──────────────────────────────────────────────────────
-        'lat':      pos['lat'],
-        'lon':      pos['lon'],
-        'speed_kt': last_speed_kt,   # last noon report AVG_SPEED (SOG)
+        'lat':         pos['lat'],
+        'lon':         pos['lon'],
+        'heading_deg': pos['heading_deg'],
+        'speed_kt':    last_speed_kt,   # last noon report AVG_SPEED (SOG)
 
         # ── meta ──────────────────────────────────────────────────────────
         'last_updated': datetime.now(timezone.utc).isoformat(timespec='seconds'),

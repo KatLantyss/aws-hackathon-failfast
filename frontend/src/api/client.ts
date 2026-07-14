@@ -184,6 +184,7 @@ export interface ApiFleetSummaryVessel {
   // position
   lat: number
   lon: number
+  heading_deg: number
   speed_kt: number
   // meta
   last_updated: string
