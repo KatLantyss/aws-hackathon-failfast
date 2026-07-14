@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hackathon Backend API 分析與建議方案</title>
+<style>
+:root{--navy:#0B1F33;--paper:#f8f6f1;--amber:#C08A3E;--red:#C1443C;--teal:#3E7C74;--slate:#28313C;--border:#ddd}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Segoe UI',sans-serif;background:var(--paper);color:var(--slate);line-height:1.7;padding:2rem;max-width:1200px;margin:0 auto}
+h1{font-size:1.8rem;margin-bottom:0.3rem}
+h2{font-size:1.4rem;margin:2rem 0 1rem;padding-bottom:0.5rem;border-bottom:2px solid var(--amber);color:var(--navy)}
+h3{font-size:1.1rem;margin:1.2rem 0 0.6rem;color:var(--navy)}
+table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:0.9rem}
+th,td{padding:0.6rem 0.8rem;border:1px solid var(--border);text-align:left;vertical-align:top}
+th{background:var(--navy);color:#fff;font-weight:600}
+tr:nth-child(even){background:#f0ede6}
+.badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:0.75rem;font-weight:600}
+.badge-done{background:var(--teal);color:#fff}
+.badge-gap{background:var(--red);color:#fff}
+.badge-partial{background:var(--amber);color:#fff}
+.badge-core{background:var(--navy);color:#fff}
+</style>
+</head>
+<body>
+<header style="background:var(--navy);color:#fff;padding:2rem;border-radius:4px;margin-bottom:2rem">
+<h1>🚢 陽明海運 AI 黑客松 — Backend API 分析與建議方案</h1>
+<p style="opacity:0.8;margin-top:0.3rem">AI 船舶效能分析與節能決策支援系統 | 團隊溝通文件 | 2026-07-14</p>
+</header>
+
+<!-- ============ SECTION 1: 必要 Backend API List ============ -->
+<h2>一、必要的 Backend API List（完整清單 + 算法說明）</h2>
+<p>根據題目要求（油耗預測模型 + Speed Loss Dashboard）及前端頁面需求，以下是完整的後端 API 清單：</p>
+
+<h3>1.1 核心 API（直接對應評分項目 55%）</h3>
+<table>
+<tr><th>API</th><th>Method & Path</th><th>功能說明</th><th>算法/實作方式</th></tr>
+<tr>
+<td><strong>油耗預測</strong><br><span class="badge badge-core">評分25%</span></td>
+<td>POST /api/v1/predict/fuel-consumption</td>
+<td>給定船舶 + 航行條件，預測主機全速油耗(MT/day)。支援反事實推論：「執行 UWC/PP 後油耗會降多少」</td>
+<td><strong>算法：</strong><br>
+1. <strong>特徵工程</strong>：從 vt_fd.csv 提取 A 類特徵 + 時間退化特徵（距上次養護天數、養護類型 one-hot）<br>
+2. <strong>模型</strong>：XGBoost/LightGBM 回歸（或 hybrid：物理基線 + ML 殘差修正）<br>
+3. <strong>訓練</strong>：用 S1-S12 完整數據訓練，篩選全速≥22hr、風速≤4 的穩態日為主要訓練樣本<br>
+4. <strong>反事實</strong>：將「距上次養護天數」重設為 0 或指定天數重新預測，差值即節能效益<br>
+5. <strong>輸出</strong>：predicted_value (MT/day), confidence_interval</td>
+</tr>
+<tr>
+<td><strong>Speed Loss 計算</strong><br><span class="badge badge-core">評分30%</span></td>
+<td>GET /api/v1/vessels/{vessel}/speed-loss</td>
+<td>ISO 19030 框架下計算 Speed Loss 時間序列</td>
+<td><strong>算法：</strong><br>
+1. <strong>基線建立</strong>：取該船最早期（或坐塢後）乾淨狀態的 Power-Speed 曲線作為 reference<br>
+2. <strong>Speed Loss %</strong> = (V_ref - V_actual) / V_ref × 100，在相同功率/排水量條件下比較<br>
+3. <strong>功率修正</strong>：用 Admiralty Coefficient 或多項式擬合 Power = f(Speed, Displacement, Draft)<br>
+4. <strong>環境修正</strong>：ISO 15016 方法扣除風浪影響（Wind Resistance、Added Wave Resistance）<br>
+5. <strong>回傳</strong>：每日 speed_loss_pct 時間序列 + 養護事件標記</td>
+</tr>
+</table>
+
+<h3>1.2 Dashboard 支援 API（對應評分 Speed Loss Dashboard 30%）</h3>
+<table>
+<tr><th>API</th><th>Method & Path</th><th>功能說明</th><th>算法/實作方式</th></tr>
+<tr>
+<td><strong>Speed Loss 歸因</strong></td>
+<td>GET /api/v1/vessels/{vessel}/speed-loss-attribution</td>
+<td>Speed Loss 中有多少 % 歸因於船殼 vs 螺旋槳</td>
+<td><strong>算法：</strong><br>
+1. 利用 maintenance.csv 中 PP（僅螺旋槳拋光）事件前後的 speed loss 變化量 → 螺旋槳貢獻<br>
+2. UWC（僅船殼清洗）事件前後的 speed loss 變化量 → 船殼貢獻<br>
+3. UWC+PP 事件的恢復量 - PP only 恢復量 = 船殼貢獻（差值法）<br>
+4. 比例 = hull_contribution / total_speed_loss × 100%<br>
+5. <strong>關鍵</strong>：UWI（純檢查）不應帶來效能改善，用作控制組驗證</td>
+</tr>
+<tr>
+<td><strong>養護事件效益對比</strong></td>
+<td>GET /api/v1/vessels/{vessel}/maintenance-effectiveness</td>
+<td>Speed Loss 與養護事件的時序對應（恢復/惡化時間點）</td>
+<td><strong>算法：</strong><br>
+1. 對每個養護事件，取事件前 7-14 天的 avg speed_loss vs 事件後 7-14 天的 avg speed_loss<br>
+2. recovery_pct = before - after（正值=恢復，負值=惡化或無效）<br>
+3. 依事件類型（DD/UWC/PP/UWI）分組統計平均恢復量<br>
+4. UWI 的 recovery 應接近 0 或隨機波動（驗證模型合理性）</td>
+</tr>
+<tr>
+<td><strong>養護事件列表</strong></td>
+<td>GET /api/v1/vessels/{vessel}/maintenance-events</td>
+<td>回傳該船所有養護事件（含類型、日期、狀態描述）供圖表標註</td>
+<td>直接讀取 maintenance.csv 篩選該船，格式化回傳</td>
+</tr>
+</table>
+
+<h3>1.3 商務決策 API（對應評分 商務決策價值 20%）</h3>
+<table>
+<tr><th>API</th><th>Method & Path</th><th>功能說明</th><th>算法/實作方式</th></tr>
+<tr>
+<td><strong>節能效益模擬</strong></td>
+<td>POST /api/v1/vessels/{vessel}/energy-saving-simulation</td>
+<td>模擬「現在執行 UWC/PP」vs「延遲 N 天」的累積油耗差異成本</td>
+<td><strong>算法：</strong><br>
+1. 用油耗預測模型的反事實推論能力<br>
+2. 計算 current speed_loss → 日均超額油耗 (MT)<br>
+3. 預測養護後 speed_loss 恢復值 → 養護後日均油耗<br>
+4. 差值 × 燃料單價 × 延遲天數 = 累積損失<br>
+5. 與養護成本比較 → breakeven_days</td>
+</tr>
+<tr>
+<td><strong>維修建議</strong></td>
+<td>GET /api/v1/vessels/{vessel}/maintenance-recommendation</td>
+<td>給出最佳維修時機建議、急迫度、預計節省金額</td>
+<td>基於退化速率 + 歷史清潔效益 + 成本模型，計算最佳介入時間點</td>
+</tr>
+<tr>
+<td><strong>船隊排名/比較</strong></td>
+<td>GET /api/v1/fleet/ranking</td>
+<td>跨船隊 Speed Loss/油耗效率排名，識別優先處理船舶</td>
+<td>計算各船當前 speed_loss、退化速率、距上次養護天數，加權排序</td>
+</tr>
+</table>
+
+<h3>1.4 數據支援 API</h3>
+<table>
+<tr><th>API</th><th>Method & Path</th><th>功能說明</th><th>算法/實作方式</th></tr>
+<tr>
+<td><strong>船舶列表</strong></td>
+<td>GET /api/v1/vessels</td>
+<td>回傳所有船舶基本資訊 + 當前狀態摘要</td>
+<td>讀取 vt_fd.csv 提取各船最新一筆數據 + maintenance.csv 計算衍生指標</td>
+</tr>
+<tr>
+<td><strong>Noon Report 列表</strong></td>
+<td>GET /api/v1/vessels/{vessel}/noon-reports</td>
+<td>回傳該船所有航行日報原始數據</td>
+<td>直接讀取 vt_fd.csv 篩選該船，回傳所有 A 類欄位</td>
+</tr>
+<tr>
+<td><strong>油耗歸因分解</strong></td>
+<td>GET /api/v1/vessels/{vessel}/fuel-attribution</td>
+<td>當前油耗的因子分解（天氣/船殼/螺旋槳/主機老化）</td>
+<td><strong>算法：</strong>使用 SHAP 或特徵重要性分解模型預測結果中各因子的貢獻量</td>
+</tr>
+<tr>
+<td><strong>異常偵測</strong></td>
+<td>GET /api/v1/vessels/{vessel}/anomalies</td>
+<td>偵測異常高油耗或異常 speed loss 的日子</td>
+<td>Z-score 統計方法 + 規則判定（如突然退化可能是附著生物爆發）</td>
+</tr>
+<tr>
+<td><strong>預測結果提交</strong></td>
+<td>POST /api/v1/predict/submit</td>
+<td>產出 102 筆預測結果 CSV，供評審評分</td>
+<td>對 S21-S23 的 PREDICT 標記日逐一呼叫預測模型，組裝成提交格式</td>
+</tr>
+</table>
+
+<!-- ============ SECTION 2: GAP Analysis ============ -->
+<h2>二、前端現況 vs 需求 — Backend API Gap 分析</h2>
+<p>前端目前已有 4 支真實 API（FastAPI at :8000），其餘全靠 mock data。以下為缺口：</p>
+
+<table>
+<tr><th>API 需求</th><th>前端現有狀態</th><th>後端狀態</th><th>Gap 級別</th></tr>
+<tr>
+<td>Speed Loss 計算（ISO 19030）</td>
+<td>有 performance-trend API 但欄位不完整（缺 observedSpeed, beaufort, loadCondition）</td>
+<td><span class="badge badge-partial">部分實作</span> 只有 speed_loss_pct + event</td>
+<td><span class="badge badge-gap">需補完</span></td>
+</tr>
+<tr>
+<td>Speed Loss 歸因（船殼 vs 螺旋槳）</td>
+<td>前端完全沒有此頁面邏輯</td>
+<td><span class="badge badge-gap">未實作</span></td>
+<td><span class="badge badge-gap">全新開發</span></td>
+</tr>
+<tr>
+<td>油耗預測模型 API</td>
+<td>前端無此功能</td>
+<td><span class="badge badge-gap">未實作</span></td>
+<td><span class="badge badge-gap">全新開發（核心）</span></td>
+</tr>
+<tr>
+<td>反事實推論（UWC/PP 節能效益）</td>
+<td>前端 mock 有模擬曲線但非真實模型</td>
+<td><span class="badge badge-gap">未實作</span></td>
+<td><span class="badge badge-gap">全新開發</span></td>
+</tr>
+<tr>
+<td>油耗歸因（SHAP 分解）</td>
+<td>前端有 FuelAttribution.vue + mock waterfall data</td>
+<td><span class="badge badge-gap">未實作</span></td>
+<td><span class="badge badge-gap">全新開發</span></td>
+</tr>
+<tr>
+<td>Noon Report 原始數據 API</td>
+<td>前端有 NoonReports.vue 但吃 mock data</td>
+<td><span class="badge badge-gap">未實作</span></td>
+<td><span class="badge badge-gap">需開發</span></td>
+</tr>
+<tr>
+<td>船隊列表（含摘要指標）</td>
+<td>前端有 VesselList.vue 但吃 mock data</td>
+<td><span class="badge badge-gap">未實作</span>（僅回傳船名陣列）</td>
+<td><span class="badge badge-gap">需開發</span></td>
+</tr>
+<tr>
+<td>養護事件列表</td>
+<td>前端 Inspections.vue 用 mock</td>
+<td><span class="badge badge-gap">未實作</span>（內部有讀 CSV 但未開放端點）</td>
+<td><span class="badge badge-partial">需開放端點</span></td>
+</tr>
+<tr>
+<td>成本效益模擬曲線</td>
+<td>前端 MaintenanceAdvisor.vue 有 mock curve[]</td>
+<td><span class="badge badge-gap">未實作</span>（只回傳 breakeven_days 單值）</td>
+<td><span class="badge badge-gap">需補完</span></td>
+</tr>
+<tr>
+<td>維修建議</td>
+<td>前端有 MaintenanceAdvisor.vue</td>
+<td><span class="badge badge-done">已實作</span></td>
+<td><span class="badge badge-done">OK</span></td>
+</tr>
+<tr>
+<td>異常偵測</td>
+<td>前端 NoonReports.vue 需 hover tooltip</td>
+<td><span class="badge badge-done">已實作</span></td>
+<td><span class="badge badge-partial">需前端串接</span></td>
+</tr>
+<tr>
+<td>維修效益驗證</td>
+<td>前端 SpeedLoss.vue 比較清洗週期</td>
+<td><span class="badge badge-done">已實作</span></td>
+<td><span class="badge badge-partial">需前端串接</span></td>
+</tr>
+<tr>
+<td>預測提交（102筆 CSV）</td>
+<td>前端無此功能</td>
+<td><span class="badge badge-gap">未實作</span></td>
+<td><span class="badge badge-gap">全新開發</span></td>
+</tr>
+</table>
+
+<!-- ============ SECTION 3: 建議方案 ============ -->
+<h2>三、建議做法 — 產出符合 Hackathon 題目的完整方案</h2>
+
+<div style="background:#e8f5e9;border-left:4px solid var(--teal);padding:1rem 1.5rem;margin:1rem 0;border-radius:0 4px 4px 0">
+<strong>💡 核心策略：</strong>以評分權重為優先順序 → Speed Loss Dashboard (30%) → 油耗預測 (25%) → 商務決策 (20%) → 技術可行性 (15%) → AI 協作 (10%)
+</div>
+
+<h3>3.1 已經做得很好的地方 ✅</h3>
+<table>
+<tr><th>項目</th><th>現況</th><th>對應評分</th></tr>
+<tr>
+<td><strong>前端 UI/UX 設計</strong></td>
+<td>Vue 3 + ECharts + MapLibre，航海圖/船舶儀表風格設計語言，Speed Loss 頁面、Fuel Attribution waterfall、Maintenance Advisor 成本曲線、Fathometer Gauge 等核心元件都已實作</td>
+<td>Dashboard 30% + 商務決策 20%</td>
+</tr>
+<tr>
+<td><strong>AI Chatbot/Voicebot 整合</strong></td>
+<td>已有 Anthropic Claude + OpenAI STT 整合的語音/文字對話系統（server/nlu.ts + server/stt.ts），chat composables 完整</td>
+<td>AI 協作創意 10%</td>
+</tr>
+<tr>
+<td><strong>4 支基礎後端 API</strong></td>
+<td>performance-trend、maintenance-effectiveness、anomalies、maintenance-recommendation 已可運行</td>
+<td>技術可行性 15%</td>
+</tr>
+<tr>
+<td><strong>前端架構清晰</strong></td>
+<td>mock 層設計良好，可無縫切換為真實 API；types/fleet.ts 型別定義完整；composables 復用性高</td>
+<td>技術可行性 15%</td>
+</tr>
+<tr>
+<td><strong>頁面結構完整</strong></td>
+<td>所有 6 個子頁面（Overview、Noon Reports、Inspections、Speed Loss、Fuel Attribution、Maintenance Advisor）+ 船隊總覽/列表/分析頁都已建立</td>
+<td>全面覆蓋</td>
+</tr>
+</table>
+
+<h3>3.2 需要優化改善的地方 ⚠️</h3>
+<table>
+<tr><th>優先級</th><th>項目</th><th>問題</th><th>建議做法</th><th>負責人/工作量</th></tr>
+<tr>
+<td><span class="badge badge-core">P0</span></td>
+<td><strong>油耗預測模型</strong><br>(25% 客觀評分)</td>
+<td>完全沒有實作。這是唯一的客觀自動評分項，0 分就是 0 分</td>
+<td>
+<strong>做法：</strong><br>
+1. 用 Python (pandas + scikit-learn/LightGBM) 讀取 vt_fd.csv<br>
+2. 特徵：AVG_SPEED, ME_AVG_RPM, DISPLACEMENT, WIND_SCALE, 距上次養護天數, 養護類型, 船型(W1/W2)<br>
+3. 目標：ME_FULLSPEED_CONSUMP_* (依當日燃料類型)<br>
+4. 訓練集篩選：HOURS_FULL_SPEED ≥ 22 & WIND_SCALE ≤ 4<br>
+5. 對 S21-S23 的 102 個 PREDICT 產出預測值<br>
+6. <strong>部署為 FastAPI 端點</strong>
+</td>
+<td>ML 工程師<br>~8-12hr</td>
+</tr>
+<tr>
+<td><span class="badge badge-core">P0</span></td>
+<td><strong>Speed Loss 計算 (ISO 19030)</strong><br>(30% Dashboard 核心)</td>
+<td>現有 API 只算了 speed_loss_pct 但未說明方法論是否符合 ISO 19030；缺乏船殼/螺旋槳歸因</td>
+<td>
+<strong>做法：</strong><br>
+1. 建立 Power-Speed baseline：坐塢(DD)後第一航次的乾淨數據擬合曲線<br>
+2. 計算每日 Expected Speed (at same power/displacement) vs Actual STW<br>
+3. Speed Loss % = (Expected - Actual) / Expected × 100<br>
+4. <strong>歸因分離</strong>：PP-only 事件前後差 → 螺旋槳; UWC-only 事件前後差 → 船殼<br>
+5. 驗證 UWI（純檢查）不產生恢復效果<br>
+6. 前端展示三個面板：趨勢、歸因比例、養護事件對應
+</td>
+<td>數據工程師<br>~6-8hr</td>
+</tr>
+<tr>
+<td><span class="badge badge-red" style="background:var(--red);color:#fff">P1</span></td>
+<td><strong>反事實推論 API</strong></td>
+<td>題目明確要求：「模型能反事實推論 UWC/PP 的節能效益」</td>
+<td>
+在預測模型基礎上：<br>
+1. 將 days_since_last_maintenance 重設為 0<br>
+2. 重新預測油耗 → predicted_after_maintenance<br>
+3. 節能效益 = current_predicted - after_maintenance<br>
+4. 轉換為年化節省金額
+</td>
+<td>與 P0 油耗模型同步<br>~2hr 額外</td>
+</tr>
+<tr>
+<td><span class="badge badge-red" style="background:var(--red);color:#fff">P1</span></td>
+<td><strong>Noon Report 數據 API</strong></td>
+<td>前端最基礎的數據頁面沒有真實數據</td>
+<td>直接讀取 vt_fd.csv，回傳 A 類欄位列表。簡單的 CRUD 讀取。</td>
+<td>後端工程師<br>~2hr</td>
+</tr>
+<tr>
+<td><span class="badge badge-amber" style="background:var(--amber);color:#fff">P2</span></td>
+<td><strong>油耗歸因 (SHAP) API</strong></td>
+<td>前端有 waterfall 圖但吃 mock data</td>
+<td>
+用 SHAP library 對 LightGBM 模型做 feature contribution 分解：<br>
+- weather_contribution (wind + sea height 相關特徵)<br>
+- hull_contribution (days_since_uwc)<br>
+- propeller_contribution (days_since_pp)<br>
+- engine_contribution (累計運行天數)
+</td>
+<td>ML 工程師<br>~4hr</td>
+</tr>
+<tr>
+<td><span class="badge badge-amber" style="background:var(--amber);color:#fff">P2</span></td>
+<td><strong>成本效益模擬曲線 API</strong></td>
+<td>後端只回傳 breakeven_days 單值，前端需要完整曲線</td>
+<td>後端回傳 Array[{deferral_days, cumulative_excess_fuel_cost_usd, opportunity_cost_usd}] 共 90 天的陣列</td>
+<td>後端工程師<br>~3hr</td>
+</tr>
+<tr>
+<td><span class="badge badge-amber" style="background:var(--amber);color:#fff">P2</span></td>
+<td><strong>前端串接真實 API</strong></td>
+<td>4 支已實作的 API 前端都還沒真正串接</td>
+<td>按 design_docs/4_api-integration-mapping.md 的建議順序串接，注意欄位映射差異</td>
+<td>前端工程師<br>~4hr</td>
+</tr>
+</table>
+
+<h3>3.3 建議工作分配與時程（48hr 黑客松假設）</h3>
+<table>
+<tr><th>時間區間</th><th>ML/數據工程師</th><th>後端工程師</th><th>前端工程師</th></tr>
+<tr>
+<td><strong>0-6hr</strong><br>（基礎建設）</td>
+<td>
+• 資料清洗 & EDA<br>
+• 建立 Power-Speed baseline<br>
+• 計算所有船的 Speed Loss 時間序列
+</td>
+<td>
+• 建立 Noon Report API<br>
+• 建立養護事件列表 API<br>
+• 擴充 vessels 列表 API（加摘要欄位）
+</td>
+<td>
+• 串接已有的 4 支 API<br>
+• 確認欄位映射正確
+</td>
+</tr>
+<tr>
+<td><strong>6-18hr</strong><br>（核心開發）</td>
+<td>
+• 訓練油耗預測模型 (LightGBM)<br>
+• 產出 102 筆預測結果<br>
+• SHAP 歸因分析
+</td>
+<td>
+• 部署 Speed Loss API（含 ISO 19030 計算）<br>
+• 部署油耗預測 API<br>
+• 部署反事實推論 API
+</td>
+<td>
+• Speed Loss Dashboard 三面板串接<br>
+• 確保趨勢圖、歸因圖、養護對比圖都有數據
+</td>
+</tr>
+<tr>
+<td><strong>18-30hr</strong><br>（進階功能）</td>
+<td>
+• 模型調優 & 交叉驗證<br>
+• Speed Loss 船殼/螺旋槳歸因計算<br>
+• UWI 控制組驗證
+</td>
+<td>
+• 油耗歸因 API (SHAP)<br>
+• 成本效益模擬曲線 API<br>
+• 船隊排名 API
+</td>
+<td>
+• Fuel Attribution waterfall 串真實 SHAP 數據<br>
+• Maintenance Advisor 成本曲線串真實數據<br>
+• Fleet Analytics 頁面完善
+</td>
+</tr>
+<tr>
+<td><strong>30-42hr</strong><br>（整合優化）</td>
+<td>
+• 多燃料熱值折算校驗<br>
+• HOURS_FULL_SPEED 校正<br>
+• 最終預測結果品質確認
+</td>
+<td>
+• API 效能優化（快取）<br>
+• 預測提交端點<br>
+• 錯誤處理 & 日誌
+</td>
+<td>
+• 整體 UI polish<br>
+• Chatbot 整合查詢結果<br>
+• RWD 與 loading state
+</td>
+</tr>
+<tr>
+<td><strong>42-48hr</strong><br>（Demo 準備）</td>
+<td colspan="3" style="text-align:center">
+• 整合測試 • Demo 流程排練 • 簡報製作 • 提交預測 CSV
+</td>
+</tr>
+</table>
+
+<h3>3.4 技術架構建議</h3>
+<div style="background:#fff;border:1px solid var(--border);padding:1.5rem;border-radius:4px;margin:1rem 0">
+<pre style="font-family:'IBM Plex Mono',monospace;font-size:0.85rem;line-height:1.5;overflow-x:auto">
+┌─────────────────────────────────────────────────────────────────┐
+│                        Frontend (Vue 3 + Vite)                   │
+│  FleetOverview │ VesselList │ SpeedLoss │ FuelAttrib │ MaintAdv  │
+│                     │ Chatbot (Claude + STT)                     │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ HTTP REST
+┌──────────────────────────────▼──────────────────────────────────┐
+│                     Backend (FastAPI - Python)                    │
+├─────────────────────────────────────────────────────────────────┤
+│  /api/v1/vessels                    → 船舶列表 + 摘要            │
+│  /api/v1/vessels/{id}/noon-reports  → Noon Report 原始數據       │
+│  /api/v1/vessels/{id}/speed-loss    → Speed Loss (ISO 19030)     │
+│  /api/v1/vessels/{id}/speed-loss-attribution → 船殼/螺旋槳歸因  │
+│  /api/v1/vessels/{id}/maintenance-events     → 養護事件列表      │
+│  /api/v1/vessels/{id}/maintenance-effectiveness → 養護效益驗證   │
+│  /api/v1/vessels/{id}/fuel-attribution  → SHAP 油耗歸因         │
+│  /api/v1/vessels/{id}/maintenance-recommendation → 維修建議      │
+│  /api/v1/vessels/{id}/energy-saving-simulation   → 節能模擬      │
+│  /api/v1/vessels/{id}/anomalies     → 異常偵測                   │
+│  /api/v1/fleet/ranking              → 船隊排名                   │
+│  /api/v1/predict/fuel-consumption   → 油耗預測                   │
+│  /api/v1/predict/submit             → 產出提交 CSV              │
+├─────────────────────────────────────────────────────────────────┤
+│                     ML Layer (LightGBM / XGBoost)                │
+│  • 油耗預測模型 (trained on S1-S12)                              │
+│  • Speed Loss 計算引擎 (ISO 19030)                               │
+│  • SHAP explainer                                                │
+│  • 反事實推論引擎                                                │
+├─────────────────────────────────────────────────────────────────┤
+│                     Data Layer                                    │
+│  • vt_fd.csv (15 ships × 5yr noon reports)                       │
+│  • maintenance.csv (養護事件記錄)                                │
+│  • Trained model artifacts (.pkl / .joblib)                      │
+└─────────────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<h3>3.5 關鍵技術提醒</h3>
+<div style="background:#fff3e0;border-left:4px solid var(--amber);padding:1rem 1.5rem;margin:1rem 0;border-radius:0 4px 4px 0">
+<strong>⚠️ 題目陷阱 — UWI（水下檢查）不應帶來效能改善</strong><br>
+題目明確提示：「有一類事件屬於純檢查、無實體介入——它不清洗、也不拋光。聰明的模型應能辨識出這類事件不應帶來效能改善。」<br><br>
+<strong>實作建議：</strong><br>
+• 在 maintenance.csv 的 event_type 中，UWI = Underwater Inspection（僅拍照）<br>
+• 建模時 <u>不要</u> 將 UWI 視為「養護事件」重設退化計時器<br>
+• Dashboard 上可以用 UWI 事件前後的 speed loss 變化作為「控制組」展示模型合理性<br>
+• 這是評審會特別看的亮點
+</div>
+
+<div style="background:#e3f2fd;border-left:4px solid #1976d2;padding:1rem 1.5rem;margin:1rem 0;border-radius:0 4px 4px 0">
+<strong>💡 預測模型要點</strong><br>
+• <strong>預測日條件</strong>：全速≥22hr、風速≤4、單一燃料 → 這些是乾淨穩態點<br>
+• <strong>全速時數校正</strong>：題目提醒「船隻每日全速航行時長可能有異，數學模型應執行校正」<br>
+• <strong>多燃料處理</strong>：不同日使用不同燃料（HSHFO/VLSFO/ULSFO/LSMGO），熱值不同需折算或分模型<br>
+• <strong>退化特徵</strong>：days_since_dd、days_since_uwc、days_since_pp 是核心時間衰退特徵<br>
+• <strong>船型分組</strong>：S1-S8,S21 為 W1 型；S9-S12,S22-S23 為 W2 型（同設計但不同航線）
+</div>
+
+<div style="background:#e8f5e9;border-left:4px solid var(--teal);padding:1rem 1.5rem;margin:1rem 0;border-radius:0 4px 4px 0">
+<strong>✅ 加分亮點建議</strong><br>
+• <strong>AI 協作</strong>：讓 Chatbot 可以回答「S21 上次養護是什麼時候？」「如果現在做 UWC 可以省多少油？」<br>
+• <strong>商務決策</strong>：在 Dashboard 上直接顯示「如果現在執行 UWC，預計年節省 $XXX USD」<br>
+• <strong>視覺化</strong>：Speed Loss 圖上標注不同類型養護事件（DD=綠、UWC=藍、PP=橙、UWI=灰虛線），讓評審一眼看出效果差異<br>
+• <strong>UWI 控制組</strong>：專門做一個小面板展示「UWI 前後 Speed Loss 無顯著變化」→ 證明模型的因果識別能力
+</div>
+
+<h3>3.6 API Response Schema 參考（供前後端對齊）</h3>
+
+<h4 style="margin-top:1rem">Speed Loss API Response</h4>
+<pre style="background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:4px;font-size:0.8rem;overflow-x:auto">
+{
+  "vessel_id": "S21",
+  "vessel_type": "W1",
+  "baseline": {
+    "source": "post_drydock_2023-08-10",
+    "reference_speed_kt": 18.5,
+    "reference_power_kw": 25000
+  },
+  "series": [
+    {
+      "day": 0,
+      "date": "2023-08-15",
+      "speed_loss_pct": 0.5,
+      "observed_stw_kt": 18.4,
+      "expected_stw_kt": 18.5,
+      "me_power_kw": 25100,
+      "displacement_mt": 91000,
+      "wind_scale": 3,
+      "event": null
+    },
+    {
+      "day": 450,
+      "date": "2024-10-16",
+      "speed_loss_pct": 4.2,
+      "observed_stw_kt": 17.7,
+      "expected_stw_kt": 18.5,
+      "me_power_kw": 25300,
+      "displacement_mt": 89000,
+      "wind_scale": 2,
+      "event": {"type": "UWI+PP", "label": "檢查+螺旋槳拋光"}
+    }
+  ],
+  "attribution": {
+    "hull_pct": 65,
+    "propeller_pct": 25,
+    "unknown_pct": 10,
+    "method": "differential_analysis"
+  }
+}
+</pre>
+
+<h4 style="margin-top:1rem">Fuel Prediction API Request/Response</h4>
+<pre style="background:#1e1e1e;color:#d4d4d4;padding:1rem;border-radius:4px;font-size:0.8rem;overflow-x:auto">
+// POST /api/v1/predict/fuel-consumption
+// Request:
+{
+  "vessel_id": "S21",
+  "day": 450,
+  "features": {
+    "avg_speed": 17.8,
+    "me_avg_rpm": 63.0,
+    "displacement": 91000,
+    "wind_scale": 3,
+    "hours_full_speed": 23.0
+  },
+  "counterfactual": {
+    "simulate_maintenance": "UWC+PP",  // optional
+    "days_after_maintenance": 5         // optional
+  }
+}
+
+// Response:
+{
+  "vessel_id": "S21",
+  "day": 450,
+  "fuel_type": "ME_FULLSPEED_CONSUMP_HSHFO",
+  "predicted_value_mt": 85.3,
+  "confidence_interval": [82.1, 88.5],
+  "counterfactual_result": {
+    "predicted_after_maintenance_mt": 78.6,
+    "saving_mt_per_day": 6.7,
+    "saving_usd_per_day": 4154,
+    "annual_saving_usd": 1516210
+  }
+}
+</pre>
+
+<h3>3.7 評分維度 vs 我們的對應策略</h3>
+<table>
+<tr><th>評分維度</th><th>配分</th><th>我們的策略</th><th>現有完成度</th><th>需要做的事</th></tr>
+<tr>
+<td><strong>Speed Loss Dashboard</strong></td>
+<td>30%</td>
+<td>展示三個核心面板：① 趨勢圖 ② 船殼/螺旋槳歸因 ③ 養護事件對比。特別標註 UWI 無效作為控制組。</td>
+<td style="color:var(--amber)">50%（UI 有，數據是 mock）</td>
+<td>後端 Speed Loss 計算引擎 + 歸因 API + 前端串接</td>
+</tr>
+<tr>
+<td><strong>油耗預測正確性</strong></td>
+<td>25%</td>
+<td>LightGBM 模型，含時間退化特徵 + 環境修正 + 全速時數校正。產出 102 筆預測。</td>
+<td style="color:var(--red)">0%</td>
+<td>完整的 ML pipeline：EDA → 特徵工程 → 訓練 → 預測 → 提交</td>
+</tr>
+<tr>
+<td><strong>商務決策價值</strong></td>
+<td>20%</td>
+<td>反事實推論 + 成本效益模擬 + 具體金額呈現。讓船東看到「現在做 UWC 可省 $XX 萬/年」。</td>
+<td style="color:var(--amber)">40%（UI 框架有，數據邏輯是 mock）</td>
+<td>反事實 API + 真實成本曲線 + 具體數字</td>
+</tr>
+<tr>
+<td><strong>技術可行性</strong></td>
+<td>15%</td>
+<td>清晰的 API 架構、可部署的 Docker 環境、前後端分離、模型可更新。</td>
+<td style="color:var(--teal)">70%</td>
+<td>補完 ML 模型部署 + API 文檔</td>
+</tr>
+<tr>
+<td><strong>AI 協作創意</strong></td>
+<td>10%</td>
+<td>語音/文字 Chatbot（已有 Claude + STT），可自然語言查詢船舶狀態和建議。</td>
+<td style="color:var(--teal)">80%</td>
+<td>接入真實後端數據讓回答有根據</td>
+</tr>
+</table>
+
+<h3>3.8 風險與備案</h3>
+<table>
+<tr><th>風險</th><th>影響</th><th>備案</th></tr>
+<tr>
+<td>油耗預測模型精度不足</td>
+<td>25% 評分受損</td>
+<td>先用簡單線性回歸保底，再嘗試 ensemble。確保至少有 102 筆輸出。</td>
+</tr>
+<tr>
+<td>ISO 19030 計算方法不確定</td>
+<td>30% 評分受損</td>
+<td>以 Admiralty Coefficient 為基礎簡化版本，在 Dashboard 上清楚標註方法論。</td>
+</tr>
+<tr>
+<td>前後端串接時間不足</td>
+<td>Demo 效果差</td>
+<td>保留 mock fallback 機制，能切換展示。確保至少 Speed Loss + 油耗預測兩個核心有真實數據。</td>
+</tr>
+<tr>
+<td>多燃料折算出錯</td>
+<td>預測偏差</td>
+<td>分燃料建模（每種燃料一個子模型），避免折算誤差。PREDICT 日已限定單一燃料，簡化問題。</td>
+</tr>
+</table>
+
+<!-- ============ SECTION 4: Summary ============ -->
+<h2>四、總結 — 團隊 Action Items</h2>
+
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem;margin:1.5rem 0">
+<div style="background:#fff;border:2px solid var(--red);border-radius:4px;padding:1rem">
+<h4 style="color:var(--red);margin-bottom:0.5rem">🔥 ML/數據工程師（最高優先）</h4>
+<ol style="padding-left:1.2rem;font-size:0.85rem">
+<li>讀取 vt_fd.csv，完成 EDA</li>
+<li>建立 Power-Speed baseline（DD 後乾淨數據）</li>
+<li>計算 Speed Loss 時間序列（全船）</li>
+<li>訓練 LightGBM 油耗預測模型</li>
+<li>產出 102 筆預測 CSV</li>
+<li>SHAP 歸因分析</li>
+<li>反事實推論邏輯</li>
+<li>Speed Loss 船殼/螺旋槳歸因</li>
+</ol>
+</div>
+<div style="background:#fff;border:2px solid var(--amber);border-radius:4px;padding:1rem">
+<h4 style="color:var(--amber);margin-bottom:0.5rem">⚙️ 後端工程師</h4>
+<ol style="padding-left:1.2rem;font-size:0.85rem">
+<li>Noon Report 數據 API</li>
+<li>Speed Loss API（接 ML 計算結果）</li>
+<li>Speed Loss 歸因 API</li>
+<li>油耗預測 API（接模型推論）</li>
+<li>反事實推論 API</li>
+<li>油耗歸因 (SHAP) API</li>
+<li>成本效益曲線 API（擴充現有端點）</li>
+<li>養護事件列表 API</li>
+<li>船隊排名 API</li>
+<li>預測提交 API</li>
+</ol>
+</div>
+<div style="background:#fff;border:2px solid var(--teal);border-radius:4px;padding:1rem">
+<h4 style="color:var(--teal);margin-bottom:0.5rem">🎨 前端工程師</h4>
+<ol style="padding-left:1.2rem;font-size:0.85rem">
+<li>串接 performance-trend → Speed Loss 主圖</li>
+<li>串接 maintenance-effectiveness → 養護對比</li>
+<li>串接 anomalies → Noon Report 異常標記</li>
+<li>新增 Speed Loss 歸因面板（船殼 vs 螺旋槳 pie/bar chart）</li>
+<li>新增 UWI 控制組展示面板</li>
+<li>Fuel Attribution 串真實 SHAP API</li>
+<li>Maintenance Advisor 成本曲線串真實數據</li>
+<li>Chatbot 接入後端數據回答</li>
+</ol>
+</div>
+</div>
+
+<div style="background:var(--navy);color:#fff;padding:1.5rem;border-radius:4px;margin-top:2rem;text-align:center">
+<p style="font-size:1.1rem;margin-bottom:0.5rem"><strong>核心結論：油耗預測模型（25%客觀分）是必須 Day 1 就啟動的工作。</strong></p>
+<p style="opacity:0.8">Speed Loss Dashboard（30%）靠的是計算方法 + 視覺化呈現，前端已有良好基礎。<br>
+兩者並行開發，確保 48 小時內都能產出有數據支撐的完整 Demo。</p>
+</div>
+
+<footer style="margin-top:3rem;padding-top:1rem;border-top:1px solid var(--border);font-size:0.8rem;color:#888;text-align:center">
+Generated 2026-07-14 | YangMing AI Hackathon Team | 陽明海運 AI 船舶效能分析與節能決策支援系統
+</footer>
+
+</body>
+</html>
