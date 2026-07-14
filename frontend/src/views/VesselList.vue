@@ -1,14 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import {
-  FlexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useVueTable,
-  type ColumnDef,
-  type SortingState,
-} from '@tanstack/vue-table'
 import { fetchVessels } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
@@ -19,49 +11,79 @@ import { speedLossColor, URGENCY_LABEL, URGENCY_COLOR, formatUsd } from '@/utils
 const router = useRouter()
 const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
 
+// ── Filters ───────────────────────────────────────────────────────────────────
 const typeFilter = ref('all')
-const keyword = ref('')
-const expandedImo = ref<string | null>(null)
-const sorting = ref<SortingState>([])
+const keyword    = ref('')
 
 const vesselTypes = computed(() => {
   if (!vessels.value) return []
-  return Array.from(new Set(vessels.value.map((v) => v.shipClass)))
+  return Array.from(new Set(vessels.value.map((v) => v.shipClass))).sort()
 })
 
-const filtered = computed<VesselSummary[]>(() => {
+// ── Sort ──────────────────────────────────────────────────────────────────────
+type SortField =
+  | 'name' | 'shipClass' | 'speedLossPct' | 'slipTrend'
+  | 'avgConsumptionMt' | 'avgRpm' | 'daysSinceHullClean'
+  | 'daysSincePropPolish' | 'excessFuelCostUsdMtd' | 'maintenanceUrgency'
+  | 'totalRecords' | 'totalMaintEvents'
+
+const sortField = ref<SortField>('speedLossPct')
+const sortDir   = ref<'asc' | 'desc'>('desc')
+
+const urgencyRank: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 }
+
+function toggleSort(field: SortField) {
+  if (sortField.value === field) {
+    sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  } else {
+    sortField.value = field
+    sortDir.value   = 'desc'
+  }
+}
+
+function sortIcon(field: SortField) {
+  if (sortField.value !== field) return ' ⇅'
+  return sortDir.value === 'asc' ? ' ▲' : ' ▼'
+}
+
+// ── Filtered + sorted data ────────────────────────────────────────────────────
+const rows = computed<VesselSummary[]>(() => {
   if (!vessels.value) return []
-  return vessels.value.filter((v) => {
+
+  const filtered = vessels.value.filter((v) => {
     if (typeFilter.value !== 'all' && v.shipClass !== typeFilter.value) return false
-    if (keyword.value && !`${v.name} ${v.imo}`.toLowerCase().includes(keyword.value.toLowerCase())) return false
+    if (keyword.value && !v.name.toLowerCase().includes(keyword.value.toLowerCase())) return false
     return true
+  })
+
+  return [...filtered].sort((a, b) => {
+    let aVal: number | string, bVal: number | string
+    switch (sortField.value) {
+      case 'maintenanceUrgency':
+        aVal = urgencyRank[a.maintenanceUrgency] ?? 0
+        bVal = urgencyRank[b.maintenanceUrgency] ?? 0
+        break
+      case 'slipTrend':
+        aVal = a.slipTrend ?? 0
+        bVal = b.slipTrend ?? 0
+        break
+      case 'daysSincePropPolish':
+        aVal = a.daysSincePropPolish ?? 0
+        bVal = b.daysSincePropPolish ?? 0
+        break
+      default:
+        aVal = (a as any)[sortField.value] ?? 0
+        bVal = (b as any)[sortField.value] ?? 0
+    }
+    if (typeof aVal === 'string') return sortDir.value === 'asc'
+      ? aVal.localeCompare(bVal as string)
+      : (bVal as string).localeCompare(aVal)
+    return sortDir.value === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal
   })
 })
 
-const columns: ColumnDef<VesselSummary>[] = [
-  { accessorKey: 'name',          header: '船舶代號', enableSorting: true },
-  { accessorKey: 'shipClass',     header: '船型',     enableSorting: true },
-  { accessorKey: 'speedLossPct',  header: 'Speed Loss %', enableSorting: true },
-  { id: 'avgConsumption',         header: '平均油耗 (MT/天)', accessorFn: (r) => r.avgConsumptionMt, enableSorting: true },
-  { id: 'avgRpm',                 header: '平均 RPM',  accessorFn: (r) => r.avgRpm, enableSorting: true },
-  { id: 'daysSinceHullClean',     header: '距上次清洗 (天)', accessorFn: (r) => r.daysSinceHullClean, enableSorting: true },
-  { id: 'daysSincePropPolish',    header: '距上次螺旋槳拋光 (天)', accessorFn: (r) => r.daysSincePropPolish, enableSorting: true },
-  { id: 'excessCost',             header: '超額油耗成本 (USD/天)', accessorFn: (r) => r.excessFuelCostUsdMtd, enableSorting: true },
-  { id: 'urgency',                header: '維修急迫度', accessorFn: (r) => r.maintenanceUrgency, enableSorting: true },
-]
-
-const table = useVueTable({
-  get data() { return filtered.value },
-  columns,
-  state: {
-    get sorting() { return sorting.value },
-  },
-  onSortingChange: (updaterOrValue) => {
-    sorting.value = typeof updaterOrValue === 'function' ? updaterOrValue(sorting.value) : updaterOrValue
-  },
-  getCoreRowModel: getCoreRowModel(),
-  getSortedRowModel: getSortedRowModel(),
-})
+// ── Expand ────────────────────────────────────────────────────────────────────
+const expandedImo = ref<string | null>(null)
 
 function toggleExpand(imo: string) {
   expandedImo.value = expandedImo.value === imo ? null : imo
@@ -71,27 +93,31 @@ function goToVessel(imo: string) {
   router.push(`/vessels/${imo}/overview`)
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function trendArrow(trend: number | null): string {
   if (trend == null) return '—'
-  if (trend > 0.5) return '↑'   // degrading
-  if (trend < -0.5) return '↓'  // improving
+  if (trend >  0.3) return '↑'
+  if (trend < -0.3) return '↓'
   return '→'
 }
 function trendColor(trend: number | null): string {
   if (trend == null) return 'var(--color-ink-muted)'
-  if (trend > 0.5) return 'var(--color-signal-red)'
-  if (trend < -0.5) return 'var(--color-fathom-teal)'
+  if (trend >  0.3) return 'var(--color-signal-red)'
+  if (trend < -0.3) return 'var(--color-fathom-teal)'
+  return 'var(--color-ink-muted)'
+}
+function cleanDayColor(days: number): string {
+  if (days > 730) return 'var(--color-signal-red)'
+  if (days > 365) return 'var(--color-brass-amber)'
   return 'var(--color-ink-muted)'
 }
 </script>
 
 <template>
   <div class="mx-auto max-w-[1440px] px-4 md:px-6 py-4 md:py-6 flex flex-col gap-4">
-    <div class="flex items-center justify-between">
-      <div>
-        <p class="eyebrow mb-1.5">LIST-01 · Fleet Register</p>
-        <h1 class="text-[1.9rem] leading-none">船隊列表</h1>
-      </div>
+    <div>
+      <p class="eyebrow mb-1.5">LIST-01 · Fleet Register</p>
+      <h1 class="text-[1.9rem] leading-none">船隊列表</h1>
     </div>
 
     <!-- Filters -->
@@ -107,151 +133,223 @@ function trendColor(trend: number | null): string {
         <span class="col-head">關鍵字</span>
         <input v-model="keyword" type="search" placeholder="船舶代號" class="field flex-1" />
       </label>
+      <span class="text-xs text-[var(--color-ink-muted)] ml-auto">{{ rows.length }} 艘</span>
     </div>
 
     <StateDisplay v-if="state !== 'success'" :state="state === 'error' ? 'error' : 'loading'" />
 
     <div v-else class="panel panel--accent overflow-x-auto">
-      <table class="w-full text-sm min-w-[900px]">
+      <table class="w-full text-sm" style="min-width: 1160px">
+        <!-- ── Header ── -->
         <thead>
-          <tr
-            v-for="hg in table.getHeaderGroups()"
-            :key="hg.id"
-            class="border-b-2"
-            style="border-color: color-mix(in srgb, var(--color-ink-slate) 22%, transparent)"
-          >
-            <th class="w-8"></th>
+          <tr class="border-b-2" style="border-color: color-mix(in srgb, var(--color-ink-slate) 22%, transparent)">
+            <th class="w-8" />
+            <!-- 1 船舶代號 -->
             <th
-              v-for="h in hg.headers"
-              :key="h.id"
               class="col-head text-left px-3 py-3 cursor-pointer select-none whitespace-nowrap hover:text-[var(--color-ink-slate)] transition-colors"
-              @click="h.column.getToggleSortingHandler()?.($event)"
-            >
-              <FlexRender :render="h.column.columnDef.header" :props="h.getContext()" />
-              <span v-if="h.column.getIsSorted() === 'asc'"> ▲</span>
-              <span v-else-if="h.column.getIsSorted() === 'desc'"> ▼</span>
-            </th>
+              @click="toggleSort('name')"
+            >船舶代號{{ sortIcon('name') }}</th>
+            <!-- 2 船型 -->
+            <th
+              class="col-head text-left px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('shipClass')"
+            >船型{{ sortIcon('shipClass') }}</th>
+            <!-- 日報筆數 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('totalRecords')"
+            >日報筆數{{ sortIcon('totalRecords') }}</th>
+            <!-- 養護事件數 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('totalMaintEvents')"
+            >養護事件數{{ sortIcon('totalMaintEvents') }}</th>
+            <!-- 3 Speed Loss -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('speedLossPct')"
+            >Speed Loss %{{ sortIcon('speedLossPct') }}</th>
+            <!-- 4 趨勢 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('slipTrend')"
+            >趨勢{{ sortIcon('slipTrend') }}</th>
+            <!-- 5 平均油耗 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('avgConsumptionMt')"
+            >平均油耗 (MT/天){{ sortIcon('avgConsumptionMt') }}</th>
+            <!-- 6 平均 RPM -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('avgRpm')"
+            >平均 RPM{{ sortIcon('avgRpm') }}</th>
+            <!-- 7 距上次清洗 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('daysSinceHullClean')"
+            >距上次清洗 (天){{ sortIcon('daysSinceHullClean') }}</th>
+            <!-- 8 距上次螺旋槳拋光 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('daysSincePropPolish')"
+            >距上次螺旋槳拋光 (天){{ sortIcon('daysSincePropPolish') }}</th>
+            <!-- 9 超額成本 -->
+            <th
+              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('excessFuelCostUsdMtd')"
+            >超額成本 (USD/天){{ sortIcon('excessFuelCostUsdMtd') }}</th>
+            <!-- 10 急迫度 -->
+            <th
+              class="col-head text-left px-3 py-3 cursor-pointer select-none whitespace-nowrap"
+              @click="toggleSort('maintenanceUrgency')"
+            >急迫度{{ sortIcon('maintenanceUrgency') }}</th>
           </tr>
         </thead>
+
+        <!-- ── Body ── -->
         <tbody>
-          <template v-for="row in table.getRowModel().rows" :key="row.id">
+          <template v-for="v in rows" :key="v.imo">
             <tr
               class="chart-divider cursor-pointer transition-colors hover:bg-[var(--color-chart-paper-hi)]"
-              @click="goToVessel(row.original.imo)"
+              @click="goToVessel(v.imo)"
             >
-              <!-- expand toggle -->
+              <!-- expand -->
               <td class="px-2 py-2 text-center">
                 <button
                   class="text-[var(--color-ink-slate)]/60 hover:text-[var(--color-ink-slate)]"
                   aria-label="展開詳情"
-                  @click.stop="toggleExpand(row.original.imo)"
-                >{{ expandedImo === row.original.imo ? '▾' : '▸' }}</button>
+                  @click.stop="toggleExpand(v.imo)"
+                >{{ expandedImo === v.imo ? '▾' : '▸' }}</button>
               </td>
 
-              <!-- 船舶代號 -->
-              <td class="px-3 py-3 font-display text-[15px] tracking-wide">{{ row.original.name }}</td>
+              <!-- 1 船舶代號 -->
+              <td class="px-3 py-3 font-display text-[15px] tracking-wide">{{ v.name }}</td>
 
-              <!-- 船型 -->
-              <td class="px-3 py-3 font-data text-xs text-[var(--color-ink-muted)]">{{ row.original.shipClass }}</td>
+              <!-- 2 船型 -->
+              <td class="px-3 py-3 font-data text-xs text-[var(--color-ink-muted)]">{{ v.shipClass }}</td>
 
-              <!-- Speed Loss -->
-              <td class="px-3 py-3">
-                <div class="flex items-center gap-1.5">
-                  <span
-                    class="font-data font-bold tabular-nums px-1.5 py-0.5 rounded-[3px]"
-                    :style="{
-                      color: speedLossColor(row.original.speedLossPct),
-                      background: `color-mix(in srgb, ${speedLossColor(row.original.speedLossPct)} 12%, transparent)`,
-                    }"
-                  >{{ row.original.speedLossPct.toFixed(1) }}%</span>
-                  <span
-                    class="font-data text-xs"
-                    :style="{ color: trendColor(row.original.slipTrend) }"
-                    :title="`Trend: ${row.original.slipTrend != null ? row.original.slipTrend.toFixed(2) : '—'}%`"
-                  >{{ trendArrow(row.original.slipTrend) }}</span>
-                </div>
+              <!-- 日報筆數 -->
+              <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
+                {{ v.totalRecords.toLocaleString() }}
               </td>
 
-              <!-- 平均油耗 -->
+              <!-- 養護事件數 -->
+              <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
+                {{ v.totalMaintEvents ?? '—' }}
+              </td>
+
+              <!-- 3 Speed Loss -->
+              <td class="px-3 py-3 text-right">
+                <span
+                  class="font-data font-bold tabular-nums px-1.5 py-0.5 rounded-[3px]"
+                  :style="{
+                    color: speedLossColor(v.speedLossPct),
+                    background: `color-mix(in srgb, ${speedLossColor(v.speedLossPct)} 12%, transparent)`,
+                  }"
+                >{{ v.speedLossPct.toFixed(1) }}%</span>
+              </td>
+
+              <!-- 4 趨勢 -->
               <td class="px-3 py-3 font-data text-right tabular-nums">
-                {{ row.original.avgConsumptionMt != null ? row.original.avgConsumptionMt.toFixed(1) : '—' }}
+                <span :style="{ color: trendColor(v.slipTrend) }">
+                  {{ trendArrow(v.slipTrend) }}
+                  <template v-if="v.slipTrend != null">
+                    {{ v.slipTrend > 0 ? '+' : '' }}{{ v.slipTrend.toFixed(2) }}
+                  </template>
+                </span>
               </td>
 
-              <!-- 平均 RPM -->
+              <!-- 5 平均油耗 -->
+              <td class="px-3 py-3 font-data text-right tabular-nums">
+                {{ v.avgConsumptionMt != null ? v.avgConsumptionMt.toFixed(1) : '—' }}
+              </td>
+
+              <!-- 6 平均 RPM -->
               <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
-                {{ row.original.avgRpm != null ? row.original.avgRpm.toFixed(0) : '—' }}
+                {{ v.avgRpm != null ? v.avgRpm.toFixed(0) : '—' }}
               </td>
 
-              <!-- 距上次清洗 -->
-              <td class="px-3 py-3 font-data text-right tabular-nums"
-                :class="row.original.daysSinceHullClean > 730 ? 'text-[var(--color-signal-red)]' : row.original.daysSinceHullClean > 365 ? 'text-[var(--color-brass-amber)]' : 'text-[var(--color-ink-muted)]'"
-              >{{ row.original.daysSinceHullClean }}</td>
+              <!-- 7 距上次清洗 -->
+              <td class="px-3 py-3 font-data text-right tabular-nums" :style="{ color: cleanDayColor(v.daysSinceHullClean) }">
+                {{ v.daysSinceHullClean }}
+              </td>
 
-              <!-- 距上次螺旋槳拋光 -->
+              <!-- 8 距上次螺旋槳拋光 -->
               <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
-                {{ row.original.daysSincePropPolish ?? '—' }}
+                {{ v.daysSincePropPolish ?? '—' }}
               </td>
 
-              <!-- 超額成本 -->
+              <!-- 9 超額成本 -->
               <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-signal-red)]">
-                {{ formatUsd(row.original.excessFuelCostUsdMtd) }}
+                {{ formatUsd(v.excessFuelCostUsdMtd) }}
               </td>
 
-              <!-- 急迫度 -->
+              <!-- 10 急迫度 -->
               <td class="px-3 py-3">
                 <span
                   class="inline-flex items-center text-xs font-semibold px-2 py-0.5 rounded-[3px]"
                   :style="{
-                    color: URGENCY_COLOR[row.original.maintenanceUrgency],
-                    background: `color-mix(in srgb, ${URGENCY_COLOR[row.original.maintenanceUrgency]} 14%, transparent)`,
+                    color: URGENCY_COLOR[v.maintenanceUrgency],
+                    background: `color-mix(in srgb, ${URGENCY_COLOR[v.maintenanceUrgency]} 14%, transparent)`,
                   }"
-                >{{ URGENCY_LABEL[row.original.maintenanceUrgency] }}</span>
+                >{{ URGENCY_LABEL[v.maintenanceUrgency] }}</span>
               </td>
             </tr>
 
             <!-- expanded detail row -->
-            <tr v-if="expandedImo === row.original.imo" class="chart-divider bg-black/[0.015]">
-              <td colspan="10" class="px-6 py-4">
+            <tr v-if="expandedImo === v.imo" class="chart-divider bg-black/[0.015]">
+              <td colspan="13" class="px-6 py-4">
                 <div class="grid grid-cols-1 md:grid-cols-[auto_1fr] gap-6 items-start">
                   <FathometerGauge
-                    :value="Math.min(100, row.original.speedLossPct * 8)"
-                    :grade="row.original.foulingGrade"
+                    :value="Math.min(100, v.speedLossPct * 8)"
+                    :grade="v.foulingGrade"
                     label="Speed Loss"
-                    :display-value="`${row.original.speedLossPct.toFixed(1)}%`"
+                    :display-value="`${v.speedLossPct.toFixed(1)}%`"
                     size="sm"
                   />
                   <div class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2 text-xs font-data">
                     <div>
                       <p class="text-[var(--color-ink-muted)] mb-0.5">平均 STW</p>
-                      <p class="tabular-nums">{{ row.original.avgStwKn?.toFixed(1) ?? '—' }} kt</p>
+                      <p class="tabular-nums">{{ v.avgStwKn?.toFixed(1) ?? '—' }} kt</p>
+                    </div>
+                    <div>
+                      <p class="text-[var(--color-ink-muted)] mb-0.5">平均速度 (SOG)</p>
+                      <p class="tabular-nums">{{ v.avgSpeedKn?.toFixed(1) ?? '—' }} kt</p>
                     </div>
                     <div>
                       <p class="text-[var(--color-ink-muted)] mb-0.5">平均 SFOC</p>
-                      <p class="tabular-nums">{{ row.original.avgSfoc?.toFixed(0) ?? '—' }} g/kWh</p>
+                      <p class="tabular-nums">{{ v.avgSfoc?.toFixed(0) ?? '—' }} g/kWh</p>
                     </div>
                     <div>
                       <p class="text-[var(--color-ink-muted)] mb-0.5">平均負載率</p>
-                      <p class="tabular-nums">{{ row.original.avgLoadPct?.toFixed(1) ?? '—' }} %MCR</p>
+                      <p class="tabular-nums">{{ v.avgLoadPct?.toFixed(1) ?? '—' }} %MCR</p>
                     </div>
                     <div>
                       <p class="text-[var(--color-ink-muted)] mb-0.5">平均貨載</p>
-                      <p class="tabular-nums">{{ row.original.avgCargoOnBoardMt != null ? (row.original.avgCargoOnBoardMt / 1000).toFixed(0) + ' k MT' : '—' }}</p>
+                      <p class="tabular-nums">{{ v.avgCargoOnBoardMt != null ? (v.avgCargoOnBoardMt / 1000).toFixed(0) + ' k MT' : '—' }}</p>
                     </div>
                     <div>
-                      <p class="text-[var(--color-ink-muted)] mb-0.5">資料期間</p>
-                      <p class="tabular-nums">{{ row.original.dataSpanDays ?? '—' }} 天 / {{ row.original.totalVoyages }} 航次</p>
+                      <p class="text-[var(--color-ink-muted)] mb-0.5">平均吃水 (F/A)</p>
+                      <p class="tabular-nums">
+                        {{ v.avgForeDraftM?.toFixed(1) ?? '—' }} / {{ v.avgAftDraftM?.toFixed(1) ?? '—' }} m
+                      </p>
                     </div>
                     <div>
-                      <p class="text-[var(--color-ink-muted)] mb-0.5">養護事件數</p>
-                      <p class="tabular-nums">{{ row.original.totalMaintEvents ?? '—' }} 次</p>
+                      <p class="text-[var(--color-ink-muted)] mb-0.5">資料期間 / 航次數</p>
+                      <p class="tabular-nums">{{ v.dataSpanDays ?? '—' }} 天 / {{ v.totalVoyages }} 次</p>
                     </div>
                     <div>
                       <p class="text-[var(--color-ink-muted)] mb-0.5">最後養護類型</p>
-                      <p>{{ row.original.lastEventType ?? '—' }}</p>
+                      <p>{{ v.lastEventType ?? '—' }}</p>
                     </div>
                     <div>
                       <p class="text-[var(--color-ink-muted)] mb-0.5">上次清洗類型</p>
-                      <p>{{ row.original.lastHullCleanType ?? '—' }}</p>
+                      <p>{{ v.lastHullCleanType ?? '—' }}</p>
+                    </div>
+                    <div>
+                      <p class="text-[var(--color-ink-muted)] mb-0.5">全期 avg slip</p>
+                      <p class="tabular-nums">{{ v.avgSlipPct?.toFixed(2) ?? '—' }} %</p>
                     </div>
                   </div>
                 </div>
@@ -260,8 +358,9 @@ function trendColor(trend: number | null): string {
           </template>
         </tbody>
       </table>
+
       <StateDisplay
-        v-if="filtered.length === 0"
+        v-if="rows.length === 0"
         state="empty"
         empty-title="找不到符合條件的船舶"
         empty-hint="請調整篩選條件或關鍵字後再試一次。"

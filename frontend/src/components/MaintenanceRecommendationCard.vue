@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { MaintenanceRecommendation } from '@/types/fleet'
 import PanelTag from '@/components/PanelTag.vue'
-import { formatDate, formatUsd, CONFIDENCE_LABEL } from '@/utils/format'
+import { formatDay, formatUsd, CONFIDENCE_LABEL } from '@/utils/format'
 
 defineProps<{ data: MaintenanceRecommendation }>()
 </script>
@@ -11,7 +11,7 @@ defineProps<{ data: MaintenanceRecommendation }>()
     <PanelTag code="ADV-02" class="mb-2" />
     <p class="font-display text-sm mb-2">建議執行維修</p>
     <p class="font-data text-xl text-[var(--color-brass-amber)]">
-      {{ formatDate(data.windowStart) }} — {{ formatDate(data.windowEnd) }}
+      {{ formatDay(data.windowStartDay) }} — {{ formatDay(data.windowEndDay) }}
     </p>
     <div class="flex items-center gap-6 mt-3 text-sm">
       <div>

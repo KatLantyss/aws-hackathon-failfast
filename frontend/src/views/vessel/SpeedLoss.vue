@@ -6,7 +6,7 @@ import { fetchSpeedLossData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
-import { formatUsd } from '@/utils/format'
+import { formatUsd, formatDay } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
@@ -14,46 +14,43 @@ const { data, state } = useAsyncData(() => props.imo, fetchSpeedLossData)
 const chart = useChartTheme()
 
 // --- interactive controls ---------------------------------------------
-const dateFrom = ref('')
-const dateTo = ref('')
+// dayFrom/dayTo filter on the raw day-index (the dataset has no calendar date).
+const dayFrom = ref<number | null>(null)
+const dayTo = ref<number | null>(null)
 const maxBeaufort = ref(9)
 const onlyCalmSeas = ref(false)
 const showBallast = ref(true)
 const showLaden = ref(true)
 const compareLastCycle = ref(false)
-const xAxisMode = ref<'date' | 'daysSinceClean'>('date')
+const xAxisMode = ref<'day' | 'daysSinceClean'>('day')
 const chartReady = ref(false)
 
 watch(data, (v) => {
   if (v) {
-    dateFrom.value = v.reports[0]?.date ?? ''
-    dateTo.value = v.reports[v.reports.length - 1]?.date ?? ''
+    dayFrom.value = v.reports[0]?.day ?? null
+    dayTo.value = v.reports[v.reports.length - 1]?.day ?? null
     chartReady.value = false
     requestAnimationFrame(() => requestAnimationFrame(() => (chartReady.value = true)))
   }
 })
 
-function daysBetween(a: string, b: string) {
-  return Math.round((new Date(b + 'T00:00:00Z').getTime() - new Date(a + 'T00:00:00Z').getTime()) / 86400000)
-}
-
-const cleaningDates = computed(() => (data.value?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.date) ?? []).sort())
+const cleaningDays = computed(() => (data.value?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.day) ?? []).sort((a, b) => a - b))
 
 const currentCycleStart = computed(() => {
-  const dates = cleaningDates.value.filter((d) => d <= (dateTo.value || '9999'))
-  return dates.length ? dates[dates.length - 1] : data.value?.reports[0]?.date ?? ''
+  const days = cleaningDays.value.filter((d) => d <= (dayTo.value ?? Infinity))
+  return days.length ? days[days.length - 1] : data.value?.reports[0]?.day ?? 0
 })
 
 const previousCycleRange = computed(() => {
-  const dates = cleaningDates.value
-  const idx = dates.indexOf(currentCycleStart.value)
+  const days = cleaningDays.value
+  const idx = days.indexOf(currentCycleStart.value)
   if (idx <= 0) return null
-  return { start: dates[idx - 1], end: dates[idx] }
+  return { start: days[idx - 1], end: days[idx] }
 })
 
 function withinFilters(r: NoonReportEntry) {
-  if (dateFrom.value && r.date < dateFrom.value) return false
-  if (dateTo.value && r.date > dateTo.value) return false
+  if (dayFrom.value != null && r.day < dayFrom.value) return false
+  if (dayTo.value != null && r.day > dayTo.value) return false
   if (r.beaufort > maxBeaufort.value) return false
   if (onlyCalmSeas.value && r.beaufort > 3) return false
   if (r.loadCondition === 'ballast' && !showBallast.value) return false
@@ -64,7 +61,7 @@ function withinFilters(r: NoonReportEntry) {
 const filteredReports = computed(() => (data.value ? data.value.reports.filter(withinFilters) : []))
 
 function xValue(r: NoonReportEntry) {
-  return xAxisMode.value === 'date' ? r.date : daysBetween(currentCycleStart.value, r.date)
+  return xAxisMode.value === 'day' ? r.day : r.day - currentCycleStart.value
 }
 
 const scatterBallast = computed(() =>
@@ -90,19 +87,19 @@ function linearRegression(points: { x: number; y: number }[]) {
 
 const regressionForCurrentCycle = computed(() => {
   const points = filteredReports.value
-    .filter((r) => r.date >= currentCycleStart.value)
-    .map((r) => ({ x: daysBetween(currentCycleStart.value, r.date), y: r.speedLossPct }))
+    .filter((r) => r.day >= currentCycleStart.value)
+    .map((r) => ({ x: r.day - currentCycleStart.value, y: r.speedLossPct }))
   return linearRegression(points)
 })
 
 const regressionLine = computed(() => {
   const { slope, intercept } = regressionForCurrentCycle.value
-  const cyclePoints = filteredReports.value.filter((r) => r.date >= currentCycleStart.value)
+  const cyclePoints = filteredReports.value.filter((r) => r.day >= currentCycleStart.value)
   if (cyclePoints.length < 2) return []
-  const days = cyclePoints.map((r) => daysBetween(currentCycleStart.value, r.date))
+  const days = cyclePoints.map((r) => r.day - currentCycleStart.value)
   const minD = Math.min(...days)
   const maxD = Math.max(...days)
-  const toX = (d: number) => (xAxisMode.value === 'date' ? cyclePoints.find((r) => daysBetween(currentCycleStart.value, r.date) === d)?.date ?? d : d)
+  const toX = (d: number) => (xAxisMode.value === 'day' ? d + currentCycleStart.value : d)
   return [
     [toX(minD), slope * minD + intercept],
     [toX(maxD), slope * maxD + intercept],
@@ -114,8 +111,8 @@ const previousCycleSeries = computed(() => {
   if (!compareLastCycle.value || !previousCycleRange.value || !data.value) return []
   const { start, end } = previousCycleRange.value
   return data.value.reports
-    .filter((r) => r.date >= start && r.date < end)
-    .map((r) => [daysBetween(start, r.date), r.speedLossPct])
+    .filter((r) => r.day >= start && r.day < end)
+    .map((r) => [r.day - start, r.speedLossPct])
 })
 
 // --- side stats panel ---------------------------------------------------
@@ -125,14 +122,11 @@ const stats = computed(() => {
   const avgLoss = rows.reduce((s, r) => s + r.speedLossPct, 0) / rows.length
   const { slope } = regressionForCurrentCycle.value
   const growthPerMonth = slope * 30
-  const fuelPricePerMt = 620
-  const excessFuel = rows.reduce((s, r) => {
-    const baseline = r.fuelConsumptionMt / (1 + Math.max(r.speedLossPct, 0) / 100 * 1.8)
-    return s + Math.max(0, r.fuelConsumptionMt - baseline)
-  }, 0)
+  // Use pre-computed excess cost from fleet-summary DynamoDB (already USD/day)
+  const excessCostUsd = Math.round((props.vessel.excessFuelCostUsdMtd ?? 0) * rows.length)
   return {
     avgLoss,
-    excessCostUsd: Math.round(excessFuel * fuelPricePerMt),
+    excessCostUsd,
     growthPerMonth,
   }
 })
@@ -141,7 +135,7 @@ const suggestedWindow = computed(() => props.vessel.nextRecommendedWindow)
 
 // --- chart option ---------------------------------------------------
 const chartOption = computed(() => {
-  const isDateAxis = xAxisMode.value === 'date'
+  const isDayAxis = xAxisMode.value === 'day'
   const c = chart.value
   return {
     animation: false, // custom scan-sweep handled via chartReady reveal instead
@@ -159,16 +153,16 @@ const chartOption = computed(() => {
       formatter: (p: any) => {
         if (p.seriesName === 'Ballast' || p.seriesName === 'Laden') {
           const r: NoonReportEntry = p.data[2]
-          return `<b>${r.date}</b><br/>Speed Loss ${r.speedLossPct.toFixed(1)}%<br/>海況 BF${r.beaufort} · ${
+          return `<b>Day ${r.day}</b><br/>Speed Loss ${r.speedLossPct.toFixed(1)}%<br/>海況 BF${r.beaufort} · ${
             r.loadCondition === 'laden' ? '滿載' : '壓載'
-          }<br/>油耗 ${r.fuelConsumptionMt.toFixed(1)} MT/日${r.isAnomaly ? `<br/><span style="color:${c.signalRed}">⚠ ` + r.anomalyReason + '</span>' : ''}`
+          }<br/>油耗 ${r.fuelConsumptionMt.toFixed(1)} MT/日`
         }
         return `${p.seriesName}: ${Array.isArray(p.value) ? Number(p.value[1]).toFixed(2) : p.value}%`
       },
     },
     xAxis: {
-      type: isDateAxis ? 'time' : 'value',
-      name: isDateAxis ? '日期' : '距上次清洗天數',
+      type: 'value',
+      name: isDayAxis ? 'Day' : '距上次清洗天數',
       nameLocation: 'middle',
       nameGap: 30,
       nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 11 },
@@ -246,12 +240,12 @@ const chartOption = computed(() => {
           symbol: 'none',
           lineStyle: { color: c.brassAmber, type: 'solid', width: 1.2 },
           label: {
-            formatter: (p: any) => data.value?.events.find((e) => e.date === p.value)?.label ?? '',
+            formatter: (p: any) => data.value?.events.find((e) => e.day === p.value)?.label ?? '',
             fontFamily: 'IBM Plex Sans',
             fontSize: 10,
             rotate: 0,
           },
-          data: isDateAxis ? (data.value?.events ?? []).map((e) => ({ xAxis: e.date })) : [],
+          data: isDayAxis ? (data.value?.events ?? []).map((e) => ({ xAxis: e.day })) : [],
         },
       },
     ],
@@ -267,17 +261,17 @@ const chartOption = computed(() => {
       <label class="flex items-center gap-2">
         <span class="text-xs text-[var(--color-ink-slate)]/60">橫軸</span>
         <select v-model="xAxisMode" class="border rounded-[2px] px-2 py-1 text-xs">
-          <option value="date">時間</option>
+          <option value="day">Day 序號</option>
           <option value="daysSinceClean">距上次清洗天數</option>
         </select>
       </label>
       <label class="flex items-center gap-2">
-        <span class="text-xs text-[var(--color-ink-slate)]/60">起</span>
-        <input v-model="dateFrom" type="date" class="border rounded-[2px] px-2 py-1 font-data text-xs" />
+        <span class="text-xs text-[var(--color-ink-slate)]/60">起 (Day)</span>
+        <input v-model.number="dayFrom" type="number" class="border rounded-[2px] px-2 py-1 font-data text-xs w-20" />
       </label>
       <label class="flex items-center gap-2">
-        <span class="text-xs text-[var(--color-ink-slate)]/60">迄</span>
-        <input v-model="dateTo" type="date" class="border rounded-[2px] px-2 py-1 font-data text-xs" />
+        <span class="text-xs text-[var(--color-ink-slate)]/60">迄 (Day)</span>
+        <input v-model.number="dayTo" type="number" class="border rounded-[2px] px-2 py-1 font-data text-xs w-20" />
       </label>
       <label class="flex items-center gap-2">
         <input v-model="onlyCalmSeas" type="checkbox" class="accent-[var(--color-brass-amber)]" />
@@ -322,16 +316,33 @@ const chartOption = computed(() => {
           <PanelTag code="STAT-01" class="mb-2" />
           <dl class="flex flex-col gap-3 text-sm">
             <div>
-              <dt class="text-xs text-[var(--color-ink-slate)]/60">平均 Speed Loss</dt>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">篩選區間平均 Speed Loss</dt>
               <dd class="font-data text-xl">{{ stats.avgLoss.toFixed(2) }}%</dd>
             </div>
             <div>
-              <dt class="text-xs text-[var(--color-ink-slate)]/60">估算超額油耗成本（區間內）</dt>
-              <dd class="font-data text-xl text-[var(--color-signal-red)]">{{ formatUsd(stats.excessCostUsd) }}</dd>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">全期 avg slip（DynamoDB）</dt>
+              <dd class="font-data text-base">
+                {{ vessel.avgSlipPct != null ? vessel.avgSlipPct.toFixed(2) + '%' : '—' }}
+                <span class="text-xs text-[var(--color-ink-slate)]/50 ml-1">/ 近90天 {{ vessel.speedLossPct.toFixed(2) }}%</span>
+              </dd>
             </div>
             <div>
-              <dt class="text-xs text-[var(--color-ink-slate)]/60">污損增長速率</dt>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">超額燃油成本（USD/天）</dt>
+              <dd class="font-data text-xl text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">污損增長速率（回歸）</dt>
               <dd class="font-data text-xl">{{ stats.growthPerMonth.toFixed(2) }}%/月</dd>
+            </div>
+            <div v-if="vessel.avgConsumptionMt">
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">平均主機油耗</dt>
+              <dd class="font-data text-base">{{ vessel.avgConsumptionMt.toFixed(1) }} MT/天</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">距上次水下清洗</dt>
+              <dd class="font-data text-base"
+                :class="vessel.daysSinceHullClean > 730 ? 'text-[var(--color-signal-red)]' : vessel.daysSinceHullClean > 365 ? 'text-[var(--color-brass-amber)]' : ''"
+              >{{ vessel.daysSinceHullClean }} 天</dd>
             </div>
           </dl>
         </div>
@@ -340,11 +351,15 @@ const chartOption = computed(() => {
           <PanelTag code="REC-01" class="mb-2" />
           <p class="font-display text-sm mb-1">建議下次清洗窗口</p>
           <p class="font-data text-base text-[var(--color-brass-amber)]">
-            {{ suggestedWindow.start }} — {{ suggestedWindow.end }}
+            {{ formatDay(suggestedWindow.startDay) }} — {{ formatDay(suggestedWindow.endDay) }}
           </p>
           <p class="text-xs text-[var(--color-ink-slate)]/70 mt-2">
             污損增長速率{{ stats && stats.growthPerMonth > 0.5 ? '高於' : '接近' }}船隊平均，建議依此區間安排下次船體清洗。
           </p>
+          <div v-if="vessel.lastHullCleanType || vessel.lastEventType" class="mt-2 pt-2 border-t border-[var(--color-ink-slate)]/10 text-xs text-[var(--color-ink-slate)]/60 font-data">
+            <span v-if="vessel.lastHullCleanType">上次清洗：{{ vessel.lastHullCleanType }}</span>
+            <span v-if="vessel.lastEventType"> · 最後養護：{{ vessel.lastEventType }}</span>
+          </div>
         </div>
       </div>
     </div>

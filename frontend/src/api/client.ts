@@ -29,19 +29,39 @@ export interface ApiVesselDetail {
   voyage_range: { min: number; max: number }
 }
 
-export interface ApiSpeedLossPoint {
+export interface ApiSpeedLossIsoPoint {
   noon_day: number
   voyage: number
-  rpm: number
-  stw: number
-  ref_stw: number
-  speed_loss_kn: number
-  wind_scale: number
+  rpm: number | null
+  stw: number | null
+  ref_stw: number | null
+  speed_loss_kn: number | null
+  wind_scale: number | null
+}
+
+export interface ApiSpeedLossSlipPoint {
+  noon_day: number
+  voyage: number
+  slip_pct: number
+  wind_scale: number | null
+  hours_full_speed: number | null
 }
 
 export interface ApiSpeedLossResponse {
   vessel_id: string
-  speed_loss_data: ApiSpeedLossPoint[]
+  method: string
+  slip_summary: {
+    avg_slip_pct: number | null
+    valid_records: number
+    total_records: number
+  }
+  slip_timeline: ApiSpeedLossSlipPoint[]
+  iso_summary: {
+    avg_speed_loss_kn: number | null
+    baseline_records: number
+    calm_records: number
+  }
+  iso_timeline: ApiSpeedLossIsoPoint[]
 }
 
 export interface ApiMaintenanceEvent {
@@ -206,6 +226,41 @@ export interface ApiFleetSummary {
   per_vessel: ApiFleetSummaryVessel[]
 }
 
+// fetchRealFleetKpis() and fetchRealFleetVessels() (adapter.ts) both call this
+// independently, and views like FleetOverview.vue call both on mount — coalesce
+// concurrent calls so a single page load doesn't fire the request twice.
+let fleetSummaryInFlight: Promise<ApiFleetSummary> | null = null
+
 export function fetchApiFleetSummary(): Promise<ApiFleetSummary> {
-  return get('/api/v1/fleet/summary')
+  if (fleetSummaryInFlight) return fleetSummaryInFlight
+  fleetSummaryInFlight = get<ApiFleetSummary>('/api/v1/fleet/summary').finally(() => {
+    fleetSummaryInFlight = null
+  })
+  return fleetSummaryInFlight
+}
+
+// ─── Maintenance Recommendation ───────────────────────────────────────────────
+
+export interface ApiCostBenefitPoint {
+  deferral_days: number
+  projected_slip_pct: number
+  cumulative_excess_fuel_cost_usd: number
+}
+
+export interface ApiMaintenanceRecommendation {
+  vessel_id: string
+  days_since_maintenance: number
+  avg_me_slip_pct: number | null
+  avg_consumption_mt: number | null
+  degradation_rate_pct_per_day: number
+  fuel_price_usd_per_mt: number
+  recommendation: 'URGENT' | 'ROUTINE'
+  recommended_type: 'DD' | 'UWC'
+  reason: string
+  last_maintenance: { event_type: string | null; event_day: number } | null
+  curve: ApiCostBenefitPoint[]
+}
+
+export function fetchApiMaintenanceRecommendation(vesselId: string): Promise<ApiMaintenanceRecommendation> {
+  return get(`/api/v1/vessels/${vesselId}/maintenance-recommendation`)
 }

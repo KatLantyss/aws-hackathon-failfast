@@ -86,15 +86,15 @@ function findConfidence(cards: ChatCardSpec[]): 'high' | 'medium' | 'low' | null
   return null
 }
 
-function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fetchVesselData>>, lastHullCleaningDate: string | null): string {
+function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fetchVesselData>>, lastHullCleaningDay: number | null): string {
   if (!vessel) return '目前查無這艘船的資料。'
   switch (factType) {
     case 'last_hull_cleaning':
-      return lastHullCleaningDate ? `上次船體清洗日期為 ${lastHullCleaningDate}。` : `尚無船體清洗紀錄，最近一次坐塢為 ${vessel.lastDrydockDate}。`
+      return lastHullCleaningDay != null ? `上次船體清洗為 Day ${lastHullCleaningDay}。` : `尚無船體清洗紀錄，最近一次坐塢為 Day ${vessel.lastDrydockDay ?? '—'}。`
     case 'last_drydock':
-      return `上次坐塢日期為 ${vessel.lastDrydockDate}。`
+      return `上次坐塢為 Day ${vessel.lastDrydockDay ?? '—'}。`
     case 'next_drydock':
-      return `下次預計坐塢日期為 ${vessel.nextDrydockDue}。`
+      return `下次預計坐塢為 Day ${vessel.nextDrydockDueDay ?? '—'}。`
     case 'current_speed_loss':
       return `目前 Speed Loss 為 ${vessel.speedLossPct.toFixed(1)}%。`
     case 'fouling_grade':
@@ -102,7 +102,7 @@ function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fe
   }
 }
 
-/** Resolves a Claude-classified intent into a ChatTurn using only real mock/api.ts data — the LLM never supplies the final numbers. */
+/** Resolves a Claude-classified intent into a ChatTurn using only real backend data — the LLM never supplies the final numbers. */
 export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, previousTurn: ChatTurn | null): Promise<ChatTurn> {
   const userText = userTextRaw
 
@@ -187,7 +187,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
 
   if (nlu.intent === 'single_fact') {
     const [vessel, series] = await Promise.all([fetchVesselData(target.imo), fetchSpeedLossData(target.imo)])
-    const lastHullCleaning = series?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.date).sort().pop() ?? null
+    const lastHullCleaning = series?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.day).sort((a, b) => a - b).pop() ?? null
     const factType = nlu.factType ?? 'current_speed_loss'
     return {
       id: makeId(),
@@ -238,7 +238,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
     id: makeId(),
     userText,
     intent: 'vessel_overview',
-    replyText: `${vessel.name} 目前 Speed Loss ${vessel.speedLossPct.toFixed(1)}%，${comparison}，建議於 ${recommendation.windowStart} 至 ${recommendation.windowEnd} 安排水下清洗。`,
+    replyText: `${vessel.name} 目前 Speed Loss ${vessel.speedLossPct.toFixed(1)}%，${comparison}，建議於 Day ${recommendation.windowStartDay} 至 Day ${recommendation.windowEndDay} 安排水下清洗。`,
     cards,
     vesselImo: target.imo,
     vesselName: target.name,

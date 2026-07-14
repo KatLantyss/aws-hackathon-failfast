@@ -13,12 +13,6 @@ const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, fetchRecommendation)
 const chart = useChartTheme()
 
-const crossoverDay = computed(() => {
-  if (!data.value) return null
-  const point = data.value.curve.find((p) => p.cumulativeExcessFuelCostUsd >= p.opportunityCostUsd)
-  return point ?? null
-})
-
 const chartOption = computed(() => {
   if (!data.value) return {}
   const c = chart.value
@@ -57,24 +51,6 @@ const chartOption = computed(() => {
         lineStyle: { color: c.signalRed, width: 2 },
         data: curve.map((p) => [p.deferralDays, p.cumulativeExcessFuelCostUsd]),
       },
-      {
-        name: '維修/停租機會成本',
-        type: 'line',
-        showSymbol: false,
-        lineStyle: { color: c.fathomTeal, width: 2 },
-        data: curve.map((p) => [p.deferralDays, p.opportunityCostUsd]),
-      },
-      ...(crossoverDay.value
-        ? [
-            {
-              name: '建議時機',
-              type: 'scatter',
-              symbolSize: 10,
-              itemStyle: { color: c.brassAmber },
-              data: [[crossoverDay.value.deferralDays, crossoverDay.value.cumulativeExcessFuelCostUsd]],
-            },
-          ]
-        : []),
     ],
   }
 })

@@ -30,7 +30,9 @@ import {
   fetchApiFleetRanking,
   fetchApiFleetSummary,
   fetchApiNoonReports,
-  type ApiSpeedLossPoint,
+  fetchApiMaintenanceRecommendation,
+  type ApiSpeedLossIsoPoint,
+  type ApiSpeedLossSlipPoint,
   type ApiMaintenanceEvent,
   type ApiFleetRankingEntry,
   type ApiFleetSummaryVessel,
@@ -42,13 +44,6 @@ const W1_SHIPS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S21']
 const W2_SHIPS = ['S9', 'S10', 'S11', 'S12', 'S22', 'S23']
 const ALL_SHIPS = [...W1_SHIPS, ...W2_SHIPS]
 
-// Day 0 = 2020-01-01 (arbitrary baseline for display)
-const BASE_DATE = new Date('2020-01-01')
-function dayToDate(day: number): string {
-  const d = new Date(BASE_DATE)
-  d.setDate(d.getDate() + day)
-  return d.toISOString().slice(0, 10)
-}
 
 // Maintenance event type mapping
 const EVENT_TYPE_MAP: Record<string, SpeedLossEvent['type']> = {
@@ -102,6 +97,14 @@ export async function fetchRealFleetKpis(): Promise<FleetKpis> {
 
 export async function fetchRealVesselSummary(shipId: string): Promise<VesselSummary | null> {
   try {
+    // Use fleet/summary (single call, all fields pre-computed) instead of
+    // assembling from 3 separate API calls with many null fields.
+    const summary = await fetchApiFleetSummary()
+    const vessel = summary.per_vessel.find((v) => v.vessel_id === shipId)
+    if (vessel) {
+      return buildVesselSummaryFromSummary(vessel)
+    }
+    // Fallback: vessel not in fleet/summary (shouldn't happen for S1-S23)
     const [detail, ranking, maintResp] = await Promise.all([
       fetchApiVesselDetail(shipId),
       fetchApiFleetRanking(),
@@ -124,35 +127,58 @@ export async function fetchRealSpeedLoss(shipId: string): Promise<SpeedLossSerie
       fetchApiMaintenanceEvents(shipId),
     ])
 
-    const designSpeed = W1_SHIPS.includes(shipId) ? 22.5 : 21.0
-    const data = slResp.speed_loss_data
+    // Use iso_timeline (RPM-baseline calm-condition speed loss) as primary source.
+    // Fall back to slip_timeline if iso_timeline is empty.
+    const isoData = slResp.iso_timeline ?? []
+    const slipData = slResp.slip_timeline ?? []
 
-    const reports: NoonReportEntry[] = data.map((p) => ({
-      date: dayToDate(p.noon_day),
-      lat: 0,
-      lon: 0,
-      observedSpeedKt: p.stw,
-      correctedSpeedKt: p.ref_stw,
-      speedLossPct: p.ref_stw > 0 ? ((p.ref_stw - p.stw) / p.ref_stw) * 100 : 0,
-      fuelConsumptionMt: 0,
-      beaufort: p.wind_scale,
-      seaState: p.wind_scale,
-      draftFwd: 0,
-      draftAft: 0,
-      loadCondition: 'laden' as const,
-      isAnomaly: false,
-      anomalyReason: null,
-    }))
+    let reports: NoonReportEntry[]
+
+    if (isoData.length > 0) {
+      reports = isoData
+        .filter((p) => p.stw != null && p.ref_stw != null)
+        .map((p) => ({
+          day: p.noon_day,
+          lat: 0,
+          lon: 0,
+          observedSpeedKt: p.stw ?? 0,
+          correctedSpeedKt: p.ref_stw ?? 0,
+          speedLossPct: (p.ref_stw ?? 0) > 0
+            ? (((p.ref_stw ?? 0) - (p.stw ?? 0)) / (p.ref_stw ?? 1)) * 100
+            : 0,
+          fuelConsumptionMt: 0,
+          beaufort: p.wind_scale ?? 0,
+          seaState: p.wind_scale ?? 0,
+          draftFwd: 0,
+          draftAft: 0,
+          loadCondition: 'laden' as const,
+        }))
+    } else {
+      // Fallback: use slip_timeline (FULL_SPD_STW_SLIP values directly)
+      reports = slipData.map((p) => ({
+        day: p.noon_day,
+        lat: 0,
+        lon: 0,
+        observedSpeedKt: 0,
+        correctedSpeedKt: 0,
+        speedLossPct: p.slip_pct,
+        fuelConsumptionMt: 0,
+        beaufort: p.wind_scale ?? 0,
+        seaState: p.wind_scale ?? 0,
+        draftFwd: 0,
+        draftAft: 0,
+        loadCondition: 'laden' as const,
+      }))
+    }
 
     const events: SpeedLossEvent[] = maintResp.events.map((e) => ({
-      date: dayToDate(e.event_day),
+      day: e.event_day,
       type: EVENT_TYPE_MAP[e.event_type] || 'hull_cleaning',
       label: EVENT_LABEL_MAP[e.event_type] || e.event_type,
     }))
 
     return {
       vessel: { imo: shipId, name: shipId, type: W1_SHIPS.includes(shipId) ? 'W1' : 'W2' },
-      cleanBaseline: { speedKnots: designSpeed, source: 'post_maintenance' },
       events,
       reports,
     }
@@ -162,97 +188,147 @@ export async function fetchRealSpeedLoss(shipId: string): Promise<SpeedLossSerie
 }
 
 export async function fetchRealMaintenanceRecommendation(shipId: string): Promise<MaintenanceRecommendation | null> {
-  const vessel = await fetchRealVesselSummary(shipId)
-  if (!vessel) return null
+  try {
+    const [rec, vessel] = await Promise.all([
+      fetchApiMaintenanceRecommendation(shipId),
+      fetchRealVesselSummary(shipId),
+    ])
+    if (!vessel) return null
 
-  const rate = vessel.degradationRatePctPerDay
-  const speedLossPct = vessel.speedLossPct
-  const avgConsumption = vessel.designSpeedKt > 21 ? 155 : 92 // rough baseline
-  const fuelPrice = 620
-  const cleaningCost = 30000
+    const curve: CostBenefitPoint[] = rec.curve.map((p) => ({
+      deferralDays: p.deferral_days,
+      cumulativeExcessFuelCostUsd: p.cumulative_excess_fuel_cost_usd,
+    }))
 
-  const curve: CostBenefitPoint[] = Array.from({ length: 91 }, (_, i) => {
-    const projectedLoss = Math.max(0, speedLossPct + rate * i)
-    const excessFuelPerDay = avgConsumption * (projectedLoss / 100) * 1.8
+    // Confidence reflects how much real data backs the degradation rate —
+    // not a guess: it needs a full prior 90-day window to compute a rate at all.
+    const confidence: Confidence =
+      rec.avg_consumption_mt == null ? 'low' : rec.degradation_rate_pct_per_day !== 0 ? 'high' : 'medium'
+
+    // "Savings" = the real cumulative excess fuel cost projected over the
+    // curve's full deferral window if maintenance is NOT done now.
+    const estimatedSavingUsd = curve.length ? curve[curve.length - 1].cumulativeExcessFuelCostUsd : 0
+
     return {
-      deferralDays: i,
-      cumulativeExcessFuelCostUsd: Math.round(excessFuelPerDay * fuelPrice * i * 0.55),
-      opportunityCostUsd: Math.round(cleaningCost * (1 - i / 220)),
+      action: rec.recommended_type === 'DD' ? 'drydock' : 'hull_cleaning',
+      windowStartDay: vessel.nextRecommendedWindow.startDay,
+      windowEndDay: vessel.nextRecommendedWindow.endDay,
+      estimatedSavingUsd,
+      confidence,
+      reasoning: `${rec.reason}（Avg ME Slip ${rec.avg_me_slip_pct?.toFixed(1) ?? '—'}%，距上次養護 ${rec.days_since_maintenance} 天）。`,
+      dataLimitations: rec.avg_consumption_mt == null
+        ? ['此船油耗資料不足，無法計算可靠的成本效益曲線，以下為概略估計。']
+        : [],
+      curve,
     }
-  })
-
-  const confidence: Confidence = 'medium'
-
-  return {
-    action: 'hull_cleaning',
-    windowStart: vessel.nextRecommendedWindow.start,
-    windowEnd: vessel.nextRecommendedWindow.end,
-    estimatedSavingUsd: Math.round(curve[60]?.cumulativeExcessFuelCostUsd || 50000),
-    confidence,
-    reasoning: `Speed Loss ${speedLossPct.toFixed(1)}%，衰退速率 ${(rate * 30).toFixed(2)}%/月。`,
-    dataLimitations: [],
-    curve,
+  } catch {
+    return null
   }
 }
 
 export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<MaintenanceCorrelationResponse | null> {
   try {
-    const [slResp, maintResp] = await Promise.all([
+    const [slResp, maintResp, detail] = await Promise.all([
       fetchApiSpeedLoss(shipId),
       fetchApiMaintenanceEvents(shipId),
+      fetchApiVesselDetail(shipId),
     ])
+    // This vessel's own real average fuel consumption (mean ME_CONSUMPTION) —
+    // not a guessed per-class baseline.
+    const avgConsumptionMt = detail.avg_consumption ?? null
 
-    const data = slResp.speed_loss_data
-    const designSpeed = W1_SHIPS.includes(shipId) ? 22.5 : 21.0
+    const isoData = slResp.iso_timeline ?? []
+    const slipData = slResp.slip_timeline ?? []
 
-    // Build timeline — speed_loss_kn → speed_loss_pct
-    const timeline: PerformanceTimelinePoint[] = data
-      .filter((_, i) => i % 3 === 0)
+    // Use iso_timeline if available, otherwise slip_timeline
+    const useIso = isoData.length > 0
+    const primaryData = useIso ? isoData : slipData
+
+    // Build timeline (sample every 5th point to reduce density)
+    const timeline: PerformanceTimelinePoint[] = primaryData
+      .filter((_, i) => i % 5 === 0)
       .map((p) => {
-        const slPct = p.ref_stw > 0 ? ((p.ref_stw - p.stw) / p.ref_stw) * 100 : 0
+        let slPct: number
+        if (useIso) {
+          const iso = p as typeof isoData[0]
+          slPct = (iso.ref_stw ?? 0) > 0
+            ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
+            : 0
+        } else {
+          slPct = (p as typeof slipData[0]).slip_pct
+        }
         return {
-          date: dayToDate(p.noon_day),
-          fuelConsumptionMt: 0, // not available from speed loss endpoint
+          day: p.noon_day,
+          fuelConsumptionMt: 0, // Speed loss API doesn't have fuel data
           speedLossPct: Number(slPct.toFixed(2)),
         }
       })
 
     // Compute before/after for each maintenance event
-    const WINDOW_DAYS = 10
+    const WINDOW_DAYS = 14
     const effectivenessEvents: MaintenanceEffectivenessEvent[] = []
 
     for (const maint of maintResp.events) {
-      const before = data.filter((p) => p.noon_day >= maint.event_day - WINDOW_DAYS && p.noon_day < maint.event_day)
-      const after = data.filter((p) => p.noon_day > maint.event_day && p.noon_day <= maint.event_day + WINDOW_DAYS)
+      const before = primaryData.filter(
+        (p) => p.noon_day >= maint.event_day - WINDOW_DAYS && p.noon_day < maint.event_day
+      )
+      const after = primaryData.filter(
+        (p) => p.noon_day > maint.event_day && p.noon_day <= maint.event_day + WINDOW_DAYS
+      )
 
-      if (before.length < 2 || after.length < 2) continue
+      if (before.length < 3 || after.length < 3 || avgConsumptionMt == null) continue
 
-      const slBefore = before.reduce((s, p) => s + (p.ref_stw > 0 ? ((p.ref_stw - p.stw) / p.ref_stw) * 100 : 0), 0) / before.length
-      const slAfter = after.reduce((s, p) => s + (p.ref_stw > 0 ? ((p.ref_stw - p.stw) / p.ref_stw) * 100 : 0), 0) / after.length
+      let slBefore: number, slAfter: number
 
-      // Use theoretical cubic-law for fuel estimation
-      const fuelBefore = designSpeed > 21 ? 155 * (1 + Math.max(0, slBefore) / 100 * 1.8) : 92 * (1 + Math.max(0, slBefore) / 100 * 1.8)
-      const fuelAfter = designSpeed > 21 ? 155 * (1 + Math.max(0, slAfter) / 100 * 1.8) : 92 * (1 + Math.max(0, slAfter) / 100 * 1.8)
+      if (useIso) {
+        slBefore = before
+          .map((p) => {
+            const iso = p as typeof isoData[0]
+            return (iso.ref_stw ?? 0) > 0
+              ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
+              : 0
+          })
+          .reduce((s, v) => s + v, 0) / before.length
+
+        slAfter = after
+          .map((p) => {
+            const iso = p as typeof isoData[0]
+            return (iso.ref_stw ?? 0) > 0
+              ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
+              : 0
+          })
+          .reduce((s, v) => s + v, 0) / after.length
+      } else {
+        slBefore = before.reduce((s, p) => s + (p as typeof slipData[0]).slip_pct, 0) / before.length
+        slAfter = after.reduce((s, p) => s + (p as typeof slipData[0]).slip_pct, 0) / after.length
+      }
+
+      // Theoretical fuel impact (cubic-law approximation: 1% slip ≈ 1.8% fuel increase),
+      // scaled off this vessel's own real average consumption.
+      const fuelBefore = avgConsumptionMt * (1 + Math.max(0, slBefore) / 100 * 1.8)
+      const fuelAfter = avgConsumptionMt * (1 + Math.max(0, slAfter) / 100 * 1.8)
       const fuelImprovementMt = fuelBefore - fuelAfter
       const improvementPct = fuelBefore > 0 ? (fuelImprovementMt / fuelBefore) * 100 : 0
 
       const eventType = CORRELATION_TYPE_MAP[maint.event_type] || 'Hull Cleaning'
 
+      // Anomaly detection
       let isAnomaly = false
       let anomalyReason: string | null = null
       if (maint.event_type === 'DD' && improvementPct < 2) {
         isAnomaly = true
-        anomalyReason = '進塢後 Speed Loss 改善不明顯，建議確認塗裝品質。'
-      } else if (maint.event_type === 'PP' && improvementPct > 15) {
+        anomalyReason = '進塢後 Speed Loss 改善不明顯 (<2%)，建議確認塗裝品質。'
+      } else if (maint.event_type === 'PP' && improvementPct > 18) {
         isAnomaly = true
-        anomalyReason = '螺旋槳拋光改善幅度異常高，可能有其他因素。'
+        anomalyReason = '螺旋槳拋光改善幅度異常高 (>18%)，可能有其他因素或量測誤差。'
+      } else if (improvementPct < 0) {
+        isAnomaly = true
+        anomalyReason = '養護後效能反而下降，可能施工品質不佳或環境因素影響。'
       }
-
-      const costEstimate: Record<string, number> = { DD: 500000, 'UWC+PP': 45000, UWC: 35000, 'UWI+PP': 25000, PP: 15000, UWI: 8000 }
 
       effectivenessEvents.push({
         id: `${shipId}-${maint.event_type}-${maint.event_day}`,
-        date: dayToDate(maint.event_day),
+        day: maint.event_day,
         type: eventType,
         port: '—',
         fuelBefore: Number(fuelBefore.toFixed(2)),
@@ -263,7 +339,6 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
         speedLossAfter: Number(slAfter.toFixed(2)),
         isAnomaly,
         anomalyReason,
-        costUsd: costEstimate[maint.event_type] || 30000,
       })
     }
 
@@ -279,35 +354,57 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
     for (const [type, events] of typeMap) {
       const avgImprovement = events.reduce((s, e) => s + e.improvementPct, 0) / events.length
       const avgFuelImprovement = events.reduce((s, e) => s + e.fuelImprovementMt, 0) / events.length
-      const avgCost = events.reduce((s, e) => s + e.costUsd, 0) / events.length
-      const costPerPct = avgImprovement > 0 ? avgCost / avgImprovement : Infinity
       let rating = 1
       if (avgImprovement >= 10) rating = 5
       else if (avgImprovement >= 6) rating = 4
       else if (avgImprovement >= 3) rating = 3
       else if (avgImprovement >= 1) rating = 2
-      typeEffectiveness.push({ type, eventCount: events.length, avgFuelImprovementMt: Number(avgFuelImprovement.toFixed(2)), avgImprovementPct: Number(avgImprovement.toFixed(1)), avgCostUsd: Math.round(avgCost), costPerPctImprovement: Number(costPerPct.toFixed(0)), rating })
+      typeEffectiveness.push({ type, eventCount: events.length, avgFuelImprovementMt: Number(avgFuelImprovement.toFixed(2)), avgImprovementPct: Number(avgImprovement.toFixed(1)), rating })
     }
     typeEffectiveness.sort((a, b) => b.avgImprovementPct - a.avgImprovementPct)
 
     // Summary
     const totalFuelSavedMt = effectivenessEvents.reduce((s, e) => s + Math.max(0, e.fuelImprovementMt), 0)
-    const totalCost = effectivenessEvents.reduce((s, e) => s + e.costUsd, 0)
     const avgImprovementPct = effectivenessEvents.length > 0
       ? effectivenessEvents.reduce((s, e) => s + e.improvementPct, 0) / effectivenessEvents.length
       : 0
     const bestEvent = effectivenessEvents.reduce((b, e) => (e.improvementPct > (b?.improvementPct ?? -Infinity) ? e : b), effectivenessEvents[0])
     const worstEvent = effectivenessEvents.reduce((w, e) => (e.improvementPct < (w?.improvementPct ?? Infinity) ? e : w), effectivenessEvents[0])
 
-    // Optimal timing
-    const lastPoint = data[data.length - 1]
-    const currentSL = lastPoint && lastPoint.ref_stw > 0 ? ((lastPoint.ref_stw - lastPoint.stw) / lastPoint.ref_stw) * 100 : 0
-    const recent = data.slice(-60)
-    const rate = recent.length >= 2
-      ? (((recent[recent.length - 1].ref_stw > 0 ? ((recent[recent.length - 1].ref_stw - recent[recent.length - 1].stw) / recent[recent.length - 1].ref_stw) * 100 : 0)
-        - (recent[0].ref_stw > 0 ? ((recent[0].ref_stw - recent[0].stw) / recent[0].ref_stw) * 100 : 0))
-        / (recent[recent.length - 1].noon_day - recent[0].noon_day))
-      : 0
+    // Optimal timing — compute from most recent data
+    const lastPoint = primaryData[primaryData.length - 1]
+    let currentSL: number
+
+    if (useIso) {
+      const iso = lastPoint as typeof isoData[0]
+      currentSL = (iso?.ref_stw ?? 0) > 0
+        ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
+        : 0
+    } else {
+      currentSL = (lastPoint as typeof slipData[0])?.slip_pct ?? 0
+    }
+
+    // Degradation rate (last 60 points)
+    const recent = primaryData.slice(-60)
+    let rate = 0
+    if (recent.length >= 2) {
+      let slStart: number, slEnd: number
+      if (useIso) {
+        const isoStart = recent[0] as typeof isoData[0]
+        const isoEnd = recent[recent.length - 1] as typeof isoData[0]
+        slStart = (isoStart.ref_stw ?? 0) > 0
+          ? (((isoStart.ref_stw ?? 0) - (isoStart.stw ?? 0)) / (isoStart.ref_stw ?? 1)) * 100
+          : 0
+        slEnd = (isoEnd.ref_stw ?? 0) > 0
+          ? (((isoEnd.ref_stw ?? 0) - (isoEnd.stw ?? 0)) / (isoEnd.ref_stw ?? 1)) * 100
+          : 0
+      } else {
+        slStart = (recent[0] as typeof slipData[0]).slip_pct
+        slEnd = (recent[recent.length - 1] as typeof slipData[0]).slip_pct
+      }
+      const daySpan = recent[recent.length - 1].noon_day - recent[0].noon_day
+      rate = daySpan > 0 ? (slEnd - slStart) / daySpan : 0
+    }
 
     const optimalThreshold = 8
     const daysUntilThreshold = rate > 0 ? Math.max(0, Math.round((optimalThreshold - currentSL) / rate)) : 90
@@ -315,12 +412,15 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
     if (currentSL >= 12) recommendedAction = 'Hull Cleaning + PP'
     else if (currentSL < 4) recommendedAction = 'Propeller Polishing'
 
-    const baselineFuel = W1_SHIPS.includes(shipId) ? 155 : 92
     const fuelPrice = 620
-    const excessFuelCostPerDayUsd = Math.round(baselineFuel * (Math.max(0, currentSL) / 100) * 1.8 * fuelPrice)
-    const projectedSavingsUsd = Math.round(baselineFuel * ((typeEffectiveness[0]?.avgImprovementPct || 5) / 100) * 1.8 * fuelPrice * 90)
+    const excessFuelCostPerDayUsd = avgConsumptionMt != null
+      ? Math.round(avgConsumptionMt * (Math.max(0, currentSL) / 100) * 1.8 * fuelPrice)
+      : 0
+    const projectedSavingsUsd = avgConsumptionMt != null
+      ? Math.round(avgConsumptionMt * ((typeEffectiveness[0]?.avgImprovementPct ?? 0) / 100) * 1.8 * fuelPrice * 90)
+      : 0
 
-    const lastDay = lastPoint?.noon_day || 1800
+    const lastDay = lastPoint?.noon_day ?? 1800
     let urgency: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW'
     if (currentSL >= 10 || daysUntilThreshold <= 7) urgency = 'HIGH'
     else if (currentSL >= 6 || daysUntilThreshold <= 30) urgency = 'MEDIUM'
@@ -336,8 +436,8 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
       degradationRatePerDay: Number(rate.toFixed(4)),
       optimalThresholdPct: optimalThreshold,
       daysUntilThreshold,
-      windowStart: dayToDate(lastDay + daysUntilThreshold),
-      windowEnd: dayToDate(lastDay + daysUntilThreshold + 14),
+      windowStartDay: lastDay + daysUntilThreshold,
+      windowEndDay: lastDay + daysUntilThreshold + 14,
       excessFuelCostPerDayUsd,
       projectedSavingsUsd,
       reasoning,
@@ -356,7 +456,6 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
         bestEventId: bestEvent?.id ?? '',
         worstEventId: worstEvent?.id ?? '',
         anomalyCount: effectivenessEvents.filter((e) => e.isAnomaly).length,
-        totalMaintenanceCostUsd: totalCost,
         totalFuelSavedMt: Number(totalFuelSavedMt.toFixed(1)),
       },
     }
@@ -374,7 +473,6 @@ function buildVesselSummary(
   lastMaintDay?: number,
   totalRecords?: number,
 ): VesselSummary {
-  const designSpeed = W1_SHIPS.includes(shipId) ? 22.5 : 21.0
   const speedLossPct = rank?.recent_90d_slip_pct ?? rank?.avg_slip_pct ?? 0
   const rate = rank ? rank.slip_trend / 90 : 0 // slip_trend is 90-day diff
 
@@ -387,8 +485,8 @@ function buildVesselSummary(
   const maintDay = lastMaintDay || 0
   const daysSinceClean = maintDay > 0 ? Math.max(0, APPROX_CURRENT_DAY - maintDay) : 0
 
-  const baselineFuel = W1_SHIPS.includes(shipId) ? 155 : 92
-  const excessFuelCostUsdMtd = Math.round(Math.max(0, speedLossPct) * baselineFuel * 0.018 * 620)
+  // Uses this vessel's own real avg consumption, not a guessed per-class baseline.
+  const excessFuelCostUsdMtd = avgConsumption ? Math.round(Math.max(0, speedLossPct) * avgConsumption * 0.018 * 620) : 0
 
   return {
     imo: shipId,
@@ -399,7 +497,6 @@ function buildVesselSummary(
     builtYear: 0,
     flag: '',
     mainEngineModel: '',
-    designSpeedKt: designSpeed,
     tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線（跨太平洋）',
     status: 'underway',
     currentPort: null,
@@ -427,8 +524,8 @@ function buildVesselSummary(
     dataDayMin: null,
     dataDayMax: null,
     dataSpanDays: null,
-    lastDrydockDate: maintDay > 0 ? dayToDate(maintDay) : '—',
-    nextDrydockDue: maintDay > 0 ? dayToDate(maintDay + 900) : '—',
+    lastDrydockDay: maintDay > 0 ? maintDay : null,
+    nextDrydockDueDay: maintDay > 0 ? maintDay + 900 : null,
     daysSinceHullClean: daysSinceClean,
     daysSinceMaintenance: daysSinceClean,
     daysSincePropPolish: null,
@@ -440,8 +537,8 @@ function buildVesselSummary(
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd,
     nextRecommendedWindow: {
-      start: dayToDate(APPROX_CURRENT_DAY + 30),
-      end: dayToDate(APPROX_CURRENT_DAY + 60),
+      startDay: APPROX_CURRENT_DAY + 30,
+      endDay: APPROX_CURRENT_DAY + 60,
     },
   }
 }
@@ -451,7 +548,6 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
   const shipId = v.vessel_id
   const speedLossPct = v.recent_90d_slip_pct ?? v.avg_slip_pct ?? 0
   const rate = v.slip_trend != null ? v.slip_trend / 90 : 0
-  const designSpeed = W1_SHIPS.includes(shipId) ? 22.5 : 21.0
 
   const urgency: Urgency = v.urgency as Urgency
   const foulingGrade: FoulingGrade =
@@ -463,11 +559,10 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
   const maintenanceStatus: import('@/types/fleet').MaintenanceStatus =
     urgency === 'HIGH' ? 'needs_request' : 'normal'
 
-  // Convert day numbers to ISO dates
-  const lastHullCleanDate = v.last_hull_clean_day != null ? dayToDate(v.last_hull_clean_day) : '—'
-  const nextDrydockDue = v.last_hull_clean_day != null ? dayToDate(v.last_hull_clean_day + 900) : '—'
-  const windowStart = v.day_range_max != null ? dayToDate(v.day_range_max + 30) : '—'
-  const windowEnd   = v.day_range_max != null ? dayToDate(v.day_range_max + 60) : '—'
+  const lastHullCleanDay = v.last_hull_clean_day ?? null
+  const nextDrydockDueDay = v.last_hull_clean_day != null ? v.last_hull_clean_day + 900 : null
+  const windowStartDay = v.day_range_max != null ? v.day_range_max + 30 : 0
+  const windowEndDay   = v.day_range_max != null ? v.day_range_max + 60 : 0
 
   return {
     imo: shipId,
@@ -478,7 +573,6 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     builtYear: 0,
     flag: '',
     mainEngineModel: '',
-    designSpeedKt: designSpeed,
     tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線（跨太平洋）',
     status: 'underway',
     currentPort: null,
@@ -518,8 +612,8 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     dataDayMax: v.day_range_max,
     dataSpanDays: v.data_span_days,
     // maintenance
-    lastDrydockDate: lastHullCleanDate,
-    nextDrydockDue,
+    lastDrydockDay: lastHullCleanDay,
+    nextDrydockDueDay,
     daysSinceHullClean,
     daysSinceMaintenance: v.days_since_maintenance,
     daysSincePropPolish: v.days_since_prop_polish,
@@ -531,6 +625,6 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     // cost
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd: v.excess_fuel_cost_usd_per_day,
-    nextRecommendedWindow: { start: windowStart, end: windowEnd },
+    nextRecommendedWindow: { startDay: windowStartDay, endDay: windowEndDay },
   }
 }

@@ -27,7 +27,6 @@ export interface VesselSummary {
   builtYear: number
   flag: string
   mainEngineModel: string
-  designSpeedKt: number
   tradeRoute: string
   status: VesselStatus
   currentPort: string | null
@@ -61,8 +60,8 @@ export interface VesselSummary {
   dataDayMax: number | null
   dataSpanDays: number | null
   // maintenance
-  lastDrydockDate: string
-  nextDrydockDue: string
+  lastDrydockDay: number | null
+  nextDrydockDueDay: number | null
   daysSinceHullClean: number
   daysSinceMaintenance: number | null
   daysSincePropPolish: number | null
@@ -74,7 +73,7 @@ export interface VesselSummary {
   // cost
   degradationRatePctPerDay: number
   excessFuelCostUsdMtd: number
-  nextRecommendedWindow: { start: string; end: string }
+  nextRecommendedWindow: { startDay: number; endDay: number }
 }
 
 export interface PortCallEntry {
@@ -84,7 +83,7 @@ export interface PortCallEntry {
 }
 
 export interface NoonReportEntry {
-  date: string
+  day: number
   lat: number
   lon: number
   observedSpeedKt: number
@@ -96,41 +95,16 @@ export interface NoonReportEntry {
   draftFwd: number
   draftAft: number
   loadCondition: LoadCondition
-  isAnomaly: boolean
-  anomalyReason: string | null
-}
-
-export interface HullSectionFouling {
-  section: 'bow' | 'forward-flat' | 'aft-flat' | 'stern' | 'port-side' | 'starboard-side' | 'propeller' | 'rudder'
-  grade: FoulingGrade
-}
-
-export interface InspectionEntry {
-  id: string
-  date: string
-  port: string
-  surveyor: string
-  method: string
-  foulingGrade: FoulingGrade
-  biofoulingScore: number
-  paintBreakdownPct: number
-  propellerCondition: string
-  cleaningRecommended: string
-  notes: string
-  hullSections: HullSectionFouling[]
-  photoCount: number
-  reportUrl: string | null
 }
 
 export interface SpeedLossEvent {
-  date: string
+  day: number
   type: 'hull_cleaning' | 'propeller_polishing' | 'drydock'
   label: string
 }
 
 export interface SpeedLossSeries {
   vessel: { imo: string; name: string; type: string }
-  cleanBaseline: { speedKnots: number; source: string }
   events: SpeedLossEvent[]
   reports: NoonReportEntry[]
 }
@@ -160,13 +134,12 @@ export interface FuelAttributionResponse {
 export interface CostBenefitPoint {
   deferralDays: number
   cumulativeExcessFuelCostUsd: number
-  opportunityCostUsd: number
 }
 
 export interface MaintenanceRecommendation {
   action: string
-  windowStart: string
-  windowEnd: string
+  windowStartDay: number
+  windowEndDay: number
   estimatedSavingUsd: number
   confidence: Confidence
   reasoning: string
@@ -188,7 +161,7 @@ export type MaintenanceEventType = 'Hull Cleaning' | 'Propeller Polishing' | 'Hu
 
 export interface MaintenanceEffectivenessEvent {
   id: string
-  date: string
+  day: number
   type: MaintenanceEventType
   port: string
   /** Average daily fuel consumption (MT/day) in the 5-day window BEFORE maintenance */
@@ -207,8 +180,6 @@ export interface MaintenanceEffectivenessEvent {
   isAnomaly: boolean
   /** Anomaly explanation if applicable */
   anomalyReason: string | null
-  /** Cost of this maintenance event (USD) */
-  costUsd: number
 }
 
 export interface MaintenanceTypeEffectiveness {
@@ -219,16 +190,12 @@ export interface MaintenanceTypeEffectiveness {
   avgFuelImprovementMt: number
   /** Average improvement percentage */
   avgImprovementPct: number
-  /** Average cost per event */
-  avgCostUsd: number
-  /** Cost per 1% improvement */
-  costPerPctImprovement: number
   /** Star rating 1-5 */
   rating: number
 }
 
 export interface PerformanceTimelinePoint {
-  date: string
+  day: number
   fuelConsumptionMt: number
   speedLossPct: number
 }
@@ -250,7 +217,6 @@ export interface MaintenanceCorrelationResponse {
     bestEventId: string
     worstEventId: string
     anomalyCount: number
-    totalMaintenanceCostUsd: number
     totalFuelSavedMt: number
   }
 }
@@ -266,9 +232,9 @@ export interface OptimalMaintenanceTiming {
   optimalThresholdPct: number
   /** Estimated days until threshold */
   daysUntilThreshold: number
-  /** Recommended date window */
-  windowStart: string
-  windowEnd: string
+  /** Recommended window, as day-index (raw dataset has no calendar date) */
+  windowStartDay: number
+  windowEndDay: number
   /** If deferred: projected extra fuel cost per day (USD) */
   excessFuelCostPerDayUsd: number
   /** Total projected savings from timely intervention (USD) */

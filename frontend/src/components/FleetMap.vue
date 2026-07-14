@@ -81,7 +81,7 @@ function popupHtml(v: VesselSummary): string {
       <div style="font-family: var(--font-mono); font-size:12px; color: var(--color-ink-muted); display:flex; flex-direction:column; gap:2px;">
         <span>SPD ${v.position.speedKt.toFixed(1)} kt · HDG ${v.position.headingDeg}°</span>
         <span>${STATUS_LABEL[v.status]}${v.currentPort ? ' · ' + v.currentPort : ''}</span>
-        <span>下次建議維修: ${v.nextRecommendedWindow.start}</span>
+        <span>下次建議維修: Day ${v.nextRecommendedWindow.startDay}</span>
       </div>
     </div>
   `

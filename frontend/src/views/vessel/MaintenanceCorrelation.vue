@@ -7,7 +7,7 @@ import { useAsyncData } from '@/composables/useAsyncData'
 import { useChartTheme } from '@/composables/useChartTheme'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
-import { formatDate, formatUsd, formatNumber, formatPct } from '@/utils/format'
+import { formatDay, formatUsd, formatNumber, formatPct } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, fetchCorrelation)
@@ -41,10 +41,10 @@ const timelineOption = computed(() => {
   const c = chart.value
   const timeline = data.value.timeline
   const events = data.value.events
-  const dateList = timeline.map((t) => t.date)
+  const dayList = timeline.map((t) => t.day)
 
   const markLines = events.map((evt) => ({
-    xAxis: evt.date,
+    xAxis: evt.day,
     label: {
       formatter: evt.type === 'Hull Cleaning + PP' ? 'HC+PP' : evt.type === 'Hull Cleaning' ? 'HC' : 'PP',
       fontSize: 10,
@@ -61,17 +61,17 @@ const timelineOption = computed(() => {
   const normalEventPoints = events
     .filter((evt) => !evt.isAnomaly)
     .map((evt) => {
-      const idx = dateList.findIndex((d) => d >= evt.date)
+      const idx = dayList.findIndex((d) => d >= evt.day)
       const fuel = idx >= 0 ? timeline[idx].fuelConsumptionMt : evt.fuelBefore
-      return { value: [evt.date, fuel], evt }
+      return { value: [evt.day, fuel], evt }
     })
 
   const anomalyEventPoints = events
     .filter((evt) => evt.isAnomaly)
     .map((evt) => {
-      const idx = dateList.findIndex((d) => d >= evt.date)
+      const idx = dayList.findIndex((d) => d >= evt.day)
       const fuel = idx >= 0 ? timeline[idx].fuelConsumptionMt : evt.fuelBefore
-      return { value: [evt.date, fuel], evt }
+      return { value: [evt.day, fuel], evt }
     })
 
   return {
@@ -88,9 +88,10 @@ const timelineOption = computed(() => {
       { type: 'slider', start: 0, end: 100, height: 20, bottom: 8 },
     ],
     xAxis: {
-      type: 'category',
-      data: dateList,
-      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, interval: 'auto' },
+      type: 'value',
+      name: 'Day',
+      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 10 },
+      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate },
       axisLine: { lineStyle: { color: c.axisLine } },
     },
     yAxis: [
@@ -116,7 +117,7 @@ const timelineOption = computed(() => {
         showSymbol: false,
         lineStyle: { color: c.fathomTeal, width: 1.5 },
         areaStyle: { color: c.fathomTeal, opacity: 0.08 },
-        data: timeline.map((t) => t.fuelConsumptionMt),
+        data: timeline.map((t) => [t.day, t.fuelConsumptionMt]),
         markLine: { symbol: 'none', data: markLines, silent: true },
       },
       {
@@ -125,7 +126,7 @@ const timelineOption = computed(() => {
         yAxisIndex: 1,
         showSymbol: false,
         lineStyle: { color: c.signalRed, width: 1.5 },
-        data: timeline.map((t) => t.speedLossPct),
+        data: timeline.map((t) => [t.day, t.speedLossPct]),
       },
       {
         name: '養護事件 ✅',
@@ -138,7 +139,7 @@ const timelineOption = computed(() => {
           formatter: (params: { dataIndex: number }) => {
             const evt = normalEventPoints[params.dataIndex]?.evt
             if (!evt) return ''
-            return `<b>${evt.type}</b><br/>日期: ${evt.date}<br/>港口: ${evt.port}<br/>改善: ${evt.improvementPct}%<br/>油耗: ${evt.fuelBefore.toFixed(1)} → ${evt.fuelAfter.toFixed(1)} MT`
+            return `<b>${evt.type}</b><br/>Day ${evt.day}<br/>港口: ${evt.port}<br/>改善: ${evt.improvementPct}%<br/>油耗: ${evt.fuelBefore.toFixed(1)} → ${evt.fuelAfter.toFixed(1)} MT`
           },
         },
       },
@@ -153,7 +154,7 @@ const timelineOption = computed(() => {
           formatter: (params: { dataIndex: number }) => {
             const evt = anomalyEventPoints[params.dataIndex]?.evt
             if (!evt) return ''
-            return `<b>⚠ ${evt.type} (異常)</b><br/>日期: ${evt.date}<br/>港口: ${evt.port}<br/>改善: ${evt.improvementPct}%<br/>原因: ${evt.anomalyReason}`
+            return `<b>⚠ ${evt.type} (異常)</b><br/>Day ${evt.day}<br/>港口: ${evt.port}<br/>改善: ${evt.improvementPct}%<br/>原因: ${evt.anomalyReason}`
           },
         },
       },
@@ -166,7 +167,6 @@ const costBenefitOption = computed(() => {
   if (!advisorData.value) return {}
   const c = chart.value
   const curve = advisorData.value.curve
-  const crossover = curve.find((p) => p.cumulativeExcessFuelCostUsd >= p.opportunityCostUsd)
 
   return {
     animation: false,
@@ -202,22 +202,6 @@ const costBenefitOption = computed(() => {
         lineStyle: { color: c.signalRed, width: 2 },
         data: curve.map((p) => [p.deferralDays, p.cumulativeExcessFuelCostUsd]),
       },
-      {
-        name: '維修/停租機會成本',
-        type: 'line',
-        showSymbol: false,
-        lineStyle: { color: c.fathomTeal, width: 2 },
-        data: curve.map((p) => [p.deferralDays, p.opportunityCostUsd]),
-      },
-      ...(crossover
-        ? [{
-            name: '最佳介入點',
-            type: 'scatter',
-            symbolSize: 12,
-            itemStyle: { color: c.brassAmber },
-            data: [[crossover.deferralDays, crossover.cumulativeExcessFuelCostUsd]],
-          }]
-        : []),
     ],
   }
 })
@@ -239,7 +223,7 @@ const barOption = computed(() => {
       formatter: (params: { name: string; value: number }[]) => {
         const t = types.find((t) => t.type === params[0].name)
         if (!t) return ''
-        return `<b>${t.type}</b><br/>平均改善: ${t.avgImprovementPct}%<br/>節省油耗: ${t.avgFuelImprovementMt} MT/day<br/>平均成本: ${formatUsd(t.avgCostUsd)}<br/>每%成本: ${formatUsd(t.costPerPctImprovement)}<br/>事件數: ${t.eventCount}`
+        return `<b>${t.type}</b><br/>平均改善: ${t.avgImprovementPct}%<br/>節省油耗: ${t.avgFuelImprovementMt} MT/day<br/>事件數: ${t.eventCount}`
       },
     },
     xAxis: {
@@ -374,9 +358,9 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
           <p class="font-data text-2xl text-[var(--color-fathom-teal)]">{{ formatPct(data.summary.avgImprovementPct) }}</p>
         </div>
         <div class="panel p-3 text-center">
-          <p class="text-xs text-[var(--color-ink-slate)]/60">累計節省</p>
-          <p class="font-data text-xl text-[var(--color-fathom-teal)]">{{ formatUsd(Math.round(data.summary.totalFuelSavedMt * 620)) }}</p>
-          <p class="text-xs text-[var(--color-ink-slate)]/50">{{ formatNumber(data.summary.totalFuelSavedMt, 1) }} MT</p>
+          <p class="text-xs text-[var(--color-ink-slate)]/60">目前超額成本</p>
+          <p class="font-data text-xl text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}<span class="text-xs">/天</span></p>
+          <p class="text-xs text-[var(--color-ink-slate)]/50">來自 DynamoDB</p>
         </div>
         <div class="panel p-3 text-center">
           <p class="text-xs text-[var(--color-ink-slate)]/60">異常事件</p>
@@ -428,7 +412,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
             <div>
               <p class="text-xs text-[var(--color-ink-slate)]/60">建議窗口</p>
               <p class="font-data text-base" :style="{ color: urgencyColor(data.optimalTiming.urgency) }">
-                {{ formatDate(data.optimalTiming.windowStart) }} — {{ formatDate(data.optimalTiming.windowEnd) }}
+                {{ formatDay(data.optimalTiming.windowStartDay) }} — {{ formatDay(data.optimalTiming.windowEndDay) }}
               </p>
             </div>
             <div>
@@ -474,7 +458,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
             >
               <div>
                 <p class="font-data text-sm">{{ t.type }}</p>
-                <p class="text-xs text-[var(--color-ink-slate)]/60">{{ t.eventCount }} 次 · {{ formatUsd(t.avgCostUsd) }}/次</p>
+                <p class="text-xs text-[var(--color-ink-slate)]/60">{{ t.eventCount }} 次</p>
               </div>
               <div class="text-right">
                 <p class="text-sm">{{ stars(t.rating) }}</p>
@@ -493,14 +477,13 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-[var(--color-ink-slate)]/20 text-left text-xs text-[var(--color-ink-slate)]/60">
-                <th class="py-2 pr-3">日期</th>
+                <th class="py-2 pr-3">Day</th>
                 <th class="py-2 pr-3">類型</th>
                 <th class="py-2 pr-3">港口</th>
                 <th class="py-2 pr-3 text-right">前</th>
                 <th class="py-2 pr-3 text-right">後</th>
                 <th class="py-2 pr-3 text-right">改善</th>
                 <th class="py-2 pr-3 text-right">SL 前→後</th>
-                <th class="py-2 pr-3 text-right">成本</th>
                 <th class="py-2 pr-3 text-center">狀態</th>
               </tr>
             </thead>
@@ -511,7 +494,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 class="border-b border-[var(--color-ink-slate)]/8 hover:bg-[var(--color-ink-slate)]/5 transition-colors"
                 :class="{ 'bg-[var(--color-signal-red)]/5': evt.isAnomaly }"
               >
-                <td class="py-2 pr-3 font-data whitespace-nowrap">{{ formatDate(evt.date) }}</td>
+                <td class="py-2 pr-3 font-data whitespace-nowrap">{{ formatDay(evt.day) }}</td>
                 <td class="py-2 pr-3 whitespace-nowrap">{{ evt.type }}</td>
                 <td class="py-2 pr-3 whitespace-nowrap">{{ evt.port }}</td>
                 <td class="py-2 pr-3 text-right font-data">{{ formatNumber(evt.fuelBefore, 1) }}</td>
@@ -522,7 +505,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 <td class="py-2 pr-3 text-right font-data whitespace-nowrap">
                   {{ formatNumber(evt.speedLossBefore, 1) }}% → {{ formatNumber(evt.speedLossAfter, 1) }}%
                 </td>
-                <td class="py-2 pr-3 text-right font-data">{{ formatUsd(evt.costUsd) }}</td>
                 <td class="py-2 pr-3 text-center">
                   <span v-if="evt.isAnomaly" class="text-[var(--color-signal-red)]" :title="evt.anomalyReason ?? ''">❌</span>
                   <span v-else class="text-[var(--color-fathom-teal)]">✅</span>
@@ -541,7 +523,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
           <li v-for="evt in data.events.filter((e) => e.isAnomaly)" :key="evt.id" class="flex gap-2">
             <span>⚠️</span>
             <span>
-              <strong>{{ formatDate(evt.date) }}</strong> {{ evt.type }} @ {{ evt.port }}：{{ evt.anomalyReason }}
+              <strong>{{ formatDay(evt.day) }}</strong> {{ evt.type }} @ {{ evt.port }}：{{ evt.anomalyReason }}
             </span>
           </li>
         </ul>
@@ -554,9 +536,15 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         <div class="text-sm text-[var(--color-ink-slate)]/80 flex flex-col gap-2">
           <p>
             本船共記錄 <strong>{{ data.summary.totalEvents }}</strong> 次養護事件，
-            平均改善效能 <strong>{{ formatPct(data.summary.avgImprovementPct) }}</strong>，
-            累計節省 <strong>{{ formatUsd(Math.round(data.summary.totalFuelSavedMt * 620)) }}</strong>
-            （{{ formatNumber(data.summary.totalFuelSavedMt, 1) }} MT VLSFO 當量，以 $620/MT 計）。
+            平均改善效能 <strong>{{ formatPct(data.summary.avgImprovementPct) }}</strong>。
+          </p>
+          <p v-if="vessel.avgSlipPct != null">
+            全期平均 Slip <strong>{{ vessel.avgSlipPct.toFixed(2) }}%</strong>，
+            近 90 天 <strong>{{ vessel.speedLossPct.toFixed(2) }}%</strong>
+            <template v-if="vessel.slipTrend != null">
+              （趨勢 {{ vessel.slipTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.slipTrend).toFixed(2) }}%）
+            </template>。
+            目前超額燃油成本 <strong class="text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}/天</strong>。
           </p>
           <p v-if="data.typeEffectiveness.length > 0">
             效果最佳：<strong>{{ data.typeEffectiveness[0].type }}</strong>
@@ -565,10 +553,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
           <p v-if="data.typeEffectiveness.length > 1">
             效果有限：<strong>{{ data.typeEffectiveness[data.typeEffectiveness.length - 1].type }}</strong>
             （{{ formatPct(data.typeEffectiveness[data.typeEffectiveness.length - 1].avgImprovementPct) }}）→ 適合輕微污損日常維護。
-          </p>
-          <p>
-            維修總投入 <strong>{{ formatUsd(data.summary.totalMaintenanceCostUsd) }}</strong>，
-            ROI = {{ ((data.summary.totalFuelSavedMt * 620) / (data.summary.totalMaintenanceCostUsd || 1) * 100).toFixed(0) }}%。
           </p>
         </div>
       </div>

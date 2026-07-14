@@ -93,8 +93,6 @@ W1_SHIPS      = {'S1','S2','S3','S4','S5','S6','S7','S8','S21'}
 W2_SHIPS      = {'S9','S10','S11','S12','S22','S23'}
 
 FUEL_PRICE_USD_MT  = 620   # USD per MT
-BASELINE_MT_DAY_W1 = 155   # W1 baseline daily consumption MT
-BASELINE_MT_DAY_W2 = 92    # W2 baseline daily consumption MT
 
 # Event type classification (from README)
 HULL_CLEAN_TYPES  = {'DD', 'UWC', 'UWC+PP'}           # hull physically cleaned
@@ -254,8 +252,12 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         urgency = 'LOW'
 
     # ── Excess fuel cost per day ───────────────────────────────────────────
-    baseline = BASELINE_MT_DAY_W1 if vessel_id in W1_SHIPS else BASELINE_MT_DAY_W2
-    excess_fuel_cost_usd_per_day = round(baseline * (max(0.0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
+    # Uses this vessel's own real avg_consumption (mean ME_CONSUMPTION) as the
+    # baseline, not a guessed per-class constant.
+    excess_fuel_cost_usd_per_day = (
+        round(avg_consumption * (max(0.0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
+        if avg_consumption is not None else None
+    )
 
     # ── Position ───────────────────────────────────────────────────────────
     pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0, 'heading_deg': 0})

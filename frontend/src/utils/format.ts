@@ -6,11 +6,14 @@ export function formatNumber(value: number, digits = 1): string {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits }).format(value)
 }
 
-export function formatDate(dateStr: string): string {
-  if (!dateStr || dateStr === '—') return '—'
-  const d = new Date(dateStr + 'T00:00:00Z')
-  if (isNaN(d.getTime())) return '—'
-  return d.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'UTC' })
+/**
+ * The dataset has no real calendar date — only a sequential day-index
+ * (NOON_UTC / event_day, 0-based). Show that honestly as "Day N" rather
+ * than inventing a calendar date off an arbitrary anchor.
+ */
+export function formatDay(day: number | null | undefined): string {
+  if (day == null) return '—'
+  return `Day ${Math.round(day)}`
 }
 
 export function formatPct(value: number, digits = 1): string {

@@ -586,10 +586,45 @@ def get_maintenance_recommendation(vessel_id, event):
     if not rows:
         return err(404, f'Vessel {vessel_id} not found')
 
+    rows_sorted = sorted(rows, key=lambda x: safe_float(x.get('NOON_UTC'), 0))
+
     # Last 90 days of data (last 90 noon_day records)
-    recent = sorted(rows, key=lambda x: safe_float(x.get('NOON_UTC'), 0))[-90:]
+    recent = rows_sorted[-90:]
     slips  = [safe_float(r.get('ME_SLIP')) for r in recent if r.get('ME_SLIP')]
     avg_slip = round(mean(slips), 2) if slips else None
+
+    # Prior 90-day window, same recent-vs-prior methodology as slip_trend in
+    # build_fleet_summary.py, to get a real degradation rate (not a guess).
+    prior = rows_sorted[-180:-90] if len(rows_sorted) > 90 else []
+    prior_slips = [safe_float(r.get('ME_SLIP')) for r in prior if r.get('ME_SLIP')]
+    avg_prior_slip = round(mean(prior_slips), 2) if prior_slips else None
+    degradation_rate_pct_per_day = (
+        round((avg_slip - avg_prior_slip) / 90, 5)
+        if avg_slip is not None and avg_prior_slip is not None else 0.0
+    )
+
+    # Real average fuel consumption for this vessel (MT/day). Combined with the
+    # same baseline*slip%*1.8*FUEL_PRICE methodology used in
+    # build_fleet_summary.py for excess_fuel_cost_usd_per_day, this projects a
+    # cumulative excess-fuel-cost curve if maintenance is deferred — no
+    # per-event cleaning/opportunity cost is included since that data doesn't
+    # exist anywhere in the dataset.
+    cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in recent if r.get('ME_CONSUMPTION')]
+    avg_consumption_mt = round(mean(cons_list), 2) if cons_list else None
+
+    FUEL_PRICE = 620
+    curve = []
+    if avg_slip is not None and avg_consumption_mt is not None:
+        cumulative = 0.0
+        for d in range(91):
+            projected_slip = max(0.0, avg_slip + degradation_rate_pct_per_day * d)
+            excess_per_day = avg_consumption_mt * (projected_slip / 100) * 1.8 * FUEL_PRICE
+            cumulative += excess_per_day
+            curve.append({
+                'deferral_days':                   d,
+                'projected_slip_pct':               round(projected_slip, 2),
+                'cumulative_excess_fuel_cost_usd':  round(cumulative, 2),
+            })
 
     # Last maintenance
     all_maint = sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0))
@@ -602,12 +637,15 @@ def get_maintenance_recommendation(vessel_id, event):
     urgent = (avg_slip and avg_slip > 10) or days_since > 365
 
     return resp(200, {
-        'vessel_id':              vessel_id,
-        'days_since_maintenance': round(days_since),
-        'avg_me_slip_pct':        avg_slip,
-        'recommendation':         'URGENT' if urgent else 'ROUTINE',
-        'recommended_type':       'DD' if days_since > 730 else 'UWC',
-        'reason':                 (
+        'vessel_id':                     vessel_id,
+        'days_since_maintenance':        round(days_since),
+        'avg_me_slip_pct':               avg_slip,
+        'avg_consumption_mt':            avg_consumption_mt,
+        'degradation_rate_pct_per_day':  degradation_rate_pct_per_day,
+        'fuel_price_usd_per_mt':         FUEL_PRICE,
+        'recommendation':                'URGENT' if urgent else 'ROUTINE',
+        'recommended_type':              'DD' if days_since > 730 else 'UWC',
+        'reason':                        (
             'High ME slip indicates hull/propeller fouling' if avg_slip and avg_slip > 10
             else f'Scheduled maintenance due ({round(days_since)} days since last event)'
         ),
@@ -615,6 +653,7 @@ def get_maintenance_recommendation(vessel_id, event):
             'event_type': last_m.get('event_type') if last_m else None,
             'event_day':  last_day,
         },
+        'curve': curve,
     })
 
 
@@ -777,9 +816,13 @@ def get_fleet_summary(event):
             slip_val   = recent_90d or avg_slip or 0
             urgency    = ('HIGH'   if (slip_val >= 10 or (days_since and days_since > 365)) else
                           'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
-            baseline   = 155 if vid in W1_SHIPS_SET else 92
-            excess_per_day = round(baseline * (slip_val / 100) * 1.8 * FUEL_PRICE, 2)
             cons_list  = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
+            avg_consumption = round(mean(cons_list), 2) if cons_list else None
+            # Uses this vessel's own real avg consumption, not a guessed per-class constant.
+            excess_per_day = (
+                round(avg_consumption * (slip_val / 100) * 1.8 * FUEL_PRICE, 2)
+                if avg_consumption is not None else None
+            )
             return {
                 'vessel_id':               vid,
                 'type':                    'training' if vid in TRAIN_VESSELS else 'prediction',
@@ -787,7 +830,7 @@ def get_fleet_summary(event):
                 'avg_slip_pct':            avg_slip,
                 'recent_90d_slip_pct':     recent_90d,
                 'slip_trend':              None,
-                'avg_consumption_mt':      round(mean(cons_list), 2) if cons_list else None,
+                'avg_consumption_mt':      avg_consumption,
                 'urgency':                 urgency,
                 'days_since_maintenance':  days_since,
                 'days_since_hull_clean':   days_since_hull,
@@ -817,7 +860,7 @@ def get_fleet_summary(event):
     training  = [v for v in per_vessel if v['type'] == 'training']
     slip_vals = [v['avg_slip_pct'] for v in training if v['avg_slip_pct'] is not None]
     pending   = [v for v in per_vessel if v['urgency'] != 'LOW']
-    total_excess = sum(v['excess_fuel_cost_usd_per_day'] for v in per_vessel)
+    total_excess = sum(v['excess_fuel_cost_usd_per_day'] or 0 for v in per_vessel)
     worst = max(training, key=lambda v: v['avg_slip_pct'] or 0) if training else None
 
     result = resp(200, {

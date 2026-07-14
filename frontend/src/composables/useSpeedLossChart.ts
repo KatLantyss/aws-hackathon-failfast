@@ -29,14 +29,13 @@ export function useSpeedLossChart(
   return computed(() => {
     const c = chart.value
     const rows = reports.value
-    const t0 = rows[0] ? new Date(rows[0].date).getTime() : 0
-    const points = rows.map((r) => ({ x: (new Date(r.date).getTime() - t0) / 86400000, y: r.speedLossPct }))
+    const points = rows.map((r) => ({ x: r.day, y: r.speedLossPct }))
     const { slope, intercept } = linearRegression(points)
     const trendLine =
       points.length >= 2
         ? [
-            [rows[0].date, intercept],
-            [rows[rows.length - 1].date, slope * points[points.length - 1].x + intercept],
+            [rows[0].day, intercept],
+            [rows[rows.length - 1].day, slope * points[points.length - 1].x + intercept],
           ]
         : []
 
@@ -47,10 +46,10 @@ export function useSpeedLossChart(
         trigger: 'item',
         backgroundColor: c.marineNavy,
         textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 11 },
-        formatter: (p: any) => `${p.value[0]}<br/>Speed Loss ${Number(p.value[1]).toFixed(1)}%`,
+        formatter: (p: any) => `Day ${p.value[0]}<br/>Speed Loss ${Number(p.value[1]).toFixed(1)}%`,
       },
       xAxis: {
-        type: 'time',
+        type: 'value',
         axisLabel: { show: false },
         axisLine: { lineStyle: { color: c.axisLine } },
         splitLine: { show: false },
@@ -66,7 +65,7 @@ export function useSpeedLossChart(
           type: 'scatter',
           symbolSize: 5,
           itemStyle: { color: c.brassAmber, opacity: 0.8 },
-          data: rows.map((r) => [r.date, r.speedLossPct]),
+          data: rows.map((r) => [r.day, r.speedLossPct]),
         },
         {
           name: '污損趨勢擬合',
@@ -84,7 +83,7 @@ export function useSpeedLossChart(
             symbol: 'none',
             lineStyle: { color: c.fathomTeal, type: 'solid' as const, width: 1 },
             label: { show: false },
-            data: events.value.map((e) => ({ xAxis: e.date })),
+            data: events.value.map((e) => ({ xAxis: e.day })),
           },
         },
       ],

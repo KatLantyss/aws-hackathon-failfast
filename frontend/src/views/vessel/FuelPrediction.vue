@@ -14,7 +14,7 @@ const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const chart = useChartTheme()
 
 const form = reactive({
-  speedKn: props.vessel.designSpeedKt - 1,
+  speedKn: (props.vessel.avgSpeedKn ?? 15) - 1,
   draftFwd: 14,
   draftAft: 14,
   cargoOnBoard: 80000,

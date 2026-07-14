@@ -6,7 +6,7 @@
 //
 // Field names are kept snake_case / vessel_id (not imo) to make it obvious
 // at a glance which values are raw backend data vs. frontend-adapted
-// (src/mock/api.ts does the adaptation into src/types/fleet.ts shapes).
+// (src/api/adapter.ts does the adaptation into src/types/fleet.ts shapes).
 
 const BASE_URL = (import.meta.env?.VITE_BACKEND_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 

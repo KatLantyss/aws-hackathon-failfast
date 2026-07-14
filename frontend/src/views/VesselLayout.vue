@@ -42,7 +42,7 @@ const tabs = computed(() => [
           </h1>
         </div>
         <span class="inline-flex items-center gap-2 font-data text-sm text-[var(--color-ink-slate)]/60">
-          {{ vessel.type }} · 設計航速 {{ vessel.designSpeedKt }} kt
+          {{ vessel.type }}
         </span>
       </div>
 

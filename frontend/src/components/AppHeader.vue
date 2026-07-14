@@ -127,14 +127,6 @@ watch(
           </svg>
         </button>
 
-        <div class="hidden lg:flex items-center gap-2.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5">
-          <span class="relative flex h-2 w-2" aria-hidden="true">
-            <span class="absolute inline-flex h-full w-full rounded-full bg-[var(--color-fathom-teal)] opacity-60 animate-ping" />
-            <span class="relative inline-flex h-2 w-2 rounded-full bg-[var(--color-fathom-teal)]" />
-          </span>
-          <span class="font-mono text-[11px] tracking-[0.18em] text-[var(--color-on-navy)]/75">SYSTEM NOMINAL</span>
-        </div>
-
         <!-- Mobile menu toggle -->
         <button
           type="button"

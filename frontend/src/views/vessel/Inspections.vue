@@ -5,17 +5,9 @@ import { getMaintenanceEvents } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
-import { formatDate } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, getMaintenanceEvents)
-
-const BASE_DATE = new Date('2020-01-01')
-function dayToDate(day: number): string {
-  const d = new Date(BASE_DATE)
-  d.setDate(d.getDate() + Math.round(day))
-  return d.toISOString().slice(0, 10)
-}
 
 const expandedDay = ref<number | null>(null)
 function toggle(day: number) {
@@ -42,7 +34,10 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
 
 <template>
   <div class="panel p-4 flex flex-col gap-3">
-    <PanelTag code="UWI-01" />
+    <div class="flex items-center gap-2">
+      <PanelTag code="UWI-01" />
+      <span v-if="data" class="text-xs text-[var(--color-ink-slate)]/50 font-data">共 {{ data.total.toLocaleString() }} 筆</span>
+    </div>
     <StateDisplay
       v-if="state !== 'success'"
       :state="state === 'error' ? 'error' : state === 'empty' ? 'empty' : 'loading'"
@@ -65,7 +60,7 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
           <div class="flex-1">
             <p class="font-display text-sm">{{ EVENT_TYPE_LABELS[evt.event_type] ?? evt.event_type }}</p>
             <p class="font-data text-xs text-[var(--color-ink-slate)]/60 mt-0.5">
-              Day {{ evt.event_day }} · {{ formatDate(dayToDate(evt.event_day)) }}
+              Day {{ evt.event_day }}
             </p>
           </div>
           <span class="font-data text-xs text-[var(--color-ink-slate)]/50 shrink-0">

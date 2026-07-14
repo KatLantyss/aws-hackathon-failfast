@@ -19,7 +19,7 @@ const option = computed(() => {
     grid: { left: 36, right: 12, top: 28, bottom: 24 },
     legend: { top: 0, textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 10, color: c.inkSlate } },
     tooltip: { trigger: 'axis', backgroundColor: c.marineNavy, textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 11 } },
-    xAxis: { type: 'time', axisLabel: { show: false }, splitLine: { show: false } },
+    xAxis: { type: 'value', axisLabel: { show: false }, splitLine: { show: false } },
     yAxis: {
       type: 'value',
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 9, color: c.inkSlate, formatter: '{value}%' },
@@ -31,14 +31,14 @@ const option = computed(() => {
         type: 'line',
         showSymbol: false,
         lineStyle: { color: c.brassAmber, width: 1.5 },
-        data: props.a.series.reports.map((r) => [r.date, r.speedLossPct]),
+        data: props.a.series.reports.map((r) => [r.day, r.speedLossPct]),
       },
       {
         name: props.b.vessel.name,
         type: 'line',
         showSymbol: false,
         lineStyle: { color: c.fathomTeal, width: 1.5 },
-        data: props.b.series.reports.map((r) => [r.date, r.speedLossPct]),
+        data: props.b.series.reports.map((r) => [r.day, r.speedLossPct]),
       },
     ],
   }
