@@ -9,7 +9,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from '@tanstack/vue-table'
-import { fetchFleetVessels } from '@/mock/api'
+import { fetchVessels } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import FathometerGauge from '@/components/FathometerGauge.vue'
@@ -17,7 +17,7 @@ import type { VesselSummary } from '@/types/fleet'
 import { formatDate, STATUS_LABEL, STATUS_COLOR, speedLossColor } from '@/utils/format'
 
 const router = useRouter()
-const { data: vessels, state } = useAsyncData(() => true, fetchFleetVessels)
+const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
 
 const typeFilter = ref('all')
 const statusFilter = ref('all')
@@ -41,18 +41,17 @@ const filtered = computed<VesselSummary[]>(() => {
 })
 
 const columns: ColumnDef<VesselSummary>[] = [
-  { accessorKey: 'name', header: '船名' },
-  { accessorKey: 'imo', header: 'IMO' },
+  { accessorKey: 'name', header: '船舶代號' },
   { accessorKey: 'type', header: '船型' },
-  {
-    id: 'age',
-    header: '船齡',
-    accessorFn: (row) => new Date().getFullYear() - row.builtYear,
-  },
   { accessorKey: 'speedLossPct', header: 'Speed Loss %' },
   {
+    id: 'daysSinceClean',
+    header: '距上次養護 (天)',
+    accessorFn: (row) => row.daysSinceHullClean,
+  },
+  {
     id: 'lastClean',
-    header: '上次坐塢日',
+    header: '上次養護日',
     accessorFn: (row) => row.lastDrydockDate,
   },
   {
@@ -162,9 +161,7 @@ function goToVessel(imo: string) {
                 </button>
               </td>
               <td class="px-3 py-3 font-display text-[15px] tracking-wide">{{ row.original.name }}</td>
-              <td class="px-3 py-3 font-data text-[var(--color-ink-muted)]">{{ row.original.imo }}</td>
               <td class="px-3 py-3">{{ row.original.type }}</td>
-              <td class="px-3 py-3 font-data text-right tabular-nums">{{ new Date().getFullYear() - row.original.builtYear }}</td>
               <td class="px-3 py-3 text-right">
                 <span
                   class="font-data font-bold tabular-nums px-1.5 py-0.5 rounded-[3px]"
@@ -176,6 +173,7 @@ function goToVessel(imo: string) {
                   {{ row.original.speedLossPct.toFixed(1) }}%
                 </span>
               </td>
+              <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">{{ row.original.daysSinceHullClean }}</td>
               <td class="px-3 py-3 font-data text-[var(--color-ink-muted)]">{{ formatDate(row.original.lastDrydockDate) }}</td>
               <td class="px-3 py-3 font-data text-[var(--color-ink-muted)]">
                 {{ formatDate(row.original.nextRecommendedWindow.start) }} – {{ formatDate(row.original.nextRecommendedWindow.end) }}

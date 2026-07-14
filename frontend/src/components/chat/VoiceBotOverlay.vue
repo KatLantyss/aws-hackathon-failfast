@@ -225,7 +225,7 @@ async function handleSubmit(text: string) {
                     <button
                       type="button"
                       class="text-[10px] font-display uppercase tracking-wide px-2 py-1 rounded-[2px] border border-[var(--color-fathom-teal)]/50 text-[var(--color-fathom-teal)] hover:bg-[var(--color-fathom-teal)]/10 transition-colors"
-                      @click="viewFullPage(`/vessels/${card.vessel.imo}/maintenance-advisor`)"
+                      @click="viewFullPage(`/vessels/${card.vessel.imo}/maintenance-correlation`)"
                     >
                       查看完整頁面
                     </button>

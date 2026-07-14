@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watchEffect } from 'vue'
+import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { useRouter } from 'vue-router'
-import { fetchFleetVessels, fetchNoonReportSeries } from '@/mock/api'
-import type { NoonReportEntry } from '@/types/fleet'
+import { fetchVessels } from '@/composables/useDataSource'
+import { getSeriesForVessel } from '@/mock/noonReports'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -11,7 +11,7 @@ import { formatUsd, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 
 const router = useRouter()
-const { data: vessels, state } = useAsyncData(() => true, fetchFleetVessels)
+const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
 const chart = useChartTheme()
 
 const sortKey = ref<'speedLossPct' | 'excessFuelCostUsdMtd' | 'urgency'>('speedLossPct')
@@ -26,22 +26,13 @@ const ranked = computed(() => {
   })
 })
 
-// Per-vessel noon-report series for the overlay chart, fetched once the
-// fleet list resolves (real backend data, not the old synthetic generator).
-const seriesByVessel = ref<Map<string, NoonReportEntry[]>>(new Map())
-watchEffect(async () => {
-  if (!vessels.value) return
-  const entries = await Promise.all(vessels.value.map(async (v) => [v.imo, await fetchNoonReportSeries(v.imo)] as const))
-  seriesByVessel.value = new Map(entries)
-})
-
 const overlayOption = computed(() => {
   if (!vessels.value) return {}
   const c = chart.value
   const colors = [c.brassAmber, c.fathomTeal, c.signalRed, c.inkSlate, '#8FA6B2']
   const series = vessels.value.map((v, i) => {
-    const reports = seriesByVessel.value.get(v.imo) ?? []
-    const points = reports.slice(-180).map((r) => [r.date, r.speedLossPct])
+    const s = getSeriesForVessel(v.imo)
+    const points = (s?.reports ?? []).slice(-180).map((r) => [r.date, r.speedLossPct])
     return {
       name: v.name,
       type: 'line' as const,

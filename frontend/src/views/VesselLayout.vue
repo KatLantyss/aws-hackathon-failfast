@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
-import { fetchVessel } from '@/mock/api'
+import { fetchVesselData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import { STATUS_LABEL, STATUS_COLOR } from '@/utils/format'
@@ -9,16 +9,15 @@ import { STATUS_LABEL, STATUS_COLOR } from '@/utils/format'
 const props = defineProps<{ imo: string }>()
 const route = useRoute()
 
-const { data: vessel, state } = useAsyncData(() => props.imo, fetchVessel)
+const { data: vessel, state } = useAsyncData(() => props.imo, fetchVesselData)
 
 const tabs = computed(() => [
   { to: `/vessels/${props.imo}/overview`, label: '總覽', name: 'vessel-overview' },
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
   { to: `/vessels/${props.imo}/inspections`, label: '水下檢查', name: 'vessel-inspections' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
-  { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
   { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因', name: 'vessel-fuel-attribution' },
-  { to: `/vessels/${props.imo}/maintenance-advisor`, label: '維修建議', name: 'vessel-maintenance-advisor' },
+  { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析', name: 'vessel-maintenance-correlation' },
 ])
 </script>
 

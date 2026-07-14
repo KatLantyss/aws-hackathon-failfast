@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary, NoonReportEntry } from '@/types/fleet'
-import { fetchSpeedLoss } from '@/mock/api'
+import { fetchSpeedLossData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -10,7 +10,7 @@ import { formatUsd } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
-const { data, state } = useAsyncData(() => props.imo, fetchSpeedLoss)
+const { data, state } = useAsyncData(() => props.imo, fetchSpeedLossData)
 const chart = useChartTheme()
 
 // --- interactive controls ---------------------------------------------
@@ -262,9 +262,6 @@ const chartOption = computed(() => {
 <template>
   <div class="flex flex-col gap-4">
     <!-- controls -->
-    <p class="text-xs text-[var(--color-ink-slate)]/50 -mb-1">
-      時間軸為本船資料起始後的相對天數換算而成（後端未提供實際日曆日期），僅供趨勢比較。Speed Loss % 為後端 {{ data?.cleanBaseline.source ?? 'FULL_SPD_STW_SLIP' }} 方法計算的實際數值。
-    </p>
     <div class="panel p-3 flex flex-wrap items-center gap-4 text-sm">
       <PanelTag code="SPD-01" />
       <label class="flex items-center gap-2">

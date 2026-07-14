@@ -5,7 +5,8 @@ import {
   fetchSpeedLoss,
   fetchVessel,
 } from '@/mock/api'
-import { VESSEL_REFS } from '@/mock/reference'
+import { getRealShipList } from '@/mock/realData'
+import { useRealData } from '@/composables/useDataSource'
 import { CONFIDENCE_LABEL } from '@/utils/format'
 import type { ChatCardSpec, ChatFactType, ChatTurn, NluResult } from '@/types/chat'
 
@@ -34,7 +35,7 @@ function makeId() {
 function vesselNotFoundTurn(userText: string, vesselGuess: string | null): ChatTurn {
   const replyText = vesselGuess
     ? `找不到符合的船，你是不是指「${vesselGuess}」？`
-    : `找不到符合的船，目前船隊有：${VESSEL_REFS.map((v) => v.name).join('、')}。`
+    : `找不到符合的船，目前船隊有：${getRealShipList().join('、')}。`
   return {
     id: makeId(),
     userText,
@@ -70,7 +71,7 @@ function vesselClarificationTurn(userText: string, intent: NluResult['intent'], 
     id: makeId(),
     userText,
     intent,
-    replyText: `請問是想查詢哪一艘船的「${topicLabel}」？目前船隊有：${VESSEL_REFS.map((v) => v.name).join('、')}，直接說船名即可。`,
+    replyText: `請問是想查詢哪一艘船的「${topicLabel}」？目前船隊有：${getRealShipList().join('、')}，直接說船舶代號即可。`,
     cards: [],
     vesselImo: null,
     vesselName: null,

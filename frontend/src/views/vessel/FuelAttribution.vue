@@ -6,17 +6,9 @@ import { fetchFuelAttribution } from '@/mock/api'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
-import { CONFIDENCE_LABEL, formatDate } from '@/utils/format'
+import { CONFIDENCE_LABEL } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 import { useFuelWaterfallOption, fuelFactorColors } from '@/composables/useFuelWaterfallOption'
-
-const CATEGORY_LABEL: Record<string, string> = {
-  'hull+propeller': '船體+螺旋槳（複合事件）',
-  hull: '船體',
-  propeller: '螺旋槳',
-  inspection_only: '純檢查（無實體介入）',
-  other: '其他',
-}
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, fetchFuelAttribution)
@@ -173,52 +165,6 @@ const stackedOption = computed(() => {
             {{ (((a.impactMt) / (data.actualFuelMt - data.baselineFuelMt)) * 100).toFixed(0) }}%。
           </li>
         </ul>
-      </div>
-
-      <!-- Real backend evidence: per-event before/after slip% from
-           GET /speed-loss-attribution, with the UWI "control group" cases
-           (no physical intervention) called out — the model should NOT
-           show meaningful improvement for those. -->
-      <div class="panel p-4">
-        <div class="flex items-center justify-between mb-2">
-          <PanelTag code="FUEL-A4" />
-          <span class="text-xs font-data text-[var(--color-ink-slate)]/50">{{ data.method }}</span>
-        </div>
-        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">
-          養護事件實測前後 Speed Loss 變化（真實資料，非模擬）
-        </p>
-        <StateDisplay v-if="!data.events.length" state="empty" empty-title="此船尚無可比對的養護事件紀錄" />
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-          <div
-            v-for="ev in data.events"
-            :key="ev.eventType + ev.date"
-            class="rounded-[2px] border p-3 text-sm"
-            :class="
-              ev.physicalIntervention
-                ? 'chart-divider'
-                : 'border-dashed border-[var(--color-ink-slate)]/30 bg-[var(--color-ink-slate)]/[0.03]'
-            "
-          >
-            <div class="flex items-center justify-between mb-1">
-              <span class="font-display text-xs">{{ ev.eventType }} · {{ formatDate(ev.date) }}</span>
-              <span
-                class="text-[10px] px-1.5 py-0.5 rounded-[2px] border font-body"
-                :class="ev.physicalIntervention ? '' : 'text-[var(--color-ink-slate)]/60'"
-              >
-                {{ CATEGORY_LABEL[ev.category] ?? ev.category }}
-              </span>
-            </div>
-            <p class="font-data text-xs text-[var(--color-ink-slate)]/70">
-              Slip {{ ev.slipBeforePct.toFixed(1) }}% → {{ ev.slipAfterPct.toFixed(1) }}%
-              <span :class="ev.slipDeltaPct > 0 ? 'text-[var(--color-fathom-teal)]' : 'text-[var(--color-signal-red)]'" class="font-semibold">
-                ({{ ev.slipDeltaPct > 0 ? '−' : '+' }}{{ Math.abs(ev.slipDeltaPct).toFixed(2) }}pp{{ ev.slipDeltaPct > 0 ? ' 改善' : ' 未改善' }})
-              </span>
-            </p>
-            <p v-if="!ev.physicalIntervention" class="text-xs text-[var(--color-ink-slate)]/60 mt-1">
-              ⓘ 此事件僅為檢查，未進行實體清洗/拋光 — 若模型判讀合理，Slip 變化應接近 0（控制組驗證）。
-            </p>
-          </div>
-        </div>
       </div>
     </template>
   </div>

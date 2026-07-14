@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { fetchFleetKpis, fetchFleetVessels } from '@/mock/api'
+import { fetchKpis, fetchVessels } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import KpiCard from '@/components/KpiCard.vue'
 import FleetMap from '@/components/FleetMap.vue'
@@ -12,8 +12,8 @@ import { formatUsd, STATUS_LABEL, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/f
 
 const router = useRouter()
 
-const { data: kpis, state: kpiState } = useAsyncData(() => true, fetchFleetKpis, () => false)
-const { data: vessels, state: vesselState } = useAsyncData(() => true, fetchFleetVessels)
+const { data: kpis, state: kpiState } = useAsyncData(() => true, fetchKpis, () => false)
+const { data: vessels, state: vesselState } = useAsyncData(() => true, fetchVessels)
 
 const priorityRanked = computed(() => {
   if (!vessels.value) return []

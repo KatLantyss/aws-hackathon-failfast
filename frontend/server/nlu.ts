@@ -1,8 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import Anthropic from '@anthropic-ai/sdk'
-import { VESSEL_REFS } from '../src/mock/reference.ts'
 import type { NluRequestBody, NluResult } from '../src/types/chat.ts'
 import { readJsonBody } from './readBody.ts'
+
+// Real competition ships (S1-S23)
+const REAL_SHIPS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12','S21','S22','S23']
 
 const EMIT_ANSWER_TOOL = {
   name: 'emit_answer',
@@ -65,14 +67,14 @@ const EMIT_ANSWER_TOOL = {
 }
 
 function buildSystemPrompt(): string {
-  const fleetList = VESSEL_REFS.map((v) => `${v.name} (IMO ${v.imo})`).join(', ')
+  const fleetList = REAL_SHIPS.join(', ')
   return `你是陽明海運船隊維運 Dashboard 裡的語音/文字助理。使用者會用自然語言詢問船隊狀況、維修建議、油耗歸因或比較船舶。
 
-已知船隊（唯一可解析的船名來源，不可自己編造船名）：${fleetList}
+已知船隊（唯一可解析的船舶代號來源，不可自己編造）：${fleetList}
 
 規則：
 - 只負責判斷意圖分類與抽取參數，絕對不要自己編造任何數字、日期或結論（那些會由畫面上的真實資料呈現）。
-- 使用者提到的船名若不在上面的清單裡，設 vesselNotFound=true，並在 vesselGuess 給一個清單裡最接近的船名；vessels 留空陣列。
+- 使用者提到的船名若不在上面的清單裡，設 vesselNotFound=true，並在 vesselGuess 給一個清單裡最接近的代號；vessels 留空陣列。
 - 若問題與船隊維運資料無關（天氣、閒聊、其他公司事務等），intent 設為 out_of_scope，並在 outOfScopeExamples 給 2-3 個範例問題。
 - 若使用者是針對前一輪的追問（例如「信心程度多高」「上個月呢」），intent 設為 follow_up。
 - 一定要呼叫 emit_answer 工具回答，不要輸出其他文字。`

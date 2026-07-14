@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { VESSEL_REFS } from '@/mock/reference'
+import { getRealShipList } from '@/mock/realData'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
@@ -14,11 +14,11 @@ function hashToUnit(s: string): number {
   return (h % 1000) / 1000
 }
 
-/** Fixed pseudo-random positions per vessel (seeded by IMO) so the "fleet on sonar" motif reads as intentional, not noise. */
-const blips = VESSEL_REFS.map((v) => ({
-  angle: hashToUnit(v.imo) * Math.PI * 2,
-  radius: 0.22 + hashToUnit(v.imo + 'r') * 0.68,
-  phase: hashToUnit(v.imo + 'p') * Math.PI * 2,
+/** Fixed pseudo-random positions per vessel (seeded by ship ID) so the "fleet on sonar" motif reads as intentional, not noise. */
+const blips = getRealShipList().map((id) => ({
+  angle: hashToUnit(id) * Math.PI * 2,
+  radius: 0.22 + hashToUnit(id + 'r') * 0.68,
+  phase: hashToUnit(id + 'p') * Math.PI * 2,
 }))
 
 function resize() {

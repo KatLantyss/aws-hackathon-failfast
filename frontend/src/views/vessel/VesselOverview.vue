@@ -28,9 +28,8 @@ const quickLinks = computed(() => [
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report' },
   { to: `/vessels/${props.imo}/inspections`, label: '水下檢查報告' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss 分析' },
-  { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測' },
   { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因' },
-  { to: `/vessels/${props.imo}/maintenance-advisor`, label: '維修建議' },
+  { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析' },
 ])
 </script>
 
@@ -42,13 +41,17 @@ const quickLinks = computed(() => [
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 font-data text-sm">
         <div>
           <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">船型</p>
-          <p>{{ vessel.type }} · {{ vessel.teuCapacity.toLocaleString() }} TEU</p>
+          <p>{{ vessel.type }}{{ vessel.teuCapacity ? ` · ${vessel.teuCapacity.toLocaleString()} TEU` : '' }}</p>
         </div>
-        <div>
+        <div v-if="vessel.builtYear">
           <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">建造年</p>
           <p>{{ vessel.builtYear }}</p>
         </div>
         <div>
+          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">設計航速</p>
+          <p>{{ vessel.designSpeedKt }} kt</p>
+        </div>
+        <div v-if="vessel.mainEngineModel">
           <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">主機型號</p>
           <p>{{ vessel.mainEngineModel }}</p>
         </div>

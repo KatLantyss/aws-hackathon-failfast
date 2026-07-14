@@ -89,7 +89,7 @@ export interface InspectionEntry {
 
 export interface SpeedLossEvent {
   date: string
-  type: 'hull_cleaning' | 'propeller_polishing' | 'drydock' | 'inspection'
+  type: 'hull_cleaning' | 'propeller_polishing' | 'drydock'
   label: string
 }
 
@@ -114,51 +114,12 @@ export interface FuelAttributionTimePoint {
   engine_degradation: number
 }
 
-/** One real maintenance event's before/after slip-loss delta, from the backend's speed-loss-attribution endpoint. */
-export interface AttributionEventEntry {
-  eventType: string
-  date: string
-  category: 'hull+propeller' | 'hull' | 'propeller' | 'inspection_only' | 'other'
-  physicalIntervention: boolean
-  slipBeforePct: number
-  slipAfterPct: number
-  slipDeltaPct: number
-  notes: string
-}
-
 export interface FuelAttributionResponse {
   baselineFuelMt: number
   actualFuelMt: number
-  /** Backward-compatible 4-factor split (weather bucket is always 0 — this backend's attribution model doesn't isolate weather, see method). Drives the existing waterfall/SHAP-bar charts. */
   attribution: FuelAttributionFactor[]
   confidence: Confidence
   timeSeries: FuelAttributionTimePoint[]
-  /** Real data from GET /vessels/{id}/speed-loss-attribution, kept alongside the derived 4-factor split above so the page can show the backend's own categories and its UWI "control group" evidence directly. */
-  method: string
-  events: AttributionEventEntry[]
-}
-
-export interface FuelPredictionInput {
-  vesselId: string
-  speedKn: number
-  draftFwd: number
-  draftAft: number
-  cargoOnBoard: number
-  windScale: number
-  seaHeight: number
-}
-
-export interface FuelPredictionResult {
-  vesselId: string
-  input: FuelPredictionInput
-  predictedConsumptionMt: number
-  model: string
-  counterfactual: {
-    slowBy1KnSpeedKn: number
-    predictedConsumptionMt: number
-    fuelSavingMt: number
-    savingPct: number
-  }
 }
 
 export interface CostBenefitPoint {
@@ -184,4 +145,101 @@ export interface FleetKpis {
   inPort: number
   pendingMaintenance: number
   monthlyExcessFuelCostUsd: number
+}
+
+// ─── Maintenance-Performance Correlation Analysis ─────────────────────────────
+
+export type MaintenanceEventType = 'Hull Cleaning' | 'Propeller Polishing' | 'Hull Cleaning + PP' | 'Dry Dock'
+
+export interface MaintenanceEffectivenessEvent {
+  id: string
+  date: string
+  type: MaintenanceEventType
+  port: string
+  /** Average daily fuel consumption (MT/day) in the 5-day window BEFORE maintenance */
+  fuelBefore: number
+  /** Average daily fuel consumption (MT/day) in the 5-day window AFTER maintenance */
+  fuelAfter: number
+  /** Absolute improvement in MT/day */
+  fuelImprovementMt: number
+  /** Improvement percentage */
+  improvementPct: number
+  /** Speed loss % before maintenance */
+  speedLossBefore: number
+  /** Speed loss % after maintenance */
+  speedLossAfter: number
+  /** Whether the result is anomalous (e.g. no improvement after DD) */
+  isAnomaly: boolean
+  /** Anomaly explanation if applicable */
+  anomalyReason: string | null
+  /** Cost of this maintenance event (USD) */
+  costUsd: number
+}
+
+export interface MaintenanceTypeEffectiveness {
+  type: MaintenanceEventType
+  /** Number of events of this type */
+  eventCount: number
+  /** Average fuel improvement (MT/day) */
+  avgFuelImprovementMt: number
+  /** Average improvement percentage */
+  avgImprovementPct: number
+  /** Average cost per event */
+  avgCostUsd: number
+  /** Cost per 1% improvement */
+  costPerPctImprovement: number
+  /** Star rating 1-5 */
+  rating: number
+}
+
+export interface PerformanceTimelinePoint {
+  date: string
+  fuelConsumptionMt: number
+  speedLossPct: number
+}
+
+export interface MaintenanceCorrelationResponse {
+  vessel: { imo: string; name: string }
+  /** Full timeline of fuel & speed loss with maintenance markers */
+  timeline: PerformanceTimelinePoint[]
+  /** Individual maintenance events with before/after analysis */
+  events: MaintenanceEffectivenessEvent[]
+  /** Aggregated effectiveness per maintenance type */
+  typeEffectiveness: MaintenanceTypeEffectiveness[]
+  /** AI-driven optimal maintenance timing recommendation */
+  optimalTiming: OptimalMaintenanceTiming
+  /** Summary stats */
+  summary: {
+    totalEvents: number
+    avgImprovementPct: number
+    bestEventId: string
+    worstEventId: string
+    anomalyCount: number
+    totalMaintenanceCostUsd: number
+    totalFuelSavedMt: number
+  }
+}
+
+export interface OptimalMaintenanceTiming {
+  /** Recommended action type */
+  recommendedAction: MaintenanceEventType
+  /** Current speed loss % */
+  currentSpeedLossPct: number
+  /** Current degradation rate (%/day) */
+  degradationRatePerDay: number
+  /** Optimal intervention threshold (speed loss %) */
+  optimalThresholdPct: number
+  /** Estimated days until threshold */
+  daysUntilThreshold: number
+  /** Recommended date window */
+  windowStart: string
+  windowEnd: string
+  /** If deferred: projected extra fuel cost per day (USD) */
+  excessFuelCostPerDayUsd: number
+  /** Total projected savings from timely intervention (USD) */
+  projectedSavingsUsd: number
+  /** Reasoning text */
+  reasoning: string
+  /** Severity: how urgent is this? */
+  urgency: 'LOW' | 'MEDIUM' | 'HIGH'
 }
