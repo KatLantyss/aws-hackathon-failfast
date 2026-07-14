@@ -104,9 +104,15 @@ export async function fetchRealFleetVessels(): Promise<VesselSummary[]> {
   const details = await Promise.all(
     ALL_SHIPS.map(async (id) => {
       try {
-        const detail = await fetchApiVesselDetail(id)
+        const [detail, maintResp] = await Promise.all([
+          fetchApiVesselDetail(id),
+          fetchApiMaintenanceEvents(id),
+        ])
         const rank = ranking.fleet_ranking.find((r) => r.vessel_id === id)
-        return buildVesselSummary(id, detail.avg_consumption, rank)
+        const lastMaintDay = maintResp.events.length
+          ? Math.max(...maintResp.events.map((e) => e.event_day))
+          : 0
+        return buildVesselSummary(id, detail.avg_consumption, rank, lastMaintDay, detail.total_records)
       } catch {
         return buildVesselSummary(id, 0, undefined)
       }

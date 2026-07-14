@@ -7,7 +7,9 @@ export function formatNumber(value: number, digits = 1): string {
 }
 
 export function formatDate(dateStr: string): string {
+  if (!dateStr || dateStr === '—') return '—'
   const d = new Date(dateStr + 'T00:00:00Z')
+  if (isNaN(d.getTime())) return '—'
   return d.toLocaleDateString('zh-TW', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'UTC' })
 }
 
