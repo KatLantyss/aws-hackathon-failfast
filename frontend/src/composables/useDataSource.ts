@@ -8,7 +8,7 @@ import {
   fetchRealFleetKpis,
   fetchRealFleetVessels,
   getRealShipList,
-} from '@/mock/realData'
+} from '@/api/adapter'
 
 /**
  * Data source flag — kept for potential future toggle but defaults to true (real data only).

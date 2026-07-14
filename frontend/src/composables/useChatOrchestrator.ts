@@ -5,7 +5,7 @@ import {
   fetchSpeedLossData,
   fetchVesselData,
 } from '@/composables/useDataSource'
-import { getRealShipList } from '@/mock/realData'
+import { getRealShipList } from '@/api/adapter'
 import { CONFIDENCE_LABEL } from '@/utils/format'
 import type { ChatCardSpec, ChatFactType, ChatTurn, NluResult } from '@/types/chat'
 

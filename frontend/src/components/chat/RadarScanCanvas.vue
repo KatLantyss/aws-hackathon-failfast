@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { getRealShipList } from '@/mock/realData'
+import { getRealShipList } from '@/api/adapter'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
