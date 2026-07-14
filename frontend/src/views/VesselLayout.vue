@@ -16,6 +16,7 @@ const tabs = computed(() => [
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
   { to: `/vessels/${props.imo}/inspections`, label: '水下檢查', name: 'vessel-inspections' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
+  { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
   { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因', name: 'vessel-fuel-attribution' },
   { to: `/vessels/${props.imo}/maintenance-advisor`, label: '維修建議', name: 'vessel-maintenance-advisor' },
 ])

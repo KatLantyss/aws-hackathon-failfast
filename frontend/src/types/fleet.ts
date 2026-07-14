@@ -89,7 +89,7 @@ export interface InspectionEntry {
 
 export interface SpeedLossEvent {
   date: string
-  type: 'hull_cleaning' | 'propeller_polishing' | 'drydock'
+  type: 'hull_cleaning' | 'propeller_polishing' | 'drydock' | 'inspection'
   label: string
 }
 
@@ -114,12 +114,51 @@ export interface FuelAttributionTimePoint {
   engine_degradation: number
 }
 
+/** One real maintenance event's before/after slip-loss delta, from the backend's speed-loss-attribution endpoint. */
+export interface AttributionEventEntry {
+  eventType: string
+  date: string
+  category: 'hull+propeller' | 'hull' | 'propeller' | 'inspection_only' | 'other'
+  physicalIntervention: boolean
+  slipBeforePct: number
+  slipAfterPct: number
+  slipDeltaPct: number
+  notes: string
+}
+
 export interface FuelAttributionResponse {
   baselineFuelMt: number
   actualFuelMt: number
+  /** Backward-compatible 4-factor split (weather bucket is always 0 — this backend's attribution model doesn't isolate weather, see method). Drives the existing waterfall/SHAP-bar charts. */
   attribution: FuelAttributionFactor[]
   confidence: Confidence
   timeSeries: FuelAttributionTimePoint[]
+  /** Real data from GET /vessels/{id}/speed-loss-attribution, kept alongside the derived 4-factor split above so the page can show the backend's own categories and its UWI "control group" evidence directly. */
+  method: string
+  events: AttributionEventEntry[]
+}
+
+export interface FuelPredictionInput {
+  vesselId: string
+  speedKn: number
+  draftFwd: number
+  draftAft: number
+  cargoOnBoard: number
+  windScale: number
+  seaHeight: number
+}
+
+export interface FuelPredictionResult {
+  vesselId: string
+  input: FuelPredictionInput
+  predictedConsumptionMt: number
+  model: string
+  counterfactual: {
+    slowBy1KnSpeedKn: number
+    predictedConsumptionMt: number
+    fuelSavingMt: number
+    savingPct: number
+  }
 }
 
 export interface CostBenefitPoint {

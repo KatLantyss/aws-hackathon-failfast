@@ -1,0 +1,555 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ship Performance Analysis API",
+    "description": "陽明海運 AI 黑客松 - 船舶效能分析與節能決策支援系統",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health Check",
+        "description": "健康檢查",
+        "operationId": "health_check_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health Check",
+        "description": "健康檢查",
+        "operationId": "health_check_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "summary": "Root",
+        "description": "API 根路徑",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels": {
+      "get": {
+        "tags": [
+          "Vessels"
+        ],
+        "summary": "List Vessels",
+        "description": "取得所有船舶列表",
+        "operationId": "list_vessels_api_v1_vessels_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels/{vessel_id}": {
+      "get": {
+        "tags": [
+          "Vessels"
+        ],
+        "summary": "Get Vessel Detail",
+        "description": "取得船舶詳細資訊",
+        "operationId": "get_vessel_detail_api_v1_vessels__vessel_id__get",
+        "parameters": [
+          {
+            "name": "vessel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vessel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels/{vessel_id}/noon-reports": {
+      "get": {
+        "tags": [
+          "Vessels"
+        ],
+        "summary": "Get Noon Reports",
+        "description": "取得船舶航行日報數據",
+        "operationId": "get_noon_reports_api_v1_vessels__vessel_id__noon_reports_get",
+        "parameters": [
+          {
+            "name": "vessel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vessel Id"
+            }
+          },
+          {
+            "name": "start_day",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "起始天數",
+              "title": "Start Day"
+            },
+            "description": "起始天數"
+          },
+          {
+            "name": "end_day",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "結束天數",
+              "title": "End Day"
+            },
+            "description": "結束天數"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "最多回傳筆數",
+              "default": 100,
+              "title": "Limit"
+            },
+            "description": "最多回傳筆數"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels/{vessel_id}/speed-loss": {
+      "get": {
+        "tags": [
+          "Speed Loss"
+        ],
+        "summary": "Get Speed Loss",
+        "description": "計算並回傳船舶的 Speed Loss 時間序列（ISO 19030）",
+        "operationId": "get_speed_loss_api_v1_vessels__vessel_id__speed_loss_get",
+        "parameters": [
+          {
+            "name": "vessel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vessel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels/{vessel_id}/speed-loss-attribution": {
+      "get": {
+        "tags": [
+          "Speed Loss"
+        ],
+        "summary": "Get Speed Loss Attribution",
+        "description": "Speed Loss 歸因分析（船殼 vs 螺旋槳）",
+        "operationId": "get_speed_loss_attribution_api_v1_vessels__vessel_id__speed_loss_attribution_get",
+        "parameters": [
+          {
+            "name": "vessel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vessel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/predict/fuel-consumption": {
+      "post": {
+        "tags": [
+          "Predictions"
+        ],
+        "summary": "Predict Fuel Consumption",
+        "description": "預測主機全速油耗（支援反事實推論）",
+        "operationId": "predict_fuel_consumption_api_v1_predict_fuel_consumption_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FuelPredictionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/predict/submit": {
+      "post": {
+        "tags": [
+          "Predictions"
+        ],
+        "summary": "Submit Predictions",
+        "description": "產出 102 筆預測結果 CSV（評審提交用）",
+        "operationId": "submit_predictions_api_v1_predict_submit_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels/{vessel_id}/maintenance-events": {
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Get Maintenance Events",
+        "description": "取得船舶所有維護事件",
+        "operationId": "get_maintenance_events_api_v1_vessels__vessel_id__maintenance_events_get",
+        "parameters": [
+          {
+            "name": "vessel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vessel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/vessels/{vessel_id}/maintenance-recommendation": {
+      "get": {
+        "tags": [
+          "Maintenance"
+        ],
+        "summary": "Get Maintenance Recommendation",
+        "description": "維護建議（最佳時機、預期效益）",
+        "operationId": "get_maintenance_recommendation_api_v1_vessels__vessel_id__maintenance_recommendation_get",
+        "parameters": [
+          {
+            "name": "vessel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Vessel Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/fleet/ranking": {
+      "get": {
+        "tags": [
+          "Fleet"
+        ],
+        "summary": "Get Fleet Ranking",
+        "description": "船隊排名（依 Speed Loss、油耗效率）",
+        "operationId": "get_fleet_ranking_api_v1_fleet_ranking_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "FuelPredictionRequest": {
+        "properties": {
+          "vessel_id": {
+            "type": "string",
+            "title": "Vessel Id",
+            "description": "船舶代號"
+          },
+          "day": {
+            "type": "integer",
+            "title": "Day",
+            "description": "預測天數"
+          },
+          "features": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Features",
+            "description": "航行特徵"
+          },
+          "counterfactual": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counterfactual",
+            "description": "反事實模擬參數"
+          }
+        },
+        "type": "object",
+        "required": [
+          "vessel_id",
+          "day",
+          "features"
+        ],
+        "title": "FuelPredictionRequest",
+        "description": "油耗預測請求"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

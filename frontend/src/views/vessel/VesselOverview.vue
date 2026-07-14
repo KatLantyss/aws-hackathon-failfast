@@ -28,6 +28,7 @@ const quickLinks = computed(() => [
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report' },
   { to: `/vessels/${props.imo}/inspections`, label: '水下檢查報告' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss 分析' },
+  { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測' },
   { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因' },
   { to: `/vessels/${props.imo}/maintenance-advisor`, label: '維修建議' },
 ])

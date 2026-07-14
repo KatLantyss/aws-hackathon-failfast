@@ -1,0 +1,12 @@
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+mangum==0.21.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+boto3==1.43.47
+pandas==3.0.3
+numpy==2.4.6
+lightgbm==4.6.0
+scikit-learn==1.9.0
+joblib==1.5.3
+python-multipart==0.0.32
