@@ -61,7 +61,7 @@ Table schema (PK = vessel_id):
     urgency                LOW / MEDIUM / HIGH
 
   Position (static — no AIS in competition data)
-    lat, lon, heading_deg, speed_kt
+    lat, lon, speed_kt
 
   Meta
     last_updated           ISO-8601 UTC timestamp of this summary build
@@ -101,23 +101,24 @@ HULL_CLEAN_TYPES  = {'DD', 'UWC', 'UWC+PP'}           # hull physically cleaned
 PROP_POLISH_TYPES = {'PP', 'UWC+PP', 'UWI+PP', 'DD'}  # propeller polished
 EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}  # any physical intervention
 
-# Static AIS positions (no real-time AIS in competition data)
+# Static positions (lat/lon only — no AIS in competition data)
+# heading_deg removed: no real source. speed_kt from last noon report AVG_SPEED.
 SHIP_POSITIONS: dict[str, dict] = {
-    'S1':  {'lat': 22.28, 'lon': 114.17, 'heading_deg': 210, 'speed_kt': 19.2},
-    'S2':  {'lat':  1.26, 'lon': 103.84, 'heading_deg':   0, 'speed_kt':  0.0},
-    'S3':  {'lat': 13.45, 'lon':  56.32, 'heading_deg': 285, 'speed_kt': 17.8},
-    'S4':  {'lat': 51.89, 'lon':   4.48, 'heading_deg':   0, 'speed_kt':  0.0},
-    'S5':  {'lat': 35.32, 'lon':  29.78, 'heading_deg': 105, 'speed_kt': 18.5},
-    'S6':  {'lat':  6.93, 'lon':  79.85, 'heading_deg':  70, 'speed_kt': 20.1},
-    'S7':  {'lat': 25.28, 'lon':  55.32, 'heading_deg':   0, 'speed_kt':  0.0},
-    'S8':  {'lat': 29.87, 'lon': 121.55, 'heading_deg': 180, 'speed_kt': 16.9},
-    'S9':  {'lat': 34.05, 'lon':-118.25, 'heading_deg':   0, 'speed_kt':  0.0},
-    'S10': {'lat': 33.73, 'lon':-140.22, 'heading_deg':  90, 'speed_kt': 19.7},
-    'S11': {'lat': 22.62, 'lon': 120.30, 'heading_deg':   0, 'speed_kt':  0.0},
-    'S12': {'lat': 37.47, 'lon':-165.88, 'heading_deg':  72, 'speed_kt': 18.3},
-    'S21': {'lat': 10.24, 'lon':  75.82, 'heading_deg': 255, 'speed_kt': 19.4},
-    'S22': {'lat': 25.02, 'lon': 170.54, 'heading_deg':  55, 'speed_kt': 17.6},
-    'S23': {'lat': 31.23, 'lon': 121.47, 'heading_deg':   0, 'speed_kt':  0.0},
+    'S1':  {'lat': 22.28, 'lon': 114.17},
+    'S2':  {'lat':  1.26, 'lon': 103.84},
+    'S3':  {'lat': 13.45, 'lon':  56.32},
+    'S4':  {'lat': 51.89, 'lon':   4.48},
+    'S5':  {'lat': 35.32, 'lon':  29.78},
+    'S6':  {'lat':  6.93, 'lon':  79.85},
+    'S7':  {'lat': 25.28, 'lon':  55.32},
+    'S8':  {'lat': 29.87, 'lon': 121.55},
+    'S9':  {'lat': 34.05, 'lon':-118.25},
+    'S10': {'lat': 33.73, 'lon':-140.22},
+    'S11': {'lat': 22.62, 'lon': 120.30},
+    'S12': {'lat': 37.47, 'lon':-165.88},
+    'S21': {'lat': 10.24, 'lon':  75.82},
+    'S22': {'lat': 25.02, 'lon': 170.54},
+    'S23': {'lat': 31.23, 'lon': 121.47},
 }
 
 
@@ -249,7 +250,10 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
     excess_fuel_cost_usd_per_day = round(baseline * (max(0.0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
 
     # ── Position ───────────────────────────────────────────────────────────
-    pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0, 'heading_deg': 0, 'speed_kt': 0.0})
+    pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0})
+
+    # speed_kt: use last noon report's AVG_SPEED (SOG) as current speed proxy
+    last_speed_kt = safe_float(rows_sorted[-1].get('AVG_SPEED'), 0.0) if rows_sorted else 0.0
 
     return {
         # ── identification ────────────────────────────────────────────────
@@ -310,10 +314,9 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         'urgency': urgency,
 
         # ── position ──────────────────────────────────────────────────────
-        'lat':         pos['lat'],
-        'lon':         pos['lon'],
-        'heading_deg': pos['heading_deg'],
-        'speed_kt':    pos['speed_kt'],
+        'lat':      pos['lat'],
+        'lon':      pos['lon'],
+        'speed_kt': last_speed_kt,   # last noon report AVG_SPEED (SOG)
 
         # ── meta ──────────────────────────────────────────────────────────
         'last_updated': datetime.now(timezone.utc).isoformat(timespec='seconds'),

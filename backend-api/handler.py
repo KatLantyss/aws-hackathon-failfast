@@ -727,10 +727,9 @@ def get_fleet_summary(event):
                 # urgency
                 'urgency': _s(item, 'urgency', 'LOW'),
                 # position
-                'lat':         float(item['lat'])         if item.get('lat')         is not None else 0.0,
-                'lon':         float(item['lon'])         if item.get('lon')         is not None else 0.0,
-                'heading_deg': float(item['heading_deg']) if item.get('heading_deg') is not None else 0.0,
-                'speed_kt':    float(item['speed_kt'])    if item.get('speed_kt')    is not None else 0.0,
+                'lat':         float(item['lat'])      if item.get('lat')      is not None else 0.0,
+                'lon':         float(item['lon'])      if item.get('lon')      is not None else 0.0,
+                'speed_kt':    float(item['speed_kt']) if item.get('speed_kt') is not None else 0.0,
                 # meta
                 'last_updated': _s(item, 'last_updated'),
                 'rank': None,
@@ -794,7 +793,6 @@ def get_fleet_summary(event):
                 'excess_fuel_cost_usd_per_day': excess_per_day,
                 'lat':         0.0,
                 'lon':         0.0,
-                'heading_deg': 0.0,
                 'speed_kt':    0.0,
                 'total_records':           len(rows),
                 'total_voyages':           0,

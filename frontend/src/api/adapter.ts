@@ -449,9 +449,9 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     position: {
       lat: v.lat,
       lon: v.lon,
-      headingDeg: v.heading_deg,
+      headingDeg: 0,
       speedKt: v.speed_kt,
-      courseTrueDeg: v.heading_deg,
+      courseTrueDeg: 0,
     },
     speedLossPct: Number(speedLossPct.toFixed(2)),
     foulingGrade,
