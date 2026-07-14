@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import type { VesselSummary } from '@/types/fleet'
-import { fetchInspections } from '@/mock/api'
+import { fetchInspectionsData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import PanelTag from '@/components/PanelTag.vue'
 import FathometerGauge from '@/components/FathometerGauge.vue'
@@ -13,7 +13,7 @@ import { formatDate, formatUsd, STATUS_LABEL } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
-const { data: inspections, state: inspectionState } = useAsyncData(() => props.imo, fetchInspections)
+const { data: inspections, state: inspectionState } = useAsyncData(() => props.imo, fetchInspectionsData)
 
 const recentPortCalls = computed(() => {
   // Mock recent port calls derived from trade route; illustrative only.
@@ -26,10 +26,10 @@ const recentPortCalls = computed(() => {
 
 const quickLinks = computed(() => [
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report' },
-  { to: `/vessels/${props.imo}/inspections`, label: '水下檢查報告' },
-  { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss 分析' },
-  { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因' },
-  { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析' },
+  { to: `/vessels/${props.imo}/inspections`, label: '水�?檢查?��?' },
+  { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss ?��?' },
+  { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸?? },
+  { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修?�能?��?' },
 ])
 </script>
 
@@ -40,7 +40,7 @@ const quickLinks = computed(() => [
       <PanelTag code="SPEC-01" class="mb-2" />
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4 font-data text-sm">
         <div>
-          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">船型</p>
+          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">?��?</p>
           <p>{{ vessel.type }}{{ vessel.teuCapacity ? ` · ${vessel.teuCapacity.toLocaleString()} TEU` : '' }}</p>
         </div>
         <div v-if="vessel.builtYear">
@@ -48,15 +48,15 @@ const quickLinks = computed(() => [
           <p>{{ vessel.builtYear }}</p>
         </div>
         <div>
-          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">設計航速</p>
+          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">設�??��?/p>
           <p>{{ vessel.designSpeedKt }} kt</p>
         </div>
         <div v-if="vessel.mainEngineModel">
-          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">主機型號</p>
+          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">主�??��?</p>
           <p>{{ vessel.mainEngineModel }}</p>
         </div>
         <div>
-          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">航線</p>
+          <p class="text-xs font-body text-[var(--color-ink-slate)]/60 mb-0.5">?��?</p>
           <p>{{ vessel.tradeRoute }}</p>
         </div>
       </div>
@@ -68,19 +68,19 @@ const quickLinks = computed(() => [
         <FathometerGauge
           :value="Math.min(100, vessel.speedLossPct * 8)"
           :grade="vessel.foulingGrade"
-          label="目前 SPEED LOSS"
+          label="?��? SPEED LOSS"
           :display-value="`${vessel.speedLossPct.toFixed(1)}%`"
         />
       </div>
       <KpiCard
         code="KPI-06"
-        label="距上次水下清洗天數"
+        label="距�?次水下�?洗天??
         :value="vessel.daysSinceHullClean"
         :formatter="(n) => `${Math.round(n)} 天`"
       />
       <KpiCard
         code="KPI-07"
-        label="本季累積超額油耗成本"
+        label="?�季累�?超�?油耗�???
         :value="vessel.excessFuelCostUsdMtd * 3"
         :formatter="formatUsd"
         tone="red"
@@ -91,7 +91,7 @@ const quickLinks = computed(() => [
     <div class="panel panel--map-glow p-3 flex flex-col gap-2">
       <div class="flex items-center justify-between">
         <PanelTag code="MAP-02" />
-        <p class="map-glow-label font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">目前位置</p>
+        <p class="map-glow-label font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">?��?位置</p>
       </div>
       <div class="map-glow-viewport rounded-[2px]">
         <div
@@ -113,7 +113,7 @@ const quickLinks = computed(() => [
       <!-- port call timeline -->
       <div class="panel p-4">
         <PanelTag code="PORT-01" class="mb-3" />
-        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">最近港口停靠時間軸</p>
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">?�近港????��??�軸</p>
         <ol class="flex flex-col gap-3">
           <li v-for="call in recentPortCalls" :key="call.port + call.date" class="flex items-center gap-3 text-sm">
             <span class="status-dot bg-[var(--color-brass-amber)]" />
@@ -126,7 +126,7 @@ const quickLinks = computed(() => [
       <!-- quick links -->
       <div class="panel p-4">
         <PanelTag code="NAV-01" class="mb-3" />
-        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">快速連結</p>
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">快速�??</p>
         <div class="grid grid-cols-2 gap-2">
           <RouterLink
             v-for="link in quickLinks"
@@ -139,12 +139,12 @@ const quickLinks = computed(() => [
         </div>
 
         <div class="mt-4">
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">最近一次水下檢查</p>
+          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">?�近�?次水下檢??/p>
           <StateDisplay
             v-if="inspectionState !== 'success'"
             :state="inspectionState === 'error' ? 'error' : inspectionState === 'empty' ? 'empty' : 'loading'"
-            empty-title="此船尚無水下檢查記錄"
-            empty-hint="前往水下檢查頁面新增第一筆紀錄。"
+            empty-title="此船尚無水�?檢查記�?"
+            empty-hint="?��?水�?檢查?�面?��?第�?筆�??��?
           />
           <div v-else-if="inspections && inspections.length" class="flex items-center gap-3">
             <FathometerGauge

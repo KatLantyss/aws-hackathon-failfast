@@ -1,12 +1,11 @@
 import {
-  fetchFleetVessels,
-  fetchFuelAttribution,
-  fetchMaintenanceRecommendation,
-  fetchSpeedLoss,
-  fetchVessel,
-} from '@/mock/api'
+  fetchVessels,
+  fetchFuelAttr,
+  fetchRecommendation,
+  fetchSpeedLossData,
+  fetchVesselData,
+} from '@/composables/useDataSource'
 import { getRealShipList } from '@/mock/realData'
-import { useRealData } from '@/composables/useDataSource'
 import { CONFIDENCE_LABEL } from '@/utils/format'
 import type { ChatCardSpec, ChatFactType, ChatTurn, NluResult } from '@/types/chat'
 
@@ -87,7 +86,7 @@ function findConfidence(cards: ChatCardSpec[]): 'high' | 'medium' | 'low' | null
   return null
 }
 
-function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fetchVessel>>, lastHullCleaningDate: string | null): string {
+function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fetchVesselData>>, lastHullCleaningDate: string | null): string {
   if (!vessel) return '目前查無這艘船的資料。'
   switch (factType) {
     case 'last_hull_cleaning':
@@ -140,7 +139,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
   }
 
   if (nlu.intent === 'fleet_ranking') {
-    const vessels = await fetchFleetVessels()
+    const vessels = await fetchVessels()
     const ranked = [...vessels]
       .sort((a, b) => b.speedLossPct - a.speedLossPct)
       .slice(0, 3)
@@ -163,10 +162,10 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
     const [va, vb] = nlu.vessels
     if (!va || !vb) return outOfScopeTurn(userText, nlu)
     const [vesselA, vesselB, seriesA, seriesB] = await Promise.all([
-      fetchVessel(va.imo),
-      fetchVessel(vb.imo),
-      fetchSpeedLoss(va.imo),
-      fetchSpeedLoss(vb.imo),
+      fetchVesselData(va.imo),
+      fetchVesselData(vb.imo),
+      fetchSpeedLossData(va.imo),
+      fetchSpeedLossData(vb.imo),
     ])
     if (!vesselA || !vesselB || !seriesA || !seriesB) return outOfScopeTurn(userText, nlu)
     const worse = vesselA.speedLossPct >= vesselB.speedLossPct ? vesselA : vesselB
@@ -187,7 +186,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
   if (!target) return vesselClarificationTurn(userText, nlu.intent, nlu.factType)
 
   if (nlu.intent === 'single_fact') {
-    const [vessel, series] = await Promise.all([fetchVessel(target.imo), fetchSpeedLoss(target.imo)])
+    const [vessel, series] = await Promise.all([fetchVesselData(target.imo), fetchSpeedLossData(target.imo)])
     const lastHullCleaning = series?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.date).sort().pop() ?? null
     const factType = nlu.factType ?? 'current_speed_loss'
     return {
@@ -203,7 +202,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
   }
 
   if (nlu.intent === 'fuel_attribution') {
-    const [vessel, attribution] = await Promise.all([fetchVessel(target.imo), fetchFuelAttribution(target.imo)])
+    const [vessel, attribution] = await Promise.all([fetchVesselData(target.imo), fetchFuelAttr(target.imo)])
     if (!vessel || !attribution) return outOfScopeTurn(userText, nlu)
     const top = [...attribution.attribution].sort((a, b) => b.impactMt - a.impactMt)[0]
     const excessMt = attribution.actualFuelMt - attribution.baselineFuelMt
@@ -222,10 +221,10 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
 
   // vessel_overview
   const [vessel, series, recommendation, fleet] = await Promise.all([
-    fetchVessel(target.imo),
-    fetchSpeedLoss(target.imo),
-    fetchMaintenanceRecommendation(target.imo),
-    fetchFleetVessels(),
+    fetchVesselData(target.imo),
+    fetchSpeedLossData(target.imo),
+    fetchRecommendation(target.imo),
+    fetchVessels(),
   ])
   if (!vessel || !series || !recommendation) return outOfScopeTurn(userText, nlu)
   const fleetAvg = fleet.reduce((s, v) => s + v.speedLossPct, 0) / fleet.length

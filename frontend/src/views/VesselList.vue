@@ -14,10 +14,17 @@ import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import FathometerGauge from '@/components/FathometerGauge.vue'
 import type { VesselSummary } from '@/types/fleet'
-import { formatDate, speedLossColor } from '@/utils/format'
+import { speedLossColor, MAINTENANCE_STATUS_LABEL, MAINTENANCE_STATUS_COLOR } from '@/utils/format'
 
 const router = useRouter()
 const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
+
+function maintStatusLabel(status: string): string {
+  return MAINTENANCE_STATUS_LABEL[status] || status
+}
+function maintStatusColor(status: string): string {
+  return MAINTENANCE_STATUS_COLOR[status] || 'var(--color-ink-slate)'
+}
 
 const typeFilter = ref('all')
 const keyword = ref('')
@@ -48,14 +55,9 @@ const columns: ColumnDef<VesselSummary>[] = [
     accessorFn: (row) => row.daysSinceHullClean,
   },
   {
-    id: 'lastClean',
-    header: '上次養護日',
-    accessorFn: (row) => row.lastDrydockDate,
-  },
-  {
-    id: 'nextWindow',
-    header: '下次建議維修窗口',
-    accessorFn: (row) => row.nextRecommendedWindow.start,
+    id: 'maintenanceStatus',
+    header: '維修狀態',
+    accessorFn: (row) => row.maintenanceStatus,
   },
 ]
 
@@ -162,13 +164,17 @@ function goToVessel(imo: string) {
                 </span>
               </td>
               <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">{{ row.original.daysSinceHullClean }}</td>
-              <td class="px-3 py-3 font-data text-[var(--color-ink-muted)]">{{ formatDate(row.original.lastDrydockDate) }}</td>
-              <td class="px-3 py-3 font-data text-[var(--color-ink-muted)]">
-                {{ formatDate(row.original.nextRecommendedWindow.start) }} – {{ formatDate(row.original.nextRecommendedWindow.end) }}
+              <td class="px-3 py-3">
+                <span
+                  class="inline-flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded-full"
+                  :style="{ color: maintStatusColor(row.original.maintenanceStatus), background: `color-mix(in srgb, ${maintStatusColor(row.original.maintenanceStatus)} 12%, transparent)` }"
+                >
+                  {{ maintStatusLabel(row.original.maintenanceStatus) }}
+                </span>
               </td>
             </tr>
             <tr v-if="expandedImo === row.original.imo" class="chart-divider bg-black/[0.015]">
-              <td colspan="8" class="px-6 py-4">
+              <td colspan="6" class="px-6 py-4">
                 <FathometerGauge
                   :value="Math.min(100, row.original.speedLossPct * 8)"
                   :grade="row.original.foulingGrade"

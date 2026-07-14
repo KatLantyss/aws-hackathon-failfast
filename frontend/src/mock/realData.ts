@@ -426,10 +426,11 @@ function buildVesselSummary(
     position: { lat: pos.lat, lon: pos.lon, headingDeg: pos.headingDeg, speedKt: pos.speedKt, courseTrueDeg: pos.headingDeg },
     speedLossPct: Number(speedLossPct.toFixed(2)),
     foulingGrade,
-    lastDrydockDate: maintDay > 0 ? dayToDate(maintDay) : '—',
-    nextDrydockDue: maintDay > 0 ? dayToDate(maintDay + 900) : '—',
+    lastDrydockDate: maintDay > 0 ? `Day ${maintDay}` : '—',
+    nextDrydockDue: maintDay > 0 ? `Day ${maintDay + 900}` : '—',
     daysSinceHullClean: daysSinceClean,
     maintenanceUrgency: urgency,
+    maintenanceStatus: urgency === 'HIGH' ? 'needs_request' : 'normal',
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd,
     nextRecommendedWindow: {
@@ -473,6 +474,7 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     nextDrydockDue: '—',
     daysSinceHullClean: daysSince,
     maintenanceUrgency: urgency,
+    maintenanceStatus: urgency === 'HIGH' ? 'needs_request' : 'normal',
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd: v.excess_fuel_cost_usd_mtd,
     nextRecommendedWindow: {

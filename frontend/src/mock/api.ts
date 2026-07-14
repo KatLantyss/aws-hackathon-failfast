@@ -127,6 +127,7 @@ function buildVesselSummary(imo: string): VesselSummary {
     nextDrydockDue: ref.nextDrydockDue,
     daysSinceHullClean: daysBetween(lastClean, lastReport?.date ?? MOCK_TODAY),
     maintenanceUrgency: urgencyFor(speedLossPct),
+    maintenanceStatus: urgencyFor(speedLossPct) === 'HIGH' ? 'needs_request' as const : 'normal' as const,
     degradationRatePctPerDay: degradationRate(imo),
     excessFuelCostUsdMtd: excessFuelCostThisMonth(imo),
     nextRecommendedWindow: nextRecommendedWindow(imo),

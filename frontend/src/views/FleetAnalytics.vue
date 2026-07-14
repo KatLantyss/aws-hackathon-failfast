@@ -3,7 +3,6 @@ import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { useRouter } from 'vue-router'
 import { fetchVessels } from '@/composables/useDataSource'
-import { getSeriesForVessel } from '@/mock/noonReports'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -31,14 +30,12 @@ const overlayOption = computed(() => {
   const c = chart.value
   const colors = [c.brassAmber, c.fathomTeal, c.signalRed, c.inkSlate, '#8FA6B2']
   const series = vessels.value.map((v, i) => {
-    const s = getSeriesForVessel(v.imo)
-    const points = (s?.reports ?? []).slice(-180).map((r) => [r.date, r.speedLossPct])
     return {
       name: v.name,
       type: 'line' as const,
       showSymbol: false,
       lineStyle: { color: colors[i % colors.length], width: 1.5 },
-      data: points,
+      data: [], // Speed loss time series requires individual API calls — show empty for now
     }
   })
   return {

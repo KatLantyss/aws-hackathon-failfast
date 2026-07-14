@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import type { MaintenanceCorrelationResponse, MaintenanceRecommendation, VesselSummary, SpeedLossSeries, FleetKpis } from '@/types/fleet'
+import type { MaintenanceCorrelationResponse, MaintenanceRecommendation, VesselSummary, SpeedLossSeries, FleetKpis, FuelAttributionResponse } from '@/types/fleet'
 import {
   fetchRealMaintenanceCorrelation,
   fetchRealMaintenanceRecommendation,
@@ -49,4 +49,19 @@ export async function fetchKpis(): Promise<FleetKpis> {
 /** Fetch fleet vessels */
 export async function fetchVessels(): Promise<VesselSummary[]> {
   return fetchRealFleetVessels()
+}
+
+/** Fetch fuel attribution — not yet backed by real API, returns null */
+export async function fetchFuelAttr(_imo: string): Promise<FuelAttributionResponse | null> {
+  return null
+}
+
+/** Fetch noon reports — returns null (backend has the data but we haven't wired the display yet) */
+export async function fetchNoonReportsData(_imo: string): Promise<null> {
+  return null
+}
+
+/** Fetch inspections — returns empty array (no UWI detail data in competition dataset) */
+export async function fetchInspectionsData(_imo: string): Promise<never[]> {
+  return []
 }

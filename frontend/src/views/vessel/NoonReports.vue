@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { VesselSummary } from '@/types/fleet'
-import { fetchNoonReports } from '@/mock/api'
+import { fetchNoonReportsData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -9,7 +9,7 @@ import { formatDate } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
-const { data, state } = useAsyncData(() => props.imo, fetchNoonReports)
+const { data, state } = useAsyncData(() => props.imo, fetchNoonReportsData)
 
 const startDate = ref('')
 const endDate = ref('')

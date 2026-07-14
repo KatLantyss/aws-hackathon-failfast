@@ -8,6 +8,7 @@ export type FoulingGrade = 'Clean' | 'Light' | 'Moderate' | 'Heavy'
 export type VesselStatus = 'underway' | 'moored' | 'anchored'
 export type LoadCondition = 'ballast' | 'laden'
 export type Confidence = 'high' | 'medium' | 'low'
+export type MaintenanceStatus = 'normal' | 'needs_request' | 'requested' | 'in_progress'
 
 export interface VesselPosition {
   lat: number
@@ -37,6 +38,7 @@ export interface VesselSummary {
   nextDrydockDue: string
   daysSinceHullClean: number
   maintenanceUrgency: Urgency
+  maintenanceStatus: MaintenanceStatus
   degradationRatePctPerDay: number
   excessFuelCostUsdMtd: number
   nextRecommendedWindow: { start: string; end: string }

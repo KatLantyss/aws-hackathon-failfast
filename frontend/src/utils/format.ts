@@ -56,3 +56,18 @@ export const STATUS_COLOR: Record<string, string> = {
   moored: 'var(--color-brass-amber)',
   anchored: 'var(--color-ink-slate)',
 }
+
+
+export const MAINTENANCE_STATUS_LABEL: Record<string, string> = {
+  normal: '正常',
+  needs_request: '需申請維修',
+  requested: '已申請維修',
+  in_progress: '維修中',
+}
+
+export const MAINTENANCE_STATUS_COLOR: Record<string, string> = {
+  normal: 'var(--color-fathom-teal)',
+  needs_request: 'var(--color-signal-red)',
+  requested: 'var(--color-brass-amber)',
+  in_progress: 'var(--color-brass-amber)',
+}

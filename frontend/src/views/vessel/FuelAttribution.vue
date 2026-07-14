@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary } from '@/types/fleet'
-import { fetchFuelAttribution } from '@/mock/api'
+import { fetchFuelAttr } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -11,7 +11,7 @@ import { useChartTheme } from '@/composables/useChartTheme'
 import { useFuelWaterfallOption, fuelFactorColors } from '@/composables/useFuelWaterfallOption'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
-const { data, state } = useAsyncData(() => props.imo, fetchFuelAttribution)
+const { data, state } = useAsyncData(() => props.imo, fetchFuelAttr)
 const chart = useChartTheme()
 
 const view = ref<'timeseries' | 'stacked'>('timeseries')
