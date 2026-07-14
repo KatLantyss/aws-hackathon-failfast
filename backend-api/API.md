@@ -1,8 +1,10 @@
 # Ship Performance Analysis API
 
-**Base URL:** `https://4rh4qj5e3i.execute-api.us-east-1.amazonaws.com/dev`
+**Base URL (CloudFront):** `https://d1yvzz0da29zvi.cloudfront.net`
 
-**架構：** API Gateway → Lambda (Python 3.12) → DynamoDB
+**Base URL (EC2 direct):** `http://52.45.130.183:8000`
+
+**架構：** CloudFront → EC2 (ECS, EC2 launch type) → Docker container (FastAPI + XGBoost) → DynamoDB
 
 ---
 
@@ -327,57 +329,96 @@ GET /api/v1/fleet/ranking
 POST /api/v1/predict/fuel-consumption
 ```
 
-根據輸入的航行條件預測 ME 燃油消耗，並提供反事實分析（降速 1 kn 可省多少油）。
+使用 XGBoost 模型（`model_v3.pkl`）預測指定船舶在特定天的主機全速油耗（MT/day），並自動計算「如果現在執行 UWC+PP 能節省多少」的反事實推論。
 
-**模型：** Cubic Speed Least-Squares
-- `consumption ≈ a × speed³ + weather_penalty`
-- `a` 由各船歷史數據 least-squares 擬合
-- `weather_penalty = wind_scale × 0.5 + sea_height × 0.8`
+**模型說明：** XGBoost v3 Hybrid（600 棵樹）
+- 29 個特徵，含環境、航行條件、船體污損退化（`days_since_hull_clean`、`days_since_prop_polish`）
+- `physics_consumption = ship_coefficient / stw²` 作為物理基線特徵
+- `UWI`（純檢查）不重置污損計時，符合題目要求
 
-**Request Body:**
+---
+
+#### 使用方式一：noon_day lookup（推薦）
+
+只需傳 `vessel_id` + `noon_day`，API 自動從資料庫撈該天的航行資料並計算所有 features。
+
+```bash
+curl -X POST $BASE/api/v1/predict/fuel-consumption \
+  -H "Content-Type: application/json" \
+  -d '{"vessel_id": "S21", "noon_day": 136}'
+```
+
+#### 使用方式二：欄位 override（what-if 情境）
+
+在 noon_day 基礎上，額外覆蓋任何 A 類欄位，模擬不同條件。
+
+```bash
+curl -X POST $BASE/api/v1/predict/fuel-consumption \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vessel_id":  "S21",
+    "noon_day":   960,
+    "WIND_SCALE": 6,
+    "SEA_HEIGHT": 2.5
+  }'
+```
+
+**可 override 的欄位（對應 vt_fd.csv 欄位名稱）：**
+
+| 欄位 | 說明 | 單位 |
+|------|------|------|
+| `AVG_SPEED` | 對地航速（SOG）| knots |
+| `SPEED_THROUGH_WATER` | 對水航速（STW）| knots |
+| `WIND_SCALE` | 蒲福風級 | 0–12 |
+| `WIND_SPEED` | 風速 | knots |
+| `SEA_HEIGHT` | 浪高 | m |
+| `SWELL_HEIGHT` | 湧浪高度 | m |
+| `SEA_WATER_TEMP` | 海水溫度 | °C |
+| `WATER_DEPTH` | 水深 | m |
+| `FORE_DRAFT` | 首吃水 | m |
+| `AFTER_DRAFT` | 尾吃水 | m |
+| `MID_DRAFT` | 舯吃水 | m |
+| `HOURS_FULL_SPEED` | 全速航行時數 | hr |
+| `DIFF_STW_SOG_SLIP` | 對水-對地速差 | knots |
+| `FULL_SPD_STW_SLIP` | 全速時段滑差 | % |
+
+**Response:**
+
 ```json
 {
-  "vessel_id": "S1",
-  "speed_kn": 15.0,
-  "draft_fwd": 14.0,
-  "draft_aft": 14.5,
-  "cargo_on_board": 85000,
-  "wind_scale": 3,
-  "sea_height": 1.0
+  "vessel_id": "S21",
+  "noon_day":  136.0,
+  "model":     "xgboost_v3_hybrid",
+  "input_used": {
+    "avg_speed_kn":           10.6,
+    "stw_kn":                 10.6,
+    "wind_scale":             4.0,
+    "sea_height":             1.0,
+    "fore_draft":             12.45,
+    "aft_draft":              12.45,
+    "hours_full_speed":       25.0,
+    "days_since_hull_clean":  2.0,
+    "days_since_prop_polish": 2.0
+  },
+  "predicted_consumption_mt": 52.3,
+  "counterfactual_uwc_pp": {
+    "description":              "Predicted consumption if UWC+PP were performed now (days_since=0)",
+    "predicted_consumption_mt": 49.8,
+    "fuel_saving_mt_per_day":   2.5,
+    "saving_pct":               4.8,
+    "est_annual_saving_mt":     750.0,
+    "est_annual_saving_usd":    450000.0
+  }
 }
 ```
 
-| 欄位 | 必填 | 說明 | 預設 |
-|------|------|------|------|
-| `vessel_id` | 否 | 使用哪艘船的模型 | S1 |
-| `speed_kn` | 否 | 航行速度（節） | 15 |
-| `draft_fwd` | 否 | 前吃水（m） | 14 |
-| `draft_aft` | 否 | 後吃水（m） | 14 |
-| `cargo_on_board` | 否 | 貨載量（噸） | 80000 |
-| `wind_scale` | 否 | 蒲福風級（0–12） | 3 |
-| `sea_height` | 否 | 浪高（m） | 1.0 |
-
-**Response:**
-```json
-{
-  "vessel_id": "S1",
-  "input": {
-    "speed_kn": 15.0,
-    "draft_fwd": 14.0,
-    "draft_aft": 14.5,
-    "cargo_on_board": 85000.0,
-    "wind_scale": 3.0,
-    "sea_height": 1.0
-  },
-  "predicted_consumption_mt": 68.42,
-  "model": "cubic_speed_lsq",
-  "counterfactual": {
-    "slow_by_1kn_speed": 14.0,
-    "predicted_consumption_mt": 56.38,
-    "fuel_saving_mt": 12.04,
-    "saving_pct": 17.6
-  }
-}
+| 欄位 | 說明 |
+|------|------|
+| `input_used.days_since_hull_clean` | 截至 `noon_day`，距最後一次船殼清洗（UWC/DD）的天數 |
+| `input_used.days_since_prop_polish` | 截至 `noon_day`，距最後一次螺旋槳拋光（PP/DD）的天數 |
+| `predicted_consumption_mt` | 當前狀態預測油耗（MT/day）|
+| `counterfactual_uwc_pp.fuel_saving_mt_per_day` | 執行 UWC+PP 後每日可節省油耗（MT/day）|
+| `counterfactual_uwc_pp.est_annual_saving_usd` | 估算年節省金額（300 海上天/年 × $600/MT）|
 ```
 
 ---
@@ -416,8 +457,13 @@ curl $BASE/api/v1/vessels/S1/maintenance-events
 # 船隊排名
 curl $BASE/api/v1/fleet/ranking
 
-# 燃油預測
+# 燃油預測 — noon_day lookup（推薦）
 curl -X POST $BASE/api/v1/predict/fuel-consumption \
   -H "Content-Type: application/json" \
-  -d '{"vessel_id":"S1","speed_kn":16,"wind_scale":4,"sea_height":1.5}'
+  -d '{"vessel_id":"S21","noon_day":136}'
+
+# 燃油預測 — what-if（override 風浪條件）
+curl -X POST $BASE/api/v1/predict/fuel-consumption \
+  -H "Content-Type: application/json" \
+  -d '{"vessel_id":"S21","noon_day":960,"WIND_SCALE":6,"SEA_HEIGHT":2.5}'
 ```

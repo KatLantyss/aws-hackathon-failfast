@@ -26,6 +26,9 @@ provider:
 package:
   individually: false
   patterns:
+    - 'handler.py'
+    - 'model/**'
+    - 'vendor/**'
     - '!node_modules/**'
     - '!.serverless/**'
     - '!__pycache__/**'
@@ -33,6 +36,9 @@ package:
     - '!requirements.txt'
     - '!package.json'
     - '!package-lock.json'
+    - '!test_*.py'
+    - '!inspect_model.py'
+    - '!explore_predict.py'
 
 functions:
   api:

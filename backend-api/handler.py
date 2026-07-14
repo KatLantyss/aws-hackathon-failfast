@@ -4,11 +4,51 @@ Lambda handler - reads directly from DynamoDB
 """
 import json
 import os
-import boto3
-from boto3.dynamodb.conditions import Key, Attr
-from decimal import Decimal
-from statistics import mean, stdev
 import math
+import pickle
+import sys
+import warnings
+from decimal import Decimal
+from statistics import mean
+
+# Add vendor directory to path (bundled dependencies: xgboost, scikit-learn, numpy)
+_vendor = os.path.join(os.path.dirname(__file__), 'vendor')
+if _vendor not in sys.path:
+    sys.path.insert(0, _vendor)
+
+import boto3
+from boto3.dynamodb.conditions import Key
+import numpy as np
+
+# ── Model loading (module-level: loaded once per Lambda container) ────────────
+_MODEL_BUNDLE = None
+
+def _load_model():
+    global _MODEL_BUNDLE
+    if _MODEL_BUNDLE is not None:
+        return _MODEL_BUNDLE
+    model_path = os.path.join(os.path.dirname(__file__), 'model', 'model_v3.pkl')
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        with open(model_path, 'rb') as f:
+            _MODEL_BUNDLE = pickle.load(f)
+    return _MODEL_BUNDLE
+
+# Ship type mapping (W1=0: S1-S8, S21 / W2=1: S9-S12, S22, S23)
+SHIP_TYPE = {
+    'S1': 0, 'S2': 0, 'S3': 0, 'S4': 0,
+    'S5': 0, 'S6': 0, 'S7': 0, 'S8': 0,
+    'S21': 0,
+    'S9': 1, 'S10': 1, 'S11': 1, 'S12': 1,
+    'S22': 1, 'S23': 1,
+}
+
+# Maintenance types that include hull cleaning
+HULL_CLEAN_TYPES  = {'DD', 'UWC', 'UWC+PP'}
+# Maintenance types that include propeller polishing
+PROP_POLISH_TYPES = {'DD', 'PP', 'UWI+PP', 'UWC+PP'}
+# Effective maintenance (any physical intervention, not pure inspection)
+EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}
 
 # ── DynamoDB setup ──────────────────────────────────────────────────────────
 REGION          = os.environ.get('AWS_REGION', 'us-east-1')
@@ -18,6 +58,12 @@ MAINT_TABLE     = os.environ.get('MAINT_TABLE',   'ship-analysis-dev-maintenance
 ddb = boto3.resource('dynamodb', region_name=REGION)
 vessel_tbl = ddb.Table(VESSEL_TABLE)
 maint_tbl  = ddb.Table(MAINT_TABLE)
+
+# Pre-load model on cold start (best-effort; errors surface at predict time)
+try:
+    _load_model()
+except Exception:
+    pass
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -528,74 +574,300 @@ def get_fleet_ranking(event):
     return resp(200, {'fleet_ranking': rankings, 'total': len(rankings)})
 
 
+def _build_features(vessel_id, speed_kn, stw, wind_scale, wind_speed,
+                    sea_height, swell_height, sea_water_temp, water_depth,
+                    diff_stw_sog_slip, full_spd_stw_slip,
+                    hours_full_speed, hours_total,
+                    fore_draft, aft_draft, mid_draft,
+                    maint_rows,
+                    as_of_day=None,
+                    override_days_since_hull_clean=None,
+                    override_days_since_prop_polish=None):
+    """
+    Build the 29-feature vector expected by model_v3.pkl.
+
+    Features (in order):
+      0  WIND_SCALE
+      1  WIND_SPEED
+      2  SEA_HEIGHT
+      3  SWELL_HEIGHT
+      4  SEA_WATER_TEMP
+      5  WATER_DEPTH
+      6  DIFF_STW_SOG_SLIP
+      7  FULL_SPD_STW_SLIP
+      8  AVG_SPEED
+      9  SPEED_THROUGH_WATER
+     10  HOURS_FULL_SPEED
+     11  HOURS_TOTAL
+     12  FORE_DRAFT
+     13  AFTER_DRAFT
+     14  MID_DRAFT
+     15  ship_type              (W1=0, W2=1)
+     16  days_since_dd
+     17  days_since_hull_clean
+     18  days_since_prop_polish
+     19  days_since_effective_maint
+     20  last_maint_hull_effect
+     21  last_maint_prop_effect
+     22  maint_count_total
+     23  maint_count_effective
+     24  sqrt_days_since_hull_clean
+     25  sqrt_days_since_prop_polish
+     26  physics_consumption    (ship_coefficient / speed^2)
+     27  is_clean_voyage        (hours_full_speed >= 22)
+     28  is_calm_sea            (wind_scale <= 3 and sea_height <= 1)
+
+    override_days_since_hull_clean / override_days_since_prop_polish:
+      When set, directly replace those features for counterfactual inference.
+    """
+    bundle = _load_model()
+    coeff  = bundle['ship_coefficients'].get(vessel_id, 320.0)  # fallback avg
+
+    # ── Maintenance-derived features ─────────────────────────────────────────
+    # as_of_day: the NOON_UTC of the day being predicted.
+    # If not provided, fall back to last maintenance event day + 1.
+    if as_of_day is not None:
+        _as_of = float(as_of_day)
+    elif maint_rows:
+        _as_of = max(safe_float(m.get('event_day'), 0) for m in maint_rows) + 1.0
+    else:
+        _as_of = 365.0  # safe default
+
+    days_since_dd          = _as_of  # default: never had DD
+    days_since_hull_clean  = _as_of
+    days_since_prop_polish = _as_of
+    days_since_eff         = _as_of
+    last_hull_effect       = 0.0
+    last_prop_effect       = 0.0
+    maint_count_total      = 0
+    maint_count_effective  = 0
+
+    # Walk events in chronological order; last matching event wins
+    for m in sorted(maint_rows or [], key=lambda x: safe_float(x.get('event_day'), 0)):
+        eday  = safe_float(m.get('event_day'), 0)
+        etype = str(m.get('event_type', ''))
+        maint_count_total += 1
+
+        if etype in EFFECTIVE_TYPES:
+            maint_count_effective += 1
+            days_since_eff = _as_of - eday
+
+        if etype == 'DD':
+            days_since_dd          = _as_of - eday
+            days_since_hull_clean  = _as_of - eday
+            days_since_prop_polish = _as_of - eday
+            last_hull_effect = 1.0
+            last_prop_effect = 1.0
+        else:
+            if etype in HULL_CLEAN_TYPES:
+                days_since_hull_clean = _as_of - eday
+                last_hull_effect = 1.0
+            if etype in PROP_POLISH_TYPES:
+                days_since_prop_polish = _as_of - eday
+                last_prop_effect = 1.0
+
+    # Apply counterfactual overrides (simulate freshly cleaned state)
+    if override_days_since_hull_clean is not None:
+        days_since_hull_clean = float(override_days_since_hull_clean)
+        last_hull_effect = 1.0
+    if override_days_since_prop_polish is not None:
+        days_since_prop_polish = float(override_days_since_prop_polish)
+        last_prop_effect = 1.0
+
+    # Physics baseline: admiralty-style  consumption = coeff / speed^2
+    safe_speed = max(stw, 0.1)
+    physics_consumption = coeff / (safe_speed ** 2)
+
+    is_clean_voyage = 1.0 if (hours_full_speed or 0) >= 22 else 0.0
+    is_calm_sea     = 1.0 if (wind_scale or 0) <= 3 and (sea_height or 0) <= 1.0 else 0.0
+
+    row = [
+        wind_scale      or 0.0,
+        wind_speed      or 0.0,
+        sea_height      or 0.0,
+        swell_height    or 0.0,
+        sea_water_temp  or 20.0,
+        water_depth     or 100.0,
+        diff_stw_sog_slip or 0.0,
+        full_spd_stw_slip or 0.0,
+        speed_kn,
+        stw,
+        hours_full_speed or 24.0,
+        hours_total      or 24.0,
+        fore_draft  or 13.0,
+        aft_draft   or 13.0,
+        mid_draft   or 13.0,
+        float(SHIP_TYPE.get(vessel_id, 0)),
+        days_since_dd,
+        days_since_hull_clean,
+        days_since_prop_polish,
+        days_since_eff,
+        last_hull_effect,
+        last_prop_effect,
+        float(maint_count_total),
+        float(maint_count_effective),
+        math.sqrt(max(days_since_hull_clean, 0)),
+        math.sqrt(max(days_since_prop_polish, 0)),
+        physics_consumption,
+        is_clean_voyage,
+        is_calm_sea,
+    ]
+    return np.array([row], dtype=np.float32)
+
+
 def predict_fuel(event):
     """
-    Simple fuel consumption prediction using linear model from training data
-    POST body: { vessel_id, speed_kn, draft_fwd, draft_aft, cargo_on_board, wind_scale, sea_height }
+    XGBoost fuel consumption prediction using model_v3.pkl.
+
+    Mode 1 — noon_day lookup (recommended):
+      Pass vessel_id + noon_day → handler fetches that day's row from DynamoDB
+      and computes all features automatically.
+
+      POST { "vessel_id": "S21", "noon_day": 136 }
+
+    Mode 2 — manual override (optional, for what-if scenarios):
+      Any A-class field can be overridden by including it in the request body.
+      Useful for simulating different conditions on a known day.
+
+      POST {
+        "vessel_id": "S21",
+        "noon_day":  136,
+        "wind_scale": 6       ← override just this field
+      }
+
+    Counterfactual (UWC+PP):
+      The response always includes a counterfactual prediction showing
+      how much fuel would be saved if UWC+PP were performed right now
+      (days_since_hull_clean = 0, days_since_prop_polish = 0).
     """
     try:
         body = json.loads(event.get('body') or '{}')
     except Exception:
         return err(400, 'Invalid JSON body')
 
-    vessel_id    = body.get('vessel_id', 'S1')
-    speed        = float(body.get('speed_kn', 15))
-    draft_fwd    = float(body.get('draft_fwd', 14))
-    draft_aft    = float(body.get('draft_aft', 14))
-    cargo        = float(body.get('cargo_on_board', 80000))
-    wind_scale   = float(body.get('wind_scale', 3))
-    sea_height   = float(body.get('sea_height', 1.0))
+    vessel_id = body.get('vessel_id')
+    if not vessel_id:
+        return err(400, 'vessel_id is required')
 
-    # Load training data for this vessel (or all training vessels)
-    rows = query_vessel(vessel_id)
-    if not rows:
-        rows = query_vessel('S1')  # fallback
+    noon_day = safe_float(body.get('noon_day'))
 
-    # Fit simple linear: consumption ~ alpha * speed^3 + beta * cargo + gamma
-    # Cubic speed relationship is standard naval architecture
-    pairs = []
-    for r in rows:
-        c = safe_float(r.get('ME_CONSUMPTION'))
-        s = safe_float(r.get('SPEED_THROUGH_WATER'))
-        if c and s and c > 0:
-            pairs.append((s, c))
+    # ── Fetch DynamoDB row for this noon_day ──────────────────────────────────
+    row_data = {}
+    if noon_day is not None:
+        all_rows = query_vessel(vessel_id)
+        # Find the row whose NOON_UTC matches noon_day (within ±0.5 day)
+        matched = [r for r in all_rows
+                   if safe_float(r.get('NOON_UTC')) is not None
+                   and abs(safe_float(r.get('NOON_UTC')) - noon_day) < 0.5]
+        if not matched:
+            return err(404, f'No data found for vessel {vessel_id} on noon_day {noon_day}')
+        row_data = matched[0]
 
-    if len(pairs) < 10:
-        return err(500, f'Not enough data for vessel {vessel_id}')
+    # ── Resolve feature values (DynamoDB row → override with body if provided) ─
+    def get(field, default=None):
+        # body takes precedence over DynamoDB row
+        if field in body:
+            v = body[field]
+            return float(v) if v is not None else default
+        return safe_float(row_data.get(field), default)
 
-    # Least-squares fit: c = a * s^3
-    s3_list = [p[0]**3 for p in pairs]
-    c_list  = [p[1] for p in pairs]
-    # a = sum(s3*c) / sum(s3^2)
-    a = sum(x*y for x,y in zip(s3_list, c_list)) / sum(x**2 for x in s3_list)
+    speed_kn          = get('AVG_SPEED',            get('speed_kn', 15.0))
+    stw               = get('SPEED_THROUGH_WATER',  speed_kn)
+    wind_scale        = get('WIND_SCALE',            3.0)
+    wind_speed        = get('WIND_SPEED',            10.0)
+    sea_height        = get('SEA_HEIGHT',            1.0)
+    swell_height      = get('SWELL_HEIGHT',          0.5)
+    sea_water_temp    = get('SEA_WATER_TEMP',        20.0)
+    water_depth       = get('WATER_DEPTH',           100.0)
+    diff_stw_sog_slip = get('DIFF_STW_SOG_SLIP',    0.0)
+    full_spd_stw_slip = get('FULL_SPD_STW_SLIP',    8.0)
+    hours_full_speed  = get('HOURS_FULL_SPEED',      22.0)
+    hours_total       = get('HOURS_TOTAL',           24.0)
+    fore_draft        = get('FORE_DRAFT',            13.5)
+    aft_draft         = get('AFTER_DRAFT',           13.5)
+    mid_draft         = get('MID_DRAFT',             (fore_draft + aft_draft) / 2)
 
-    # Weather penalty
-    weather_penalty = wind_scale * 0.5 + sea_height * 0.8
+    # ── Load maintenance history (events up to noon_day only) ────────────────
+    maint_rows = query_maintenance(vessel_id)
+    maint_rows_sorted = sorted(
+        [m for m in maint_rows
+         if noon_day is None or safe_float(m.get('event_day'), 0) <= noon_day],
+        key=lambda x: safe_float(x.get('event_day'), 0),
+    )
 
-    predicted = round(a * speed**3 + weather_penalty, 2)
+    try:
+        bundle = _load_model()
+        model  = bundle['model']
+    except Exception as e:
+        return err(500, f'Model load failed: {e}')
 
-    # Counterfactual: what if we slow down by 1 knot?
-    cf_speed     = speed - 1
-    cf_predicted = round(a * cf_speed**3 + weather_penalty, 2)
-    cf_saving    = round(predicted - cf_predicted, 2)
+    # ── Baseline prediction ───────────────────────────────────────────────────
+    X = _build_features(
+        vessel_id, speed_kn, stw,
+        wind_scale, wind_speed, sea_height, swell_height,
+        sea_water_temp, water_depth, diff_stw_sog_slip, full_spd_stw_slip,
+        hours_full_speed, hours_total, fore_draft, aft_draft, mid_draft,
+        maint_rows_sorted,
+        as_of_day=noon_day,
+    )
+    predicted = round(float(model.predict(X)[0]), 2)
+
+    # ── Counterfactual: simulate UWC+PP performed right now ──────────────────
+    X_cf = _build_features(
+        vessel_id, speed_kn, stw,
+        wind_scale, wind_speed, sea_height, swell_height,
+        sea_water_temp, water_depth, diff_stw_sog_slip, full_spd_stw_slip,
+        hours_full_speed, hours_total, fore_draft, aft_draft, mid_draft,
+        maint_rows_sorted,
+        as_of_day=noon_day,
+        override_days_since_hull_clean=0.0,
+        override_days_since_prop_polish=0.0,
+    )
+    predicted_cf  = round(float(model.predict(X_cf)[0]), 2)
+    cf_saving     = round(predicted - predicted_cf, 2)
+    cf_saving_pct = round(cf_saving / predicted * 100, 1) if predicted > 0 else None
+
+    # Annual saving estimate (300 sea days/year, bunker $600/MT)
+    annual_saving_mt  = round(cf_saving * 300, 1)
+    annual_saving_usd = round(cf_saving * 300 * 600, 0)
+
+    # Days since last maintenance (for context)
+    days_since_hull  = None
+    days_since_prop  = None
+    if noon_day is not None:
+        for m in reversed(maint_rows_sorted):
+            eday  = safe_float(m.get('event_day'), 0)
+            etype = str(m.get('event_type', ''))
+            if days_since_hull is None and etype in HULL_CLEAN_TYPES:
+                days_since_hull = round(noon_day - eday, 0)
+            if days_since_prop is None and etype in PROP_POLISH_TYPES:
+                days_since_prop = round(noon_day - eday, 0)
+            if days_since_hull is not None and days_since_prop is not None:
+                break
 
     return resp(200, {
-        'vessel_id':              vessel_id,
-        'input': {
-            'speed_kn':       speed,
-            'draft_fwd':      draft_fwd,
-            'draft_aft':      draft_aft,
-            'cargo_on_board': cargo,
-            'wind_scale':     wind_scale,
-            'sea_height':     sea_height,
+        'vessel_id': vessel_id,
+        'noon_day':  noon_day,
+        'model':     'xgboost_v3_hybrid',
+        'input_used': {
+            'avg_speed_kn':    speed_kn,
+            'stw_kn':          stw,
+            'wind_scale':      wind_scale,
+            'sea_height':      sea_height,
+            'fore_draft':      fore_draft,
+            'aft_draft':       aft_draft,
+            'hours_full_speed': hours_full_speed,
+            'days_since_hull_clean':  days_since_hull,
+            'days_since_prop_polish': days_since_prop,
         },
         'predicted_consumption_mt': predicted,
-        'model':                    'cubic_speed_lsq',
-        'counterfactual': {
-            'slow_by_1kn_speed':       cf_speed,
-            'predicted_consumption_mt': cf_predicted,
-            'fuel_saving_mt':           cf_saving,
-            'saving_pct':              round(cf_saving / predicted * 100, 1) if predicted else None,
+        'counterfactual_uwc_pp': {
+            'description':              'Predicted consumption if UWC+PP were performed now (days_since=0)',
+            'predicted_consumption_mt': predicted_cf,
+            'fuel_saving_mt_per_day':   cf_saving,
+            'saving_pct':               cf_saving_pct,
+            'est_annual_saving_mt':     annual_saving_mt,
+            'est_annual_saving_usd':    annual_saving_usd,
         },
     })
 
