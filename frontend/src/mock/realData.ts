@@ -410,12 +410,14 @@ function buildVesselSummary(
   const speedLossPct = rank?.recent_90d_slip_pct ?? rank?.avg_slip_pct ?? 0
   const rate = rank ? rank.slip_trend / 90 : 0 // slip_trend is 90-day diff
 
-  const urgency: Urgency = speedLossPct >= 10 ? 'HIGH' : speedLossPct >= 6 ? 'MEDIUM' : 'LOW'
+  const urgency: Urgency = speedLossPct >= 14 ? 'HIGH' : speedLossPct >= 10 ? 'MEDIUM' : 'LOW'
   const foulingGrade: FoulingGrade = speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
 
-  const lastDay = totalRecords || 1800
+  // Approximate "current day" — 5 years of data from Day 0 ≈ Day 1825
+  // The actual last noon_day varies per ship but is roughly in this range
+  const APPROX_CURRENT_DAY = 1850
   const maintDay = lastMaintDay || 0
-  const daysSinceClean = lastDay - maintDay
+  const daysSinceClean = maintDay > 0 ? Math.max(0, APPROX_CURRENT_DAY - maintDay) : 0
 
   const pos = SHIP_POSITIONS[shipId] || { lat: 22.6, lon: 120.3, headingDeg: 180, speedKt: 0 }
   const baselineFuel = W1_SHIPS.includes(shipId) ? 155 : 92
@@ -444,8 +446,8 @@ function buildVesselSummary(
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd,
     nextRecommendedWindow: {
-      start: dayToDate(lastDay + 30),
-      end: dayToDate(lastDay + 60),
+      start: dayToDate(APPROX_CURRENT_DAY + 30),
+      end: dayToDate(APPROX_CURRENT_DAY + 60),
     },
   }
 }
