@@ -111,22 +111,22 @@ EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}  # any physical inte
 # lat/lon: confirmed open-ocean positions, not over land
 SHIP_POSITIONS: dict[str, dict] = {
     # W1 — Asia-Europe (Suez route), various positions along the lane
-    'S1':  {'lat': 22.30, 'lon': 114.20, 'heading_deg': 225},  # S China Sea, SW of HK
-    'S2':  {'lat':  1.20, 'lon': 104.00, 'heading_deg': 270},  # Singapore Strait, westbound
-    'S3':  {'lat': 11.50, 'lon':  57.00, 'heading_deg': 300},  # Arabian Sea, NW of Socotra
-    'S4':  {'lat': 51.90, 'lon':   4.50, 'heading_deg': 270},  # Moored Rotterdam (ECT)
-    'S5':  {'lat': 35.80, 'lon':  27.00, 'heading_deg': 280},  # Aegean Sea, W of Rhodes
-    'S6':  {'lat':  5.80, 'lon':  80.20, 'heading_deg': 280},  # Indian Ocean, S of Sri Lanka
-    'S7':  {'lat': 25.30, 'lon':  56.40, 'heading_deg':   0},  # Gulf of Oman, Fujairah area
-    'S8':  {'lat': 29.90, 'lon': 121.60, 'heading_deg': 180},  # Moored Ningbo
-    'S21': {'lat': 12.60, 'lon':  43.90, 'heading_deg': 340},  # Gulf of Aden, N bound
+    'S1':  {'lat': 21.50, 'lon': 115.80, 'heading_deg': 225},  # S China Sea, open water SW of HK
+    'S2':  {'lat':  1.00, 'lon': 105.50, 'heading_deg': 270},  # S China Sea, W of Singapore, open water
+    'S3':  {'lat': 11.50, 'lon':  57.00, 'heading_deg': 300},  # Arabian Sea, open ocean NW of Socotra
+    'S4':  {'lat': 52.50, 'lon':   3.20, 'heading_deg': 100},  # North Sea, off coast approaching Rotterdam
+    'S5':  {'lat': 35.50, 'lon':  25.50, 'heading_deg': 280},  # Aegean Sea, open water W of Crete
+    'S6':  {'lat':  4.50, 'lon':  79.00, 'heading_deg': 280},  # Indian Ocean, open water S of Sri Lanka
+    'S7':  {'lat': 24.50, 'lon':  58.50, 'heading_deg':  15},  # Gulf of Oman, open water
+    'S8':  {'lat': 30.80, 'lon': 124.50, 'heading_deg': 180},  # E China Sea, open water off Zhoushan
+    'S21': {'lat': 12.00, 'lon':  44.50, 'heading_deg': 340},  # Gulf of Aden, open water
     # W2 — Trans-Pacific (Asia ↔ US West Coast)
-    'S9':  {'lat': 34.00, 'lon':-118.20, 'heading_deg': 270},  # Moored Los Angeles/Long Beach
-    'S10': {'lat': 35.50, 'lon':-152.00, 'heading_deg':  85},  # North Pacific, eastbound
-    'S11': {'lat': 22.60, 'lon': 120.30, 'heading_deg':   0},  # Moored Kaohsiung
-    'S12': {'lat': 38.00, 'lon':-165.00, 'heading_deg':  75},  # North Pacific, eastbound
-    'S22': {'lat': 26.00, 'lon': 170.00, 'heading_deg':  65},  # W Pacific, Tokyo→US
-    'S23': {'lat': 31.20, 'lon': 121.50, 'heading_deg':   0},  # Moored Shanghai (Yangshan)
+    'S9':  {'lat': 32.50, 'lon':-119.50, 'heading_deg': 260},  # Pacific, open water W of LA
+    'S10': {'lat': 36.00, 'lon':-148.00, 'heading_deg':  85},  # N Pacific, mid-ocean eastbound
+    'S11': {'lat': 21.80, 'lon': 119.20, 'heading_deg':  15},  # Taiwan Strait, open water S of Taiwan
+    'S12': {'lat': 39.00, 'lon':-163.00, 'heading_deg':  75},  # N Pacific, mid-ocean eastbound
+    'S22': {'lat': 28.00, 'lon': 168.00, 'heading_deg':  65},  # W Pacific, open ocean
+    'S23': {'lat': 29.50, 'lon': 124.00, 'heading_deg':  45},  # E China Sea, open water E of Shanghai
 }
 
 
