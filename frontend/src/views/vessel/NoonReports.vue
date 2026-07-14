@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { VesselSummary } from '@/types/fleet'
-import { fetchNoonReportsData } from '@/composables/useDataSource'
+import type { VesselSummary, NoonReportEntry } from '@/types/fleet'
+import { getNoonReports } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -9,7 +9,35 @@ import { formatDate } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
-const { data, state } = useAsyncData(() => props.imo, fetchNoonReportsData)
+const BASE_DATE = new Date('2020-01-01')
+function dayToDate(day: number): string {
+  const d = new Date(BASE_DATE)
+  d.setDate(d.getDate() + Math.round(day))
+  return d.toISOString().slice(0, 10)
+}
+
+async function fetchReports(imo: string): Promise<{ vessel: VesselSummary; reports: NoonReportEntry[] }> {
+  const resp = await getNoonReports(imo, { limit: 5000 })
+  const reports: NoonReportEntry[] = resp.records.map((r) => ({
+    date: dayToDate(r.noon_day),
+    lat: 0,
+    lon: 0,
+    observedSpeedKt: r.avg_speed_kn ?? 0,
+    correctedSpeedKt: r.speed_through_water ?? 0,
+    speedLossPct: 0,
+    fuelConsumptionMt: r.me_consumption ?? 0,
+    beaufort: r.wind_scale ?? 0,
+    seaState: r.wind_scale ?? 0,
+    draftFwd: r.fore_draft ?? 0,
+    draftAft: r.aft_draft ?? 0,
+    loadCondition: (r.cargo_on_board ?? 0) > 1000 ? 'laden' : 'ballast',
+    isAnomaly: false,
+    anomalyReason: null,
+  }))
+  return { vessel: props.vessel, reports }
+}
+
+const { data, state } = useAsyncData(() => props.imo, fetchReports)
 
 const startDate = ref('')
 const endDate = ref('')
@@ -23,8 +51,6 @@ const filteredReports = computed(() => {
   })
 })
 
-// Show a manageable window by default (most recent 60 entries) while still
-// allowing the date filters above to widen the range.
 const visibleReports = computed(() => {
   const list = filteredReports.value
   if (startDate.value || endDate.value) return list
@@ -33,9 +59,9 @@ const visibleReports = computed(() => {
 
 function exportCsv() {
   const rows = filteredReports.value.length ? filteredReports.value : visibleReports.value
-  const header = ['Date', 'Lat', 'Lon', 'ObservedSpeedKt', 'CorrectedSpeedKt', 'SpeedLossPct', 'FuelMt', 'Beaufort', 'DraftFwd', 'DraftAft', 'LoadCondition', 'Anomaly']
+  const header = ['Date', 'ObservedSpeedKt', 'STW', 'FuelMt', 'Beaufort', 'DraftFwd', 'DraftAft', 'LoadCondition']
   const lines = rows.map((r) =>
-    [r.date, r.lat, r.lon, r.observedSpeedKt, r.correctedSpeedKt, r.speedLossPct, r.fuelConsumptionMt, r.beaufort, r.draftFwd, r.draftAft, r.loadCondition, r.isAnomaly ? 'Y' : 'N'].join(','),
+    [r.date, r.observedSpeedKt, r.correctedSpeedKt, r.fuelConsumptionMt, r.beaufort, r.draftFwd, r.draftAft, r.loadCondition].join(','),
   )
   const csv = [header.join(','), ...lines].join('\n')
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
@@ -104,7 +130,7 @@ function exportCsv() {
             :title="r.isAnomaly ? r.anomalyReason ?? undefined : undefined"
           >
             <td class="px-3 py-1.5 font-data whitespace-nowrap">{{ formatDate(r.date) }}</td>
-            <td class="px-3 py-1.5 font-data text-xs">{{ r.lat.toFixed(2) }}, {{ r.lon.toFixed(2) }}</td>
+            <td class="px-3 py-1.5 font-data text-xs text-[var(--color-ink-slate)]/50">—</td>
             <td class="px-3 py-1.5 font-data text-right">{{ r.observedSpeedKt.toFixed(1) }}</td>
             <td class="px-3 py-1.5 font-data text-right">{{ r.correctedSpeedKt.toFixed(1) }}</td>
             <td class="px-3 py-1.5 font-data text-right">{{ r.fuelConsumptionMt.toFixed(1) }}</td>

@@ -1,20 +1,42 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { VesselSummary } from '@/types/fleet'
-import { fetchInspectionsData } from '@/composables/useDataSource'
+import { getMaintenanceEvents } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
-import FathometerGauge from '@/components/FathometerGauge.vue'
-import HullFoulingDiagram from '@/components/HullFoulingDiagram.vue'
 import { formatDate } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
-const { data: inspections, state } = useAsyncData(() => props.imo, fetchInspectionsData)
+const { data, state } = useAsyncData(() => props.imo, getMaintenanceEvents)
 
-const expandedId = ref<string | null>(null)
-function toggle(id: string) {
-  expandedId.value = expandedId.value === id ? null : id
+const BASE_DATE = new Date('2020-01-01')
+function dayToDate(day: number): string {
+  const d = new Date(BASE_DATE)
+  d.setDate(d.getDate() + Math.round(day))
+  return d.toISOString().slice(0, 10)
+}
+
+const expandedDay = ref<number | null>(null)
+function toggle(day: number) {
+  expandedDay.value = expandedDay.value === day ? null : day
+}
+
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  DD: '乾塢（Dry Dock）',
+  UWC: '水下清洗（Hull Cleaning）',
+  PP: '螺旋槳拋光（Propeller Polishing）',
+  'UWC+PP': '清洗+拋光',
+  'UWI+PP': '水下檢查+拋光',
+  UWI: '水下檢查（UWI）',
+}
+const EVENT_TYPE_COLORS: Record<string, string> = {
+  DD: '#C94B4B',
+  UWC: '#2B6CB0',
+  PP: '#C8A84B',
+  'UWC+PP': '#6B46C1',
+  'UWI+PP': '#319795',
+  UWI: '#8FA6B2',
 }
 </script>
 
@@ -24,79 +46,61 @@ function toggle(id: string) {
     <StateDisplay
       v-if="state !== 'success'"
       :state="state === 'error' ? 'error' : state === 'empty' ? 'empty' : 'loading'"
-      empty-title="此船尚無水�?檢查記�?"
-      empty-hint="請聯絡�??��?調人?��??��?一�?UWI 檢查??
+      empty-title="此船尚無養護事件記錄"
+      empty-hint="後端尚無此船的水下檢查或養護資料。"
     />
-    <ol v-else class="flex flex-col">
-      <li v-for="insp in inspections" :key="insp.id" class="chart-divider py-4 first:border-t-0">
-        <button class="w-full flex items-start gap-4 text-left" @click="toggle(insp.id)">
-          <FathometerGauge
-            size="sm"
-            :value="insp.biofoulingScore"
-            :grade="insp.foulingGrade"
-            :display-value="`${insp.biofoulingScore}`"
-          />
+    <ol v-else-if="data?.events.length" class="flex flex-col">
+      <li
+        v-for="evt in [...(data?.events ?? [])].sort((a, b) => b.event_day - a.event_day)"
+        :key="`${evt.event_type}-${evt.event_day}`"
+        class="chart-divider py-4 first:border-t-0"
+      >
+        <button class="w-full flex items-start gap-4 text-left" @click="toggle(evt.event_day)">
+          <div
+            class="w-10 h-10 rounded-[3px] flex items-center justify-center text-white text-xs font-display font-bold shrink-0"
+            :style="{ background: EVENT_TYPE_COLORS[evt.event_type] ?? '#6B7A8D' }"
+          >
+            {{ evt.event_type.split('+')[0] }}
+          </div>
           <div class="flex-1">
-            <p class="font-display text-sm">{{ formatDate(insp.date) }} · {{ insp.port }}</p>
+            <p class="font-display text-sm">{{ EVENT_TYPE_LABELS[evt.event_type] ?? evt.event_type }}</p>
             <p class="font-data text-xs text-[var(--color-ink-slate)]/60 mt-0.5">
-              {{ insp.surveyor }} · {{ insp.method }}
+              Day {{ evt.event_day }} · {{ formatDate(dayToDate(evt.event_day)) }}
             </p>
-            <p class="text-sm mt-1 text-[var(--color-ink-slate)]/80">{{ insp.notes }}</p>
           </div>
           <span class="font-data text-xs text-[var(--color-ink-slate)]/50 shrink-0">
-            {{ expandedId === insp.id ? '?��? ?? : '展�? ?? }}
+            {{ expandedDay === evt.event_day ? '收合 ▾' : '展開 ▸' }}
           </span>
         </button>
 
-        <div v-if="expandedId === insp.id" class="mt-4 pl-2 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-6">
-          <div class="flex flex-col items-center gap-2">
-            <HullFoulingDiagram :sections="insp.hullSections" />
-            <p class="font-data text-[10px] text-[var(--color-ink-slate)]/50">依�?塊�??��?示污?��?度�?示�?�?/p>
+        <div v-if="expandedDay === evt.event_day" class="mt-4 pl-14 grid grid-cols-2 md:grid-cols-3 gap-4 font-data text-sm">
+          <div v-if="evt.propeller_condition">
+            <p class="text-xs font-body text-[var(--color-ink-slate)]/60">螺旋槳狀態</p>
+            <p>{{ evt.propeller_condition }}</p>
           </div>
-          <div class="flex flex-col gap-3">
-            <div class="grid grid-cols-2 gap-3 font-data text-sm">
-              <div>
-                <p class="text-xs font-body text-[var(--color-ink-slate)]/60">塗�??��???/p>
-                <p>{{ insp.paintBreakdownPct.toFixed(1) }}%</p>
-              </div>
-              <div>
-                <p class="text-xs font-body text-[var(--color-ink-slate)]/60">?��?槳�???/p>
-                <p>{{ insp.propellerCondition }}</p>
-              </div>
-              <div>
-                <p class="text-xs font-body text-[var(--color-ink-slate)]/60">?�否建議清�?</p>
-                <p :class="insp.cleaningRecommended.includes('PRIORITY') ? 'text-[var(--color-signal-red)]' : ''">
-                  {{ insp.cleaningRecommended }}
-                </p>
-              </div>
-              <div>
-                <p class="text-xs font-body text-[var(--color-ink-slate)]/60">?��??��?</p>
-                <p>{{ insp.photoCount }} �?/p>
-              </div>
-            </div>
-            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <div
-                v-for="n in Math.min(insp.photoCount, 8)"
-                :key="n"
-                class="aspect-square rounded-[2px] border chart-divider flex items-center justify-center text-[var(--color-ink-slate)]/30 bg-black/[0.03]"
-              >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                  <rect x="3" y="5" width="18" height="14" rx="1" stroke="currentColor" stroke-width="1.4" />
-                  <circle cx="9" cy="10" r="1.6" stroke="currentColor" stroke-width="1.2" />
-                  <path d="M4 17l5-5 3 3 4-5 4 5" stroke="currentColor" stroke-width="1.2" />
-                </svg>
-              </div>
-            </div>
-            <button
-              class="w-fit border rounded-[2px] px-3 py-1.5 text-xs font-display uppercase tracking-wide hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              disabled
-              title="Mock 資�??�實??PDF 檔�?"
-            >
-              下�?檢查?��? PDF
-            </button>
+          <div v-if="evt.hull_fouling_type">
+            <p class="text-xs font-body text-[var(--color-ink-slate)]/60">船殼污損類型</p>
+            <p>{{ evt.hull_fouling_type }}</p>
+          </div>
+          <div v-if="evt.hull_coating_condition">
+            <p class="text-xs font-body text-[var(--color-ink-slate)]/60">塗裝狀態</p>
+            <p>{{ evt.hull_coating_condition }}</p>
+          </div>
+          <div v-if="evt.cavitation_found !== null && evt.cavitation_found !== undefined">
+            <p class="text-xs font-body text-[var(--color-ink-slate)]/60">空蝕發現</p>
+            <p>{{ evt.cavitation_found }}</p>
+          </div>
+          <div v-if="evt.draft_fwd_m !== null && evt.draft_fwd_m !== undefined">
+            <p class="text-xs font-body text-[var(--color-ink-slate)]/60">前吃水</p>
+            <p>{{ evt.draft_fwd_m }} m</p>
+          </div>
+          <div v-if="evt.draft_aft_m !== null && evt.draft_aft_m !== undefined">
+            <p class="text-xs font-body text-[var(--color-ink-slate)]/60">後吃水</p>
+            <p>{{ evt.draft_aft_m }} m</p>
           </div>
         </div>
       </li>
     </ol>
+    <p v-else class="text-sm text-[var(--color-ink-slate)]/50">此船尚無養護記錄。</p>
   </div>
 </template>

@@ -632,12 +632,12 @@ def get_fleet_summary(event):
       prediction_vessels: int,
       pending_maintenance: int,
       avg_fleet_slip_pct: float,
-      total_excess_fuel_cost_usd_mtd: float,
+      total_excess_fuel_cost_usd_per_day: float,
       worst_vessel: { vessel_id, avg_slip_pct, urgency },
       per_vessel: [
         { vessel_id, vessel_type, ship_class, avg_slip_pct,
           recent_90d_slip_pct, slip_trend, avg_consumption_mt,
-          urgency, days_since_maintenance, excess_fuel_cost_usd_mtd,
+          urgency, days_since_maintenance, excess_fuel_cost_usd_per_day,
           total_records, total_voyages, last_updated }
       ]
     }
@@ -675,7 +675,7 @@ def get_fleet_summary(event):
                 'avg_consumption_mt':      float(item['avg_consumption_mt'])      if item.get('avg_consumption_mt')      is not None else None,
                 'urgency':                 str(item.get('urgency', 'LOW')),
                 'days_since_maintenance':  int(item['days_since_maintenance'])    if item.get('days_since_maintenance')  is not None else None,
-                'excess_fuel_cost_usd_mtd': int(item['excess_fuel_cost_usd_mtd']) if item.get('excess_fuel_cost_usd_mtd') is not None else 0,
+                'excess_fuel_cost_usd_per_day': float(item['excess_fuel_cost_usd_per_day']) if item.get('excess_fuel_cost_usd_per_day') is not None else 0.0,
                 'total_records':           int(item['total_records'])             if item.get('total_records')           is not None else 0,
                 'total_voyages':           int(item['total_voyages'])             if item.get('total_voyages')           is not None else 0,
                 'last_updated':            str(item.get('last_updated', '')),
@@ -720,7 +720,7 @@ def get_fleet_summary(event):
             urgency    = ('HIGH'   if (slip_val >= 10 or (days_since and days_since > 365)) else
                           'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
             baseline   = 155 if vid in W1_SHIPS_SET else 92
-            excess_mtd = round(baseline * (slip_val / 100) * 1.8 * FUEL_PRICE * 30)
+            excess_per_day = round(baseline * (slip_val / 100) * 1.8 * FUEL_PRICE, 2)
             cons_list  = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
             return {
                 'vessel_id':               vid,
@@ -732,7 +732,7 @@ def get_fleet_summary(event):
                 'avg_consumption_mt':      round(mean(cons_list), 2) if cons_list else None,
                 'urgency':                 urgency,
                 'days_since_maintenance':  days_since,
-                'excess_fuel_cost_usd_mtd': excess_mtd,
+                'excess_fuel_cost_usd_per_day': excess_per_day,
                 'total_records':           len(rows),
                 'total_voyages':           0,
                 'last_updated':            '',
@@ -754,7 +754,7 @@ def get_fleet_summary(event):
     training  = [v for v in per_vessel if v['type'] == 'training']
     slip_vals = [v['avg_slip_pct'] for v in training if v['avg_slip_pct'] is not None]
     pending   = [v for v in per_vessel if v['urgency'] != 'LOW']
-    total_excess = sum(v['excess_fuel_cost_usd_mtd'] for v in per_vessel)
+    total_excess = sum(v['excess_fuel_cost_usd_per_day'] for v in per_vessel)
     worst = max(training, key=lambda v: v['avg_slip_pct'] or 0) if training else None
 
     result = resp(200, {
@@ -763,7 +763,7 @@ def get_fleet_summary(event):
         'prediction_vessels':             len(PRED_VESSELS),
         'pending_maintenance':            len(pending),
         'avg_fleet_slip_pct':             round(mean(slip_vals), 2) if slip_vals else None,
-        'total_excess_fuel_cost_usd_mtd': round(total_excess),
+        'total_excess_fuel_cost_usd_per_day': round(total_excess, 2),
         'worst_vessel': {
             'vessel_id':    worst['vessel_id'],
             'avg_slip_pct': worst['avg_slip_pct'],

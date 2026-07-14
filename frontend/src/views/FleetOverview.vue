@@ -42,7 +42,7 @@ function goToVessel(imo: string) {
         <KpiCard code="KPI-04" label="待安排維修船數" :value="kpis.pendingMaintenance" tone="amber" />
         <KpiCard
           code="KPI-05"
-          label="本月累積超額油耗成本"
+          label="船隊超額燃油成本 (USD/天)"
           :value="kpis.monthlyExcessFuelCostUsd"
           :formatter="formatUsd"
           tone="red"

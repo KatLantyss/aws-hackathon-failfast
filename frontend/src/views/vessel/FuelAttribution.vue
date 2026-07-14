@@ -1,102 +1,134 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary } from '@/types/fleet'
-import { fetchFuelAttr } from '@/composables/useDataSource'
+import { getSpeedLossAttribution } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
-import { CONFIDENCE_LABEL } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
-import { useFuelWaterfallOption, fuelFactorColors } from '@/composables/useFuelWaterfallOption'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
-const { data, state } = useAsyncData(() => props.imo, fetchFuelAttr)
+const { data, state } = useAsyncData(() => props.imo, getSpeedLossAttribution)
 const chart = useChartTheme()
 
-const view = ref<'timeseries' | 'stacked'>('timeseries')
+// Category color map
+const CATEGORY_COLORS: Record<string, string> = {
+  'hull+propeller': '#C94B4B',
+  hull: '#E07B39',
+  propeller: '#C8A84B',
+  inspection_only: '#8FA6B2',
+  other: '#6B7A8D',
+}
+const CATEGORY_LABELS: Record<string, string> = {
+  'hull+propeller': '船殼+螺旋槳',
+  hull: '船殼',
+  propeller: '螺旋槳',
+  inspection_only: '純檢查（無預期改善）',
+  other: '其他',
+}
 
-const FACTOR_COLORS = computed(() => fuelFactorColors(chart.value))
-
-// --- Waterfall: baseline -> +weather -> +hull -> +propeller -> +engine -> actual
-const waterfallOption = useFuelWaterfallOption(data, chart)
-
-// --- SHAP-style horizontal bar (already sorted by impact desc)
-const shapOption = computed(() => {
+// Bar chart: maintenance events — slip delta per event
+const eventBarOption = computed(() => {
   if (!data.value) return {}
   const c = chart.value
-  const factorColors = FACTOR_COLORS.value
-  const sorted = [...data.value.attribution].sort((a, b) => b.impactMt - a.impactMt)
+  const events = data.value.event_attributions.filter((e) => e.slip_delta_pct !== null)
   return {
     animation: false,
-    grid: { left: 110, right: 32, top: 16, bottom: 24 },
+    grid: { left: 80, right: 32, top: 16, bottom: 60 },
     tooltip: {
       backgroundColor: c.marineNavy,
       textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
-      formatter: (p: any) => `${p.name}: ${p.value.toFixed(2)} MT/日`,
+      formatter: (p: any) => {
+        const e = events[p.dataIndex]
+        return `${e.event_type} (Day ${e.event_day})<br/>前: ${e.slip_before_pct?.toFixed(1)}% → 後: ${e.slip_after_pct?.toFixed(1)}%<br/>改善: ${e.slip_delta_pct?.toFixed(2)}%`
+      },
     },
     xAxis: {
+      type: 'category',
+      data: events.map((e) => `${e.event_type}\nD${e.event_day}`),
+      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, interval: 0 },
+      axisLine: { lineStyle: { color: c.axisLine } },
+    },
+    yAxis: {
       type: 'value',
-      name: 'MT/日',
+      name: 'Slip 改善 %',
       nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 10 },
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate },
       splitLine: { lineStyle: { color: c.splitLine } },
     },
-    yAxis: {
-      type: 'category',
-      data: sorted.map((a) => a.label),
-      axisLabel: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate },
-    },
     series: [
       {
         type: 'bar',
-        data: sorted.map((a) => ({ value: a.impactMt, itemStyle: { color: factorColors[a.factor] } })),
-        barWidth: '55%',
-        label: { show: true, position: 'right', formatter: (p: any) => p.value.toFixed(2), fontFamily: 'IBM Plex Mono', fontSize: 11 },
+        data: events.map((e) => ({
+          value: e.slip_delta_pct,
+          itemStyle: {
+            color: (e.slip_delta_pct ?? 0) >= 0 ? CATEGORY_COLORS[e.category] ?? c.fathomTeal : c.signalRed,
+          },
+        })),
+        barMaxWidth: 36,
+        label: {
+          show: true,
+          position: 'top',
+          formatter: (p: any) => (p.value != null ? `${Number(p.value).toFixed(1)}%` : ''),
+          fontFamily: 'IBM Plex Mono',
+          fontSize: 10,
+        },
       },
     ],
   }
 })
 
-// --- stacked area over time
-const stackedOption = computed(() => {
-  if (!data.value) return {}
+// Weather proxy timeline: DIFF_STW_SOG_SLIP
+const weatherTimelineOption = computed(() => {
+  if (!data.value || !data.value.weather_timeline.length) return {}
   const c = chart.value
-  const factorColors = FACTOR_COLORS.value
-  const factors: (keyof typeof factorColors)[] = ['weather', 'hull_fouling', 'propeller_fouling', 'engine_degradation']
-  const labels: Record<string, string> = {
-    weather: '天氣（風浪）',
-    hull_fouling: '船體污損',
-    propeller_fouling: '螺旋槳污損',
-    engine_degradation: '主機老化',
-  }
+  const pts = data.value.weather_timeline
   return {
     animation: false,
-    grid: { left: 56, right: 24, top: 40, bottom: 40 },
-    legend: { top: 4, textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate } },
-    tooltip: { trigger: 'axis', backgroundColor: c.marineNavy, textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 } },
+    grid: { left: 56, right: 24, top: 16, bottom: 40 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: c.marineNavy,
+      textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
+      formatter: (p: any) => `Day ${p[0].value[0]}<br/>STW-SOG Slip: ${p[0].value[1].toFixed(2)}%`,
+    },
     xAxis: {
-      type: 'time',
+      type: 'value',
+      name: 'Noon Day',
+      nameLocation: 'middle',
+      nameGap: 24,
+      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 10 },
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate },
       axisLine: { lineStyle: { color: c.axisLine } },
     },
     yAxis: {
       type: 'value',
-      name: 'MT/日',
+      name: 'Slip %',
       nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 10 },
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate },
       splitLine: { lineStyle: { color: c.splitLine } },
     },
-    series: factors.map((f) => ({
-      name: labels[f],
-      type: 'line',
-      stack: 'total',
-      areaStyle: { color: factorColors[f], opacity: 0.75 },
-      lineStyle: { color: factorColors[f], width: 1 },
-      showSymbol: false,
-      data: data.value!.timeSeries.map((p) => [p.date, (p as any)[f]]),
-    })),
+    series: [
+      {
+        type: 'scatter',
+        symbolSize: 3,
+        itemStyle: { color: '#8FA6B2', opacity: 0.7 },
+        data: pts.map((p) => [p.noon_day, p.diff_stw_sog]),
+      },
+    ],
   }
+})
+
+// Summary table: avg improvement per category
+const summaryEntries = computed(() => {
+  if (!data.value) return []
+  return Object.entries(data.value.summary).map(([cat, avg]) => ({
+    category: cat,
+    label: CATEGORY_LABELS[cat] ?? cat,
+    avgDelta: avg as number,
+    color: CATEGORY_COLORS[cat] ?? '#6B7A8D',
+  })).sort((a, b) => b.avgDelta - a.avgDelta)
 })
 </script>
 
@@ -105,66 +137,80 @@ const stackedOption = computed(() => {
     <StateDisplay
       v-if="state !== 'success'"
       :state="state === 'error' ? 'error' : state === 'empty' ? 'empty' : 'loading'"
-      empty-title="此船尚無油耗歸因資料"
+      empty-title="此船尚無速損歸因資料"
     />
     <template v-else-if="data">
-      <div class="flex items-center justify-between">
-        <PanelTag code="FUEL-A1" />
-        <span
-          class="text-xs px-2 py-1 rounded-[2px] border font-data"
-          :class="data.confidence === 'high' ? 'border-[var(--color-fathom-teal)] text-[var(--color-fathom-teal)]' : 'border-[var(--color-brass-amber)] text-[var(--color-brass-amber)]'"
-        >
-          信心程度: {{ CONFIDENCE_LABEL[data.confidence] }}
-        </span>
+      <!-- Summary by category -->
+      <div v-if="summaryEntries.length" class="panel p-4">
+        <PanelTag code="FUEL-A1" class="mb-3" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">各養護類別平均 Speed Loss 改善幅度</p>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div v-for="s in summaryEntries" :key="s.category" class="panel p-3 border-l-4" :style="{ borderLeftColor: s.color }">
+            <p class="font-display text-xs text-[var(--color-ink-slate)]/60 mb-1">{{ s.label }}</p>
+            <p class="font-data text-xl" :style="{ color: s.color }">{{ s.avgDelta.toFixed(2) }}%</p>
+            <p class="font-mono text-[10px] text-[var(--color-ink-slate)]/50 mt-0.5">平均 Slip 下降</p>
+          </div>
+        </div>
       </div>
 
+      <!-- Event attribution bar chart -->
       <div class="panel p-3">
-        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">油耗差異拆解（瀑布圖）</p>
-        <div class="h-[320px]">
-          <VChart :option="waterfallOption" autoresize class="h-full w-full" />
+        <PanelTag code="FUEL-A2" class="mb-2" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">各養護事件前後 Speed Loss 差值（正值 = 改善）</p>
+        <div class="h-[280px]">
+          <VChart :option="eventBarOption" autoresize class="h-full w-full" />
         </div>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div class="panel p-3">
-          <PanelTag code="FUEL-A2" class="mb-2" />
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">特徵平均影響排序</p>
-          <div class="h-[240px]">
-            <VChart :option="shapOption" autoresize class="h-full w-full" />
-          </div>
-        </div>
-
-        <div class="panel p-3">
-          <div class="flex items-center justify-between mb-2">
-            <PanelTag code="FUEL-A3" />
-            <div class="flex gap-1 text-xs">
-              <button
-                class="px-2 py-1 rounded-[2px] border font-display uppercase tracking-wide"
-                :class="view === 'timeseries' ? 'bg-[var(--color-brass-amber)] text-white border-[var(--color-brass-amber)]' : ''"
-                @click="view = 'timeseries'"
+      <!-- Event details table -->
+      <div class="panel p-3 overflow-x-auto">
+        <PanelTag code="FUEL-A3" class="mb-2" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">養護事件明細</p>
+        <table class="w-full text-sm min-w-[640px]">
+          <thead>
+            <tr class="chart-divider">
+              <th class="text-left font-display text-xs uppercase tracking-wide px-3 py-2">事件類型</th>
+              <th class="text-left font-display text-xs uppercase tracking-wide px-3 py-2">歸因類別</th>
+              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">事件日</th>
+              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">前 Slip %</th>
+              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">後 Slip %</th>
+              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">改善 %</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="e in data.event_attributions"
+              :key="`${e.event_type}-${e.event_day}`"
+              class="chart-divider hover:bg-black/[0.02]"
+            >
+              <td class="px-3 py-1.5 font-data">{{ e.event_type }}</td>
+              <td class="px-3 py-1.5">
+                <span
+                  class="text-xs px-1.5 py-0.5 rounded-[2px] font-body"
+                  :style="{ background: `${CATEGORY_COLORS[e.category]}22`, color: CATEGORY_COLORS[e.category] }"
+                >{{ CATEGORY_LABELS[e.category] ?? e.category }}</span>
+              </td>
+              <td class="px-3 py-1.5 font-data text-right">{{ e.event_day }}</td>
+              <td class="px-3 py-1.5 font-data text-right">{{ e.slip_before_pct?.toFixed(2) ?? '—' }}</td>
+              <td class="px-3 py-1.5 font-data text-right">{{ e.slip_after_pct?.toFixed(2) ?? '—' }}</td>
+              <td
+                class="px-3 py-1.5 font-data text-right font-semibold"
+                :class="(e.slip_delta_pct ?? 0) >= 0 ? 'text-[var(--color-fathom-teal)]' : 'text-[var(--color-signal-red)]'"
               >
-                堆疊面積圖
-              </button>
-            </div>
-          </div>
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
-            各歸因因子隨時間變化（最近 60 筆）
-          </p>
-          <div class="h-[240px]">
-            <VChart :option="stackedOption" autoresize class="h-full w-full" />
-          </div>
-        </div>
+                {{ e.slip_delta_pct != null ? `${e.slip_delta_pct >= 0 ? '+' : ''}${e.slip_delta_pct.toFixed(2)}%` : '—' }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
-      <div class="panel p-4">
-        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">白話解釋</p>
-        <ul class="flex flex-col gap-1.5 text-sm">
-          <li v-for="a in data.attribution" :key="a.factor" class="flex items-center gap-2">
-            <span class="status-dot" :style="{ background: FACTOR_COLORS[a.factor] }" />
-            本趟因{{ a.label }}多燒了 {{ a.impactMt.toFixed(2) }} 噸燃油，約占超額油耗的
-            {{ (((a.impactMt) / (data.actualFuelMt - data.baselineFuelMt)) * 100).toFixed(0) }}%。
-          </li>
-        </ul>
+      <!-- Weather proxy timeline -->
+      <div v-if="data.weather_timeline.length" class="panel p-3">
+        <PanelTag code="FUEL-A4" class="mb-2" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">洋流/天候影響代理指標（DIFF_STW_SOG）</p>
+        <div class="h-[200px]">
+          <VChart :option="weatherTimelineOption" autoresize class="h-full w-full" />
+        </div>
       </div>
     </template>
   </div>

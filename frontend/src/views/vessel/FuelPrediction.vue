@@ -1,13 +1,8 @@
 <script setup lang="ts">
-// Core API #1: POST /api/v1/predict/fuel-consumption — no prior frontend
-// surface existed for this at all (design_docs only covered a SHAP-style
-// "fuel attribution" page). This page calls the real endpoint directly, no
-// mock/adapter layer, since its request/response shapes are already a
-// clean 1:1 fit for the UI.
 import { computed, reactive, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary } from '@/types/fleet'
-import type { FuelPredictionResult } from '@/types/fleet'
+import type { BackendFuelPredictionResult } from '@/services/backend'
 import { predictFuelConsumption } from '@/services/backend'
 import PanelTag from '@/components/PanelTag.vue'
 import KpiCard from '@/components/KpiCard.vue'
@@ -27,7 +22,7 @@ const form = reactive({
   seaHeight: 1,
 })
 
-const result = ref<FuelPredictionResult | null>(null)
+const result = ref<BackendFuelPredictionResult | null>(null)
 const sweep = ref<{ speedKn: number; predictedMt: number }[]>([])
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMessage = ref<string | null>(null)
@@ -39,14 +34,30 @@ async function runPrediction() {
   errorMessage.value = null
   try {
     const [primary, ...curve] = await Promise.all([
-      predictFuelConsumption({ vesselId: props.imo, ...form }),
+      predictFuelConsumption({
+        vessel_id: props.imo,
+        speed_kn: form.speedKn,
+        draft_fwd: form.draftFwd,
+        draft_aft: form.draftAft,
+        cargo_on_board: form.cargoOnBoard,
+        wind_scale: form.windScale,
+        sea_height: form.seaHeight,
+      }),
       ...[-3, -2, -1, 0, 1, 2, 3].map((delta) =>
-        predictFuelConsumption({ vesselId: props.imo, ...form, speedKn: Math.max(6, form.speedKn + delta) }),
+        predictFuelConsumption({
+          vessel_id: props.imo,
+          speed_kn: Math.max(6, form.speedKn + delta),
+          draft_fwd: form.draftFwd,
+          draft_aft: form.draftAft,
+          cargo_on_board: form.cargoOnBoard,
+          wind_scale: form.windScale,
+          sea_height: form.seaHeight,
+        }),
       ),
     ])
     result.value = primary
     sweep.value = curve
-      .map((r) => ({ speedKn: r.input.speedKn, predictedMt: r.predictedConsumptionMt }))
+      .map((r) => ({ speedKn: r.input.speed_kn, predictedMt: r.predicted_consumption_mt }))
       .sort((a, b) => a.speedKn - b.speedKn)
     status.value = 'success'
   } catch (e) {
@@ -59,7 +70,7 @@ watch(() => props.imo, runPrediction, { immediate: true })
 
 const annualSavingUsd = computed(() => {
   if (!result.value) return 0
-  return Math.round(result.value.counterfactual.fuelSavingMt * fuelPriceUsdPerMt * 365)
+  return Math.round(result.value.counterfactual.fuel_saving_mt * fuelPriceUsdPerMt * 365)
 })
 
 const sweepOption = computed(() => {
@@ -108,7 +119,7 @@ const sweepOption = computed(() => {
               type: 'scatter' as const,
               symbolSize: 12,
               itemStyle: { color: c.signalRed },
-              data: [[result.value.input.speedKn, result.value.predictedConsumptionMt]],
+              data: [[result.value.input.speed_kn, result.value.predicted_consumption_mt]],
             },
           ]
         : []),
@@ -169,12 +180,12 @@ const sweepOption = computed(() => {
         <StateDisplay v-if="status === 'error'" state="error" :error-message="errorMessage" />
         <template v-else-if="result">
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <KpiCard code="FUEL-P2" label="預測主機油耗" :value="result.predictedConsumptionMt" :formatter="(n) => `${n.toFixed(2)} MT/日`" tone="amber" />
+            <KpiCard code="FUEL-P2" label="預測主機油耗" :value="result.predicted_consumption_mt" :formatter="(n) => `${n.toFixed(2)} MT/日`" tone="amber" />
             <KpiCard
               code="FUEL-P3"
               label="降速 1kt 可省油耗"
-              :value="result.counterfactual.fuelSavingMt"
-              :formatter="(n) => `${n.toFixed(2)} MT/日 (${result!.counterfactual.savingPct.toFixed(1)}%)`"
+              :value="result.counterfactual.fuel_saving_mt"
+              :formatter="(n) => `${n.toFixed(2)} MT/日 (${result!.counterfactual.saving_pct.toFixed(1)}%)`"
               tone="teal"
             />
             <KpiCard code="FUEL-P4" label="年化節省金額估計" :value="annualSavingUsd" :formatter="formatUsd" tone="red" />
@@ -191,12 +202,12 @@ const sweepOption = computed(() => {
           </div>
 
           <div class="panel p-4 text-sm text-[var(--color-ink-slate)]/80">
-            以目前輸入條件（{{ result.input.speedKn.toFixed(1) }} kt、風級 {{ result.input.windScale }}、浪高 {{ result.input.seaHeight }}m）預測，
-            主機日耗油約 <strong class="font-data">{{ result.predictedConsumptionMt.toFixed(2) }} MT</strong>。
-            若降速至 <strong class="font-data">{{ result.counterfactual.slowBy1KnSpeedKn.toFixed(1) }} kt</strong>，
-            預測日耗油降為 <strong class="font-data">{{ result.counterfactual.predictedConsumptionMt.toFixed(2) }} MT</strong>，
-            每日可省 <strong class="font-data text-[var(--color-fathom-teal)]">{{ result.counterfactual.fuelSavingMt.toFixed(2) }} MT</strong>
-            （約 {{ result.counterfactual.savingPct.toFixed(1) }}%），以燃油單價 ${{ fuelPriceUsdPerMt }}/MT 估算，年化約可節省
+            以目前輸入條件（{{ result.input.speed_kn.toFixed(1) }} kt、風級 {{ result.input.wind_scale }}、浪高 {{ result.input.sea_height }}m）預測，
+            主機日耗油約 <strong class="font-data">{{ result.predicted_consumption_mt.toFixed(2) }} MT</strong>。
+            若降速至 <strong class="font-data">{{ result.counterfactual.slow_by_1kn_speed.toFixed(1) }} kt</strong>，
+            預測日耗油降為 <strong class="font-data">{{ result.counterfactual.predicted_consumption_mt.toFixed(2) }} MT</strong>，
+            每日可省 <strong class="font-data text-[var(--color-fathom-teal)]">{{ result.counterfactual.fuel_saving_mt.toFixed(2) }} MT</strong>
+            （約 {{ result.counterfactual.saving_pct.toFixed(1) }}%），以燃油單價 ${{ fuelPriceUsdPerMt }}/MT 估算，年化約可節省
             <strong class="font-data text-[var(--color-signal-red)]">{{ formatUsd(annualSavingUsd) }}</strong>。
           </div>
         </template>

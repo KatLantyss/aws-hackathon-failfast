@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import VChart from 'vue-echarts'
 import { useRouter } from 'vue-router'
-import { fetchVessels } from '@/composables/useDataSource'
+import { fetchVessels, fetchSpeedLossData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
 import { formatUsd, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
+import type { SpeedLossSeries } from '@/types/fleet'
 
 const router = useRouter()
 const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
@@ -25,17 +26,32 @@ const ranked = computed(() => {
   })
 })
 
+// Fetch speed-loss series for overlay chart
+const seriesMap = ref<Record<string, SpeedLossSeries>>({})
+onMounted(async () => {
+  if (!vessels.value) return
+  const ids = vessels.value.map((v) => v.imo)
+  const results = await Promise.allSettled(ids.map((id) => fetchSpeedLossData(id)))
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value) {
+      seriesMap.value[ids[i]] = r.value
+    }
+  })
+})
+
 const overlayOption = computed(() => {
   if (!vessels.value) return {}
   const c = chart.value
   const colors = [c.brassAmber, c.fathomTeal, c.signalRed, c.inkSlate, '#8FA6B2']
   const series = vessels.value.map((v, i) => {
+    const s = seriesMap.value[v.imo]
+    const points = (s?.reports ?? []).slice(-180).map((r) => [r.date, r.speedLossPct])
     return {
       name: v.name,
       type: 'line' as const,
       showSymbol: false,
       lineStyle: { color: colors[i % colors.length], width: 1.5 },
-      data: [], // Speed loss time series requires individual API calls — show empty for now
+      data: points,
     }
   })
   return {
@@ -59,10 +75,6 @@ const overlayOption = computed(() => {
   }
 })
 
-function exportReport() {
-  window.alert('月報 PDF 匯出為示意功能，正式版將串接後端報表產生服務。')
-}
-
 function goToVessel(imo: string) {
   router.push(`/vessels/${imo}/overview`)
 }
@@ -75,12 +87,6 @@ function goToVessel(imo: string) {
         <p class="panel-tag w-fit mb-2">FLEET-01</p>
         <h1 class="text-2xl">跨船隊分析</h1>
       </div>
-      <button
-        class="border rounded-[2px] px-3 py-1.5 text-xs font-display uppercase tracking-wide hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors"
-        @click="exportReport"
-      >
-        匯出月報 PDF
-      </button>
     </div>
 
     <StateDisplay v-if="state !== 'success'" :state="state === 'error' ? 'error' : 'loading'" />

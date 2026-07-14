@@ -136,10 +136,9 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
     else:
         urgency = 'LOW'
 
-    # ── excess fuel cost (monthly) ────────────────────────────────────────────
+    # ── excess fuel cost per day ──────────────────────────────────────────────
     baseline = BASELINE_MT_DAY_W1 if vessel_id in W1_SHIPS else BASELINE_MT_DAY_W2
-    excess_per_day       = baseline * (max(0, slip_val) / 100) * 1.8
-    excess_fuel_cost_mtd = round(excess_per_day * FUEL_PRICE_USD_MT * 30)
+    excess_fuel_cost_usd_per_day = round(baseline * (max(0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
 
     return {
         'vessel_id':               vessel_id,
@@ -153,7 +152,7 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         'avg_consumption_mt':      avg_consumption,
         'urgency':                 urgency,
         'days_since_maintenance':  days_since,
-        'excess_fuel_cost_usd_mtd': excess_fuel_cost_mtd,
+        'excess_fuel_cost_usd_per_day': excess_fuel_cost_usd_per_day,
         'last_updated':            datetime.now(timezone.utc).isoformat(timespec='seconds'),
     }
 

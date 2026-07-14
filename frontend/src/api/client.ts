@@ -140,7 +140,7 @@ export interface ApiFleetSummaryVessel {
   avg_consumption_mt: number | null
   urgency: VesselUrgency
   days_since_maintenance: number | null
-  excess_fuel_cost_usd_mtd: number
+  excess_fuel_cost_usd_per_day: number
   rank: number | null
 }
 
@@ -150,7 +150,7 @@ export interface ApiFleetSummary {
   prediction_vessels: number
   pending_maintenance: number
   avg_fleet_slip_pct: number | null
-  total_excess_fuel_cost_usd_mtd: number
+  total_excess_fuel_cost_usd_per_day: number
   worst_vessel: {
     vessel_id: string
     avg_slip_pct: number
