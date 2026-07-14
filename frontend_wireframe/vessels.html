@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>[Wireframe] 船隊列表 · Vessel List</title>
+<link rel="stylesheet" href="assets/wireframe.css" />
+</head>
+<body>
+
+<header class="wf-header">
+  <div class="wf-header-inner">
+    <a href="index.html" class="wf-logo-box">
+      <span class="wf-logo-mark">LOGO</span>
+      <span class="wf-logo-text">YANG MING<span class="wf-logo-sub">AI FLEET OPS</span></span>
+    </a>
+    <nav class="wf-nav">
+      <a href="index.html">船隊總覽</a>
+      <a href="vessels.html" data-active="true">船隊列表</a>
+      <a href="fleet-analytics.html">跨船隊分析</a>
+    </nav>
+    <div class="wf-header-actions">
+      <button class="wf-icon-btn" title="淺色/深色切換">☀</button>
+      <button class="wf-icon-btn" data-open-voice title="對話模式 (⌘K)">◎</button>
+      <span class="wf-status-pill"><span class="wf-status-dot"></span>SYSTEM NOMINAL</span>
+      <button class="wf-icon-btn wf-mobile-toggle" data-mobile-toggle title="選單">≡</button>
+    </div>
+  </div>
+  <nav class="wf-mobile-nav" data-mobile-nav data-open="false">
+    <a href="index.html">船隊總覽</a>
+    <a href="vessels.html" data-active="true">船隊列表</a>
+    <a href="fleet-analytics.html">跨船隊分析</a>
+  </nav>
+</header>
+
+<main class="wf-shell">
+
+  <div class="wf-flex-between" style="margin-bottom:16px;">
+    <div>
+      <p class="wf-eyebrow">LIST-01 · FLEET REGISTER</p>
+      <h1 class="wf-h1">船隊列表</h1>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="wf-panel wf-flex-between" style="margin-bottom:14px; flex-wrap:wrap;">
+    <label><span class="wf-field-label">船型</span><select class="wf-field"><option>全部</option><option>貨櫃船</option><option>散裝船</option></select></label>
+    <label><span class="wf-field-label">狀態</span><select class="wf-field"><option>全部</option><option>航行中</option><option>靠泊中</option><option>錨泊中</option></select></label>
+    <label style="flex:1; min-width:200px;"><span class="wf-field-label">關鍵字</span><input class="wf-field" style="width:70%;" type="search" placeholder="船名 / IMO" /></label>
+  </div>
+
+  <div class="wf-panel" style="overflow-x:auto; padding:0;">
+    <table class="wf-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>船名 ▲▼</th>
+          <th>IMO ▲▼</th>
+          <th>船型 ▲▼</th>
+          <th>船齡 ▲▼</th>
+          <th>Speed Loss % ▲▼</th>
+          <th>上次坐塢日 ▲▼</th>
+          <th>下次建議維修窗口 ▲▼</th>
+          <th>狀態 ▲▼</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><button class="wf-icon-btn" style="width:22px;height:22px;font-size:10px;" data-expand-row="expand-1">▸</button></td>
+          <td><a href="vessel-detail.html">MV WAN HAI 301</a></td>
+          <td class="num">9876543</td>
+          <td>貨櫃船</td>
+          <td class="num">8</td>
+          <td class="num">6.2%</td>
+          <td class="num">2025-03-11</td>
+          <td class="num">2026-08-01 – 2026-08-15</td>
+          <td><span class="wf-badge"><span class="wf-dot"></span>航行中</span></td>
+        </tr>
+        <tr id="expand-1" style="display:none;">
+          <td colspan="9">
+            <div class="wf-fathom" data-size="sm">
+              <div class="wf-fathom-tube"><div class="wf-fathom-needle" style="top:38%;"><span class="line"></span><span class="dot"></span></div></div>
+              <div class="wf-fathom-meta">
+                <p class="wf-fathom-label">船體污損 / Speed Loss</p>
+                <p class="wf-fathom-value">6.2%</p>
+                <span class="wf-fathom-grade">Heavy</span>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td><button class="wf-icon-btn" style="width:22px;height:22px;font-size:10px;" data-expand-row="expand-2">▸</button></td>
+          <td><a href="vessel-detail.html">MV YM WORLD</a></td>
+          <td class="num">9765432</td>
+          <td>貨櫃船</td>
+          <td class="num">6</td>
+          <td class="num">5.4%</td>
+          <td class="num">2025-06-02</td>
+          <td class="num">2026-09-05 – 2026-09-20</td>
+          <td><span class="wf-badge"><span class="wf-dot"></span>靠泊中</span></td>
+        </tr>
+        <tr id="expand-2" style="display:none;">
+          <td colspan="9">
+            <div class="wf-fathom" data-size="sm">
+              <div class="wf-fathom-tube"><div class="wf-fathom-needle" style="top:46%;"><span class="line"></span><span class="dot"></span></div></div>
+              <div class="wf-fathom-meta">
+                <p class="wf-fathom-label">船體污損 / Speed Loss</p>
+                <p class="wf-fathom-value">5.4%</p>
+                <span class="wf-fathom-grade">Moderate</span>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td><button class="wf-icon-btn" style="width:22px;height:22px;font-size:10px;" data-expand-row="expand-3">▸</button></td>
+          <td><a href="vessel-detail.html">MV YM WISDOM</a></td>
+          <td class="num">9654321</td>
+          <td>貨櫃船</td>
+          <td class="num">11</td>
+          <td class="num">4.1%</td>
+          <td class="num">2024-12-20</td>
+          <td class="num">2026-07-25 – 2026-08-08</td>
+          <td><span class="wf-badge"><span class="wf-dot"></span>航行中</span></td>
+        </tr>
+        <tr id="expand-3" style="display:none;">
+          <td colspan="9">
+            <div class="wf-fathom" data-size="sm">
+              <div class="wf-fathom-tube"><div class="wf-fathom-needle" style="top:59%;"><span class="line"></span><span class="dot"></span></div></div>
+              <div class="wf-fathom-meta">
+                <p class="wf-fathom-label">船體污損 / Speed Loss</p>
+                <p class="wf-fathom-value">4.1%</p>
+                <span class="wf-fathom-grade">Moderate</span>
+              </div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td></td>
+          <td><a href="vessel-detail.html">MV YM MANDATE</a></td>
+          <td class="num">9543210</td>
+          <td>散裝船</td>
+          <td class="num">14</td>
+          <td class="num">3.8%</td>
+          <td class="num">2024-09-14</td>
+          <td class="num">2026-10-01 – 2026-10-14</td>
+          <td><span class="wf-badge"><span class="wf-dot"></span>錨泊中</span></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td><a href="vessel-detail.html">MV YM UNIFORM</a></td>
+          <td class="num">9432109</td>
+          <td>貨櫃船</td>
+          <td class="num">5</td>
+          <td class="num">2.9%</td>
+          <td class="num">2025-08-30</td>
+          <td class="num">2026-11-10 – 2026-11-24</td>
+          <td><span class="wf-badge"><span class="wf-dot"></span>航行中</span></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td><a href="vessel-detail.html">MV YM ESSENCE</a></td>
+          <td class="num">9321098</td>
+          <td>貨櫃船</td>
+          <td class="num">9</td>
+          <td class="num">2.1%</td>
+          <td class="num">2025-05-18</td>
+          <td class="num">2026-12-01 – 2026-12-15</td>
+          <td><span class="wf-badge"><span class="wf-dot"></span>航行中</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="wf-note">＋ 點列首 ▸ 展開污損量表；點船名列進入單船詳情頁。共 24 筆（僅示意前 6 筆）。</p>
+
+</main>
+
+<footer class="wf-footer">
+  <span class="rule"></span>Wireframe internal review only — not final visual design<span class="rule"></span>
+</footer>
+
+<div class="wf-voice-overlay" data-voice-overlay data-open="false">
+  <div class="wf-voice-panel">
+    <p class="wf-tag" style="margin-bottom:8px;">VOICE-01</p>
+    <p>全螢幕語音對話模式（示意）</p>
+    <p class="wf-note">語音波形 / 對話卡片 / 麥克風輸入區佔位</p>
+    <button class="wf-btn wf-voice-close" data-close-voice>關閉 ✕</button>
+  </div>
+</div>
+
+<script src="assets/wireframe.js"></script>
+</body>
+</html>

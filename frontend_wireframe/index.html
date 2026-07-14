@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>[Wireframe] 船隊總覽 · Fleet Overview</title>
+<link rel="stylesheet" href="assets/wireframe.css" />
+</head>
+<body>
+
+<header class="wf-header">
+  <div class="wf-header-inner">
+    <a href="index.html" class="wf-logo-box">
+      <span class="wf-logo-mark">LOGO</span>
+      <span class="wf-logo-text">YANG MING<span class="wf-logo-sub">AI FLEET OPS</span></span>
+    </a>
+    <nav class="wf-nav">
+      <a href="index.html" data-active="true">船隊總覽</a>
+      <a href="vessels.html">船隊列表</a>
+      <a href="fleet-analytics.html">跨船隊分析</a>
+    </nav>
+    <div class="wf-header-actions">
+      <button class="wf-icon-btn" title="淺色/深色切換">☀</button>
+      <button class="wf-icon-btn" data-open-voice title="對話模式 (⌘K)">◎</button>
+      <span class="wf-status-pill"><span class="wf-status-dot"></span>SYSTEM NOMINAL</span>
+      <button class="wf-icon-btn wf-mobile-toggle" data-mobile-toggle title="選單">≡</button>
+    </div>
+  </div>
+  <nav class="wf-mobile-nav" data-mobile-nav data-open="false">
+    <a href="index.html" data-active="true">船隊總覽</a>
+    <a href="vessels.html">船隊列表</a>
+    <a href="fleet-analytics.html">跨船隊分析</a>
+  </nav>
+</header>
+
+<main class="wf-shell">
+
+  <div class="wf-stack" style="margin-bottom:20px;">
+    <p class="wf-eyebrow">OVR-01 · FLEET COMMAND</p>
+    <h1 class="wf-h1">船隊總覽 Dashboard</h1>
+    <p class="wf-subtle">FLEET-WIDE CONTINUOUS MONITORING</p>
+  </div>
+
+  <!-- KPI row -->
+  <section class="wf-grid wf-grid-5" style="margin-bottom:14px;" aria-label="船隊關鍵指標">
+    <div class="wf-kpi">
+      <span class="wf-tag">KPI-01</span>
+      <p class="wf-kpi-label">船隊總數</p>
+      <p class="wf-kpi-value">24</p>
+    </div>
+    <div class="wf-kpi">
+      <span class="wf-tag">KPI-02</span>
+      <p class="wf-kpi-label">目前航行中</p>
+      <p class="wf-kpi-value">17</p>
+    </div>
+    <div class="wf-kpi">
+      <span class="wf-tag">KPI-03</span>
+      <p class="wf-kpi-label">目前停靠港</p>
+      <p class="wf-kpi-value">7</p>
+    </div>
+    <div class="wf-kpi">
+      <span class="wf-tag">KPI-04</span>
+      <p class="wf-kpi-label">待安排維修船數</p>
+      <p class="wf-kpi-value">5</p>
+    </div>
+    <div class="wf-kpi">
+      <span class="wf-tag">KPI-05</span>
+      <p class="wf-kpi-label">本月累積超額油耗成本</p>
+      <p class="wf-kpi-value emph">$275,927</p>
+    </div>
+  </section>
+
+  <!-- Map + priority ranking -->
+  <section class="wf-grid wf-grid-map">
+    <div class="wf-panel">
+      <div class="wf-flex-between">
+        <span class="wf-tag">MAP-01</span>
+        <span class="wf-subtle">船隊即時位置</span>
+      </div>
+      <div class="wf-map-frame h-420" style="margin-top:10px;">
+        <span class="wf-map-compass">N</span>
+        <span class="wf-map-zoom plus">+</span>
+        <span class="wf-map-zoom minus">−</span>
+        <span class="wf-map-pin" style="left:34%; top:42%;">▲</span>
+        <span class="wf-map-pin muted" style="left:52%; top:34%;">▲</span>
+        <span class="wf-map-pin muted" style="left:47%; top:58%;">▲</span>
+        <span class="wf-map-pin muted" style="left:66%; top:50%;">▲</span>
+        <span class="wf-map-pin muted" style="left:74%; top:66%;">▲</span>
+        <span class="wf-map-caption">互動世界地圖佔位（船舶標記 + hover 提示 + 縮放控制）</span>
+      </div>
+    </div>
+
+    <div class="wf-panel">
+      <div class="wf-flex-between">
+        <span class="wf-tag">RANK-01</span>
+        <span class="wf-subtle">需優先處理</span>
+      </div>
+      <div class="wf-stack" style="gap:4px; margin-top:10px;">
+        <a class="wf-row" href="vessel-detail.html">
+          <span class="wf-row-index">1</span>
+          <div class="wf-fathom" data-size="sm">
+            <div class="wf-fathom-tube">
+              <div class="wf-fathom-needle" style="top:38%;"><span class="line"></span><span class="dot"></span></div>
+            </div>
+            <div class="wf-fathom-meta">
+              <p class="wf-fathom-value">62%</p>
+              <span class="wf-fathom-grade">Heavy</span>
+            </div>
+          </div>
+          <span style="flex:1;">
+            <span class="wf-row-title">MV WAN HAI 301</span><br />
+            <span class="wf-row-sub">航行中 · 急迫度 高</span>
+          </span>
+          <span class="wf-row-arrow">›</span>
+        </a>
+        <a class="wf-row" href="vessel-detail.html">
+          <span class="wf-row-index">2</span>
+          <div class="wf-fathom" data-size="sm">
+            <div class="wf-fathom-tube">
+              <div class="wf-fathom-needle" style="top:46%;"><span class="line"></span><span class="dot"></span></div>
+            </div>
+            <div class="wf-fathom-meta">
+              <p class="wf-fathom-value">54%</p>
+              <span class="wf-fathom-grade">Moderate</span>
+            </div>
+          </div>
+          <span style="flex:1;">
+            <span class="wf-row-title">MV YM WORLD</span><br />
+            <span class="wf-row-sub">靠泊中 · 急迫度 高</span>
+          </span>
+          <span class="wf-row-arrow">›</span>
+        </a>
+        <a class="wf-row" href="vessel-detail.html">
+          <span class="wf-row-index">3</span>
+          <div class="wf-fathom" data-size="sm">
+            <div class="wf-fathom-tube">
+              <div class="wf-fathom-needle" style="top:59%;"><span class="line"></span><span class="dot"></span></div>
+            </div>
+            <div class="wf-fathom-meta">
+              <p class="wf-fathom-value">41%</p>
+              <span class="wf-fathom-grade">Moderate</span>
+            </div>
+          </div>
+          <span style="flex:1;">
+            <span class="wf-row-title">MV YM WISDOM</span><br />
+            <span class="wf-row-sub">航行中 · 急迫度 中</span>
+          </span>
+          <span class="wf-row-arrow">›</span>
+        </a>
+        <a class="wf-row" href="vessel-detail.html">
+          <span class="wf-row-index">4</span>
+          <div class="wf-fathom" data-size="sm">
+            <div class="wf-fathom-tube">
+              <div class="wf-fathom-needle" style="top:62%;"><span class="line"></span><span class="dot"></span></div>
+            </div>
+            <div class="wf-fathom-meta">
+              <p class="wf-fathom-value">38%</p>
+              <span class="wf-fathom-grade">Light</span>
+            </div>
+          </div>
+          <span style="flex:1;">
+            <span class="wf-row-title">MV YM MANDATE</span><br />
+            <span class="wf-row-sub">錨泊中 · 急迫度 中</span>
+          </span>
+          <span class="wf-row-arrow">›</span>
+        </a>
+        <a class="wf-row" href="vessel-detail.html">
+          <span class="wf-row-index">5</span>
+          <div class="wf-fathom" data-size="sm">
+            <div class="wf-fathom-tube">
+              <div class="wf-fathom-needle" style="top:71%;"><span class="line"></span><span class="dot"></span></div>
+            </div>
+            <div class="wf-fathom-meta">
+              <p class="wf-fathom-value">29%</p>
+              <span class="wf-fathom-grade">Light</span>
+            </div>
+          </div>
+          <span style="flex:1;">
+            <span class="wf-row-title">MV YM UNIFORM</span><br />
+            <span class="wf-row-sub">航行中 · 急迫度 低</span>
+          </span>
+          <span class="wf-row-arrow">›</span>
+        </a>
+        <a class="wf-row" href="vessel-detail.html">
+          <span class="wf-row-index">6</span>
+          <div class="wf-fathom" data-size="sm">
+            <div class="wf-fathom-tube">
+              <div class="wf-fathom-needle" style="top:79%;"><span class="line"></span><span class="dot"></span></div>
+            </div>
+            <div class="wf-fathom-meta">
+              <p class="wf-fathom-value">21%</p>
+              <span class="wf-fathom-grade">Clean</span>
+            </div>
+          </div>
+          <span style="flex:1;">
+            <span class="wf-row-title">MV YM ESSENCE</span><br />
+            <span class="wf-row-sub">航行中 · 急迫度 低</span>
+          </span>
+          <span class="wf-row-arrow">›</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="wf-footer">
+  <span class="rule"></span>Wireframe internal review only — not final visual design<span class="rule"></span>
+</footer>
+
+<!-- voice overlay -->
+<div class="wf-voice-overlay" data-voice-overlay data-open="false">
+  <div class="wf-voice-panel">
+    <p class="wf-tag" style="margin-bottom:8px;">VOICE-01</p>
+    <svg width="140" height="40" viewBox="0 0 140 40" style="margin:0 auto 12px; display:block;">
+      <g stroke="#aaa" stroke-width="3" stroke-linecap="round">
+        <line x1="6" y1="18" x2="6" y2="22" /><line x1="16" y1="10" x2="16" y2="30" />
+        <line x1="26" y1="4" x2="26" y2="36" /><line x1="36" y1="14" x2="36" y2="26" />
+        <line x1="46" y1="8" x2="46" y2="32" /><line x1="56" y1="2" x2="56" y2="38" />
+        <line x1="66" y1="12" x2="66" y2="28" /><line x1="76" y1="6" x2="76" y2="34" />
+        <line x1="86" y1="16" x2="86" y2="24" /><line x1="96" y1="4" x2="96" y2="36" />
+        <line x1="106" y1="10" x2="106" y2="30" /><line x1="116" y1="14" x2="116" y2="26" />
+        <line x1="126" y1="18" x2="126" y2="22" /><line x1="134" y1="16" x2="134" y2="24" />
+      </g>
+    </svg>
+    <p>全螢幕語音對話模式（示意）</p>
+    <p class="wf-note">語音波形 / 對話卡片 / 麥克風輸入區佔位</p>
+    <button class="wf-btn wf-voice-close" data-close-voice>關閉 ✕</button>
+  </div>
+</div>
+
+<script src="assets/wireframe.js"></script>
+</body>
+</html>
