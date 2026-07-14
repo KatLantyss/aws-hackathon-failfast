@@ -113,37 +113,14 @@ prod-backend: prod-login
 	@cd backend-api && docker build --platform linux/amd64 -t $(ECR_BACKEND):latest .
 	@echo "▶  Pushing backend to ECR..."
 	@docker push $(ECR_BACKEND):latest
+	@echo "▶  Generating task definition JSON..."
+	@python3 scripts/gen_taskdef.py $(ECR_BACKEND):latest $(AWS_REGION) $(ACCOUNT_ID) /tmp/ship-api-taskdef.json
 	@echo "▶  Registering new ECS task definition..."
-	@aws ecs register-task-definition \
+	@NEW_ARN=$$(aws ecs register-task-definition \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
-		--family $(ECS_BACKEND_TDEF) \
-		--task-role-arn arn:aws:iam::$(ACCOUNT_ID):role/ecsTaskRole-ship \
-		--execution-role-arn arn:aws:iam::$(ACCOUNT_ID):role/ecsTaskExecRole-ship \
-		--network-mode host \
-		--container-definitions '[{
-			"name": "ship-api",
-			"image": "$(ECR_BACKEND):latest",
-			"cpu": 512,
-			"memory": 1024,
-			"portMappings": [{"containerPort": 8000, "hostPort": 8000, "protocol": "tcp"}],
-			"essential": true,
-			"environment": [
-				{"name": "AWS_REGION",           "value": "$(AWS_REGION)"},
-				{"name": "VESSEL_TABLE",          "value": "ship-analysis-dev-vessel-data"},
-				{"name": "MAINT_TABLE",           "value": "ship-analysis-dev-maintenance-events"},
-				{"name": "FLEET_SUMMARY_TABLE",   "value": "ship-analysis-dev-fleet-summary"}
-			],
-			"logConfiguration": {
-				"logDriver": "awslogs",
-				"options": {
-					"awslogs-group": "/ecs/ship-api",
-					"awslogs-create-group": "true",
-					"awslogs-region": "$(AWS_REGION)",
-					"awslogs-stream-prefix": "ecs"
-				}
-			}
-		}]' \
-		--query 'taskDefinition.taskDefinitionArn' --output text
+		--cli-input-json file:///tmp/ship-api-taskdef.json \
+		--query 'taskDefinition.taskDefinitionArn' --output text) && \
+		echo "  Registered: $$NEW_ARN"
 	@echo "▶  Deploying backend to ECS..."
 	@aws ecs update-service \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
