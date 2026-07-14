@@ -13,6 +13,12 @@ import handler
 
 app = FastAPI(title="Ship Performance Analysis API", version="1.0.0")
 
+
+@app.on_event("startup")
+async def startup_event():
+    """Prefetch all DynamoDB data into cache in background on server start."""
+    handler.start_warmup()
+
 # CORS – allow all origins (adjust in production as needed)
 app.add_middleware(
     CORSMiddleware,
@@ -114,6 +120,12 @@ def get_maintenance_recommendation(vessel_id: str):
 @app.get("/api/v1/fleet/ranking")
 def get_fleet_ranking():
     result = handler.route(_event("GET", "/api/v1/fleet/ranking"), None)
+    return _json_response(result)
+
+
+@app.get("/api/v1/fleet/summary")
+def get_fleet_summary():
+    result = handler.route(_event("GET", "/api/v1/fleet/summary"), None)
     return _json_response(result)
 
 

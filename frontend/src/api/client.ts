@@ -126,3 +126,39 @@ export function fetchApiFleetRanking(): Promise<ApiFleetRankingResponse> {
 export function fetchApiNoonReports(vesselId: string): Promise<ApiNoonReportsResponse> {
   return get(`/api/v1/vessels/${vesselId}/noon-reports`)
 }
+
+// ─── Fleet Summary ────────────────────────────────────────────────────────────
+
+export type VesselUrgency = 'LOW' | 'MEDIUM' | 'HIGH'
+
+export interface ApiFleetSummaryVessel {
+  vessel_id: string
+  type: 'training' | 'prediction'
+  avg_slip_pct: number | null
+  recent_90d_slip_pct: number | null
+  slip_trend: number | null
+  avg_consumption_mt: number | null
+  urgency: VesselUrgency
+  days_since_maintenance: number | null
+  excess_fuel_cost_usd_mtd: number
+  rank: number | null
+}
+
+export interface ApiFleetSummary {
+  total_vessels: number
+  training_vessels: number
+  prediction_vessels: number
+  pending_maintenance: number
+  avg_fleet_slip_pct: number | null
+  total_excess_fuel_cost_usd_mtd: number
+  worst_vessel: {
+    vessel_id: string
+    avg_slip_pct: number
+    urgency: VesselUrgency
+  } | null
+  per_vessel: ApiFleetSummaryVessel[]
+}
+
+export function fetchApiFleetSummary(): Promise<ApiFleetSummary> {
+  return get('/api/v1/fleet/summary')
+}

@@ -28,10 +28,12 @@ import {
   fetchApiSpeedLoss,
   fetchApiMaintenanceEvents,
   fetchApiFleetRanking,
+  fetchApiFleetSummary,
   fetchApiNoonReports,
   type ApiSpeedLossPoint,
   type ApiMaintenanceEvent,
   type ApiFleetRankingEntry,
+  type ApiFleetSummaryVessel,
 } from '@/api/client'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -100,35 +102,20 @@ export function getRealShipList(): string[] {
 }
 
 export async function fetchRealFleetVessels(): Promise<VesselSummary[]> {
-  const [ranking] = await Promise.all([fetchApiFleetRanking()])
-  const details = await Promise.all(
-    ALL_SHIPS.map(async (id) => {
-      try {
-        const [detail, maintResp] = await Promise.all([
-          fetchApiVesselDetail(id),
-          fetchApiMaintenanceEvents(id),
-        ])
-        const rank = ranking.fleet_ranking.find((r) => r.vessel_id === id)
-        const lastMaintDay = maintResp.events.length
-          ? Math.max(...maintResp.events.map((e) => e.event_day))
-          : 0
-        return buildVesselSummary(id, detail.avg_consumption, rank, lastMaintDay, detail.total_records)
-      } catch {
-        return buildVesselSummary(id, 0, undefined)
-      }
-    }),
+  const summary = await fetchApiFleetSummary()
+  return summary.per_vessel.map((v) =>
+    buildVesselSummaryFromSummary(v),
   )
-  return details
 }
 
 export async function fetchRealFleetKpis(): Promise<FleetKpis> {
-  const vessels = await fetchRealFleetVessels()
+  const summary = await fetchApiFleetSummary()
   return {
-    totalVessels: vessels.length,
+    totalVessels: summary.total_vessels,
     underway: 0,
     inPort: 0,
-    pendingMaintenance: vessels.filter((v) => v.maintenanceUrgency !== 'LOW').length,
-    monthlyExcessFuelCostUsd: vessels.reduce((sum, v) => sum + v.excessFuelCostUsdMtd, 0),
+    pendingMaintenance: summary.pending_maintenance,
+    monthlyExcessFuelCostUsd: summary.total_excess_fuel_cost_usd_mtd,
   }
 }
 
@@ -448,6 +435,49 @@ function buildVesselSummary(
     nextRecommendedWindow: {
       start: dayToDate(APPROX_CURRENT_DAY + 30),
       end: dayToDate(APPROX_CURRENT_DAY + 60),
+    },
+  }
+}
+
+/** Build VesselSummary directly from the /fleet/summary per_vessel entry — no extra API calls needed. */
+function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary {
+  const shipId = v.vessel_id
+  const speedLossPct = v.recent_90d_slip_pct ?? v.avg_slip_pct ?? 0
+  const rate = v.slip_trend != null ? v.slip_trend / 90 : 0
+  const designSpeed = W1_SHIPS.includes(shipId) ? 22.5 : 21.0
+
+  const urgency: Urgency = v.urgency as Urgency
+  const foulingGrade: FoulingGrade =
+    speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
+
+  const daysSince = v.days_since_maintenance ?? 0
+  const pos = SHIP_POSITIONS[shipId] || { lat: 22.6, lon: 120.3, headingDeg: 180, speedKt: 0 }
+
+  return {
+    imo: shipId,
+    name: shipId,
+    type: W1_SHIPS.includes(shipId) ? 'W1' : 'W2',
+    teuCapacity: 0,
+    builtYear: 0,
+    flag: '',
+    mainEngineModel: '',
+    designSpeedKt: designSpeed,
+    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線' : 'W2 航線',
+    status: 'underway',
+    currentPort: null,
+    destinationPort: null,
+    position: { lat: pos.lat, lon: pos.lon, headingDeg: pos.headingDeg, speedKt: pos.speedKt, courseTrueDeg: pos.headingDeg },
+    speedLossPct: Number(speedLossPct.toFixed(2)),
+    foulingGrade,
+    lastDrydockDate: '—',
+    nextDrydockDue: '—',
+    daysSinceHullClean: daysSince,
+    maintenanceUrgency: urgency,
+    degradationRatePctPerDay: Number(rate.toFixed(4)),
+    excessFuelCostUsdMtd: v.excess_fuel_cost_usd_mtd,
+    nextRecommendedWindow: {
+      start: dayToDate(1800 + 30),
+      end: dayToDate(1800 + 60),
     },
   }
 }

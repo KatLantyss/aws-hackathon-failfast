@@ -7,7 +7,10 @@ import os
 import math
 import pickle
 import sys
+import time
+import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from statistics import mean
 
@@ -52,18 +55,74 @@ EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}
 
 # ── DynamoDB setup ──────────────────────────────────────────────────────────
 REGION          = os.environ.get('AWS_REGION', 'us-east-1')
-VESSEL_TABLE    = os.environ.get('VESSEL_TABLE',  'ship-analysis-dev-vessel-data')
-MAINT_TABLE     = os.environ.get('MAINT_TABLE',   'ship-analysis-dev-maintenance-events')
+VESSEL_TABLE         = os.environ.get('VESSEL_TABLE',        'ship-analysis-dev-vessel-data')
+MAINT_TABLE          = os.environ.get('MAINT_TABLE',         'ship-analysis-dev-maintenance-events')
+FLEET_SUMMARY_TABLE  = os.environ.get('FLEET_SUMMARY_TABLE', 'ship-analysis-dev-fleet-summary')
 
 ddb = boto3.resource('dynamodb', region_name=REGION)
-vessel_tbl = ddb.Table(VESSEL_TABLE)
-maint_tbl  = ddb.Table(MAINT_TABLE)
+vessel_tbl       = ddb.Table(VESSEL_TABLE)
+maint_tbl        = ddb.Table(MAINT_TABLE)
+fleet_summary_tbl = ddb.Table(FLEET_SUMMARY_TABLE)
 
 # Pre-load model on cold start (best-effort; errors surface at predict time)
 try:
     _load_model()
 except Exception:
     pass
+
+# ── In-memory cache ───────────────────────────────────────────────────────────
+# Local dev: DynamoDB round-trips are the main bottleneck. Cache results for
+# CACHE_TTL seconds so repeated requests (e.g. fleet ranking) don't re-query.
+CACHE_TTL = int(os.environ.get('CACHE_TTL', '300'))  # default 5 minutes
+
+_cache: dict = {}          # key → (timestamp, value)
+_cache_lock = threading.Lock()
+
+
+def _cache_get(key: str):
+    with _cache_lock:
+        entry = _cache.get(key)
+        if entry and (time.time() - entry[0]) < CACHE_TTL:
+            return entry[1]
+    return None
+
+
+def _cache_set(key: str, value):
+    with _cache_lock:
+        _cache[key] = (time.time(), value)
+
+
+def _cache_clear():
+    """Clear all cached entries (useful for testing or forced refresh)."""
+    with _cache_lock:
+        _cache.clear()
+
+
+# ── Background cache warm-up ──────────────────────────────────────────────────
+ALL_VESSELS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12',
+               'S21','S22','S23']
+
+
+def _warmup_cache():
+    """Prefetch all vessel + maintenance data into cache using parallel threads.
+
+    Called from app.py startup event so all helper functions are defined by
+    the time this runs.
+    """
+    def _fetch(vid):
+        try:
+            query_vessel(vid)
+            query_maintenance(vid)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=15) as pool:
+        list(pool.map(_fetch, ALL_VESSELS))
+
+
+def start_warmup():
+    """Kick off cache warm-up in a background daemon thread (non-blocking)."""
+    threading.Thread(target=_warmup_cache, daemon=True).start()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -92,7 +151,20 @@ def err(status: int, msg: str):
 
 
 def query_vessel(vessel_id: str, limit=None):
-    """Query all rows for a vessel, sorted by sort_key (NOON_UTC#idx)"""
+    """Query all rows for a vessel, sorted by sort_key (NOON_UTC#idx).
+
+    Results are cached for CACHE_TTL seconds (full-table queries only).
+    When a limit is requested the cache is bypassed so callers always get
+    fresh paginated results.
+    """
+    cache_key = f'vessel:{vessel_id}'
+
+    # Only cache unlimited (full) fetches — limited queries are lightweight
+    if limit is None:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
     kwargs = dict(
         KeyConditionExpression=Key('vessel_id').eq(vessel_id),
         ScanIndexForward=True,
@@ -109,10 +181,19 @@ def query_vessel(vessel_id: str, limit=None):
         if limit and len(items) >= limit:
             break
         kwargs['ExclusiveStartKey'] = r['LastEvaluatedKey']
+
+    if limit is None:
+        _cache_set(cache_key, items)
+
     return items
 
 
 def query_maintenance(vessel_id: str):
+    cache_key = f'maint:{vessel_id}'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     kwargs = dict(KeyConditionExpression=Key('vessel_id').eq(vessel_id))
     items = []
     while True:
@@ -121,6 +202,8 @@ def query_maintenance(vessel_id: str):
         if 'LastEvaluatedKey' not in r:
             break
         kwargs['ExclusiveStartKey'] = r['LastEvaluatedKey']
+
+    _cache_set(cache_key, items)
     return items
 
 
@@ -173,6 +256,10 @@ def route(event, context):
     # /api/v1/fleet/ranking
     if path == '/api/v1/fleet/ranking':
         return get_fleet_ranking(event)
+
+    # /api/v1/fleet/summary
+    if path == '/api/v1/fleet/summary':
+        return get_fleet_summary(event)
 
     # /api/v1/predict/fuel-consumption
     if path == '/api/v1/predict/fuel-consumption' and method == 'POST':
@@ -531,47 +618,221 @@ def get_maintenance_recommendation(vessel_id, event):
     })
 
 
-def get_fleet_ranking(event):
-    """Rank all training vessels by avg FULL_SPD_STW_SLIP (lower = better performance)"""
+def get_fleet_summary(event):
+    """Single-call fleet summary used by the dashboard overview.
+
+    Reads pre-computed per-vessel stats from the fleet-summary DynamoDB table
+    (populated by build_fleet_summary.py). Falls back to on-the-fly computation
+    if the table is empty or unavailable.
+
+    Response shape:
+    {
+      total_vessels: int,
+      training_vessels: int,
+      prediction_vessels: int,
+      pending_maintenance: int,
+      avg_fleet_slip_pct: float,
+      total_excess_fuel_cost_usd_mtd: float,
+      worst_vessel: { vessel_id, avg_slip_pct, urgency },
+      per_vessel: [
+        { vessel_id, vessel_type, ship_class, avg_slip_pct,
+          recent_90d_slip_pct, slip_trend, avg_consumption_mt,
+          urgency, days_since_maintenance, excess_fuel_cost_usd_mtd,
+          total_records, total_voyages, last_updated }
+      ]
+    }
+    """
+    cache_key = 'fleet:summary'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     TRAIN_VESSELS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12']
+    PRED_VESSELS  = ['S21','S22','S23']
+    ALL = TRAIN_VESSELS + PRED_VESSELS
+
+    # ── Read from fleet-summary table (single Scan — 15 items, very fast) ────
+    per_vessel = []
+    try:
+        scan_resp = fleet_summary_tbl.scan()
+        raw_items = scan_resp.get('Items', [])
+        # Handle DynamoDB pagination (unlikely for 15 items, but safe)
+        while 'LastEvaluatedKey' in scan_resp:
+            scan_resp = fleet_summary_tbl.scan(ExclusiveStartKey=scan_resp['LastEvaluatedKey'])
+            raw_items.extend(scan_resp.get('Items', []))
+    except Exception:
+        raw_items = []
+
+    if raw_items:
+        for item in raw_items:
+            per_vessel.append({
+                'vessel_id':               str(item.get('vessel_id', '')),
+                'type':                    str(item.get('vessel_type', 'training')),
+                'ship_class':              str(item.get('ship_class', '')),
+                'avg_slip_pct':            float(item['avg_slip_pct'])            if item.get('avg_slip_pct')            is not None else None,
+                'recent_90d_slip_pct':     float(item['recent_90d_slip_pct'])     if item.get('recent_90d_slip_pct')     is not None else None,
+                'slip_trend':              float(item['slip_trend'])              if item.get('slip_trend')              is not None else None,
+                'avg_consumption_mt':      float(item['avg_consumption_mt'])      if item.get('avg_consumption_mt')      is not None else None,
+                'urgency':                 str(item.get('urgency', 'LOW')),
+                'days_since_maintenance':  int(item['days_since_maintenance'])    if item.get('days_since_maintenance')  is not None else None,
+                'excess_fuel_cost_usd_mtd': int(item['excess_fuel_cost_usd_mtd']) if item.get('excess_fuel_cost_usd_mtd') is not None else 0,
+                'total_records':           int(item['total_records'])             if item.get('total_records')           is not None else 0,
+                'total_voyages':           int(item['total_voyages'])             if item.get('total_voyages')           is not None else 0,
+                'last_updated':            str(item.get('last_updated', '')),
+                'rank':                    None,  # populated below from ranking
+            })
+
+        # Attach rank from fleet/ranking (uses its own cache)
+        ranking_resp = get_fleet_ranking(event)
+        if ranking_resp['statusCode'] == 200:
+            import json as _json
+            for entry in _json.loads(ranking_resp['body']).get('fleet_ranking', []):
+                for v in per_vessel:
+                    if v['vessel_id'] == entry['vessel_id']:
+                        v['rank'] = entry['rank']
+                        break
+
+    else:
+        # ── Fallback: on-the-fly computation (no table data yet) ──────────────
+        W1_SHIPS_SET = {'S1','S2','S3','S4','S5','S6','S7','S8','S21'}
+        FUEL_PRICE   = 620
+
+        def _vessel_summary_fallback(vid: str) -> dict:
+            rows  = query_vessel(vid)
+            maint = query_maintenance(vid)
+            slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP'))
+                         for r in rows
+                         if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
+                         and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
+            avg_slip   = round(mean(slip_list), 2) if slip_list else None
+            slip_sorted = sorted(
+                [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+                 for r in rows
+                 if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
+                 and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+                key=lambda x: x[0])
+            recent_90d = round(mean([v for _, v in slip_sorted[-90:]]), 2) if len(slip_sorted) >= 10 else avg_slip
+            sorted_maint = sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0))
+            last_day   = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
+            latest_day = safe_float(max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0))
+            days_since = round(latest_day - last_day) if rows else None
+            slip_val   = recent_90d or avg_slip or 0
+            urgency    = ('HIGH'   if (slip_val >= 10 or (days_since and days_since > 365)) else
+                          'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
+            baseline   = 155 if vid in W1_SHIPS_SET else 92
+            excess_mtd = round(baseline * (slip_val / 100) * 1.8 * FUEL_PRICE * 30)
+            cons_list  = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
+            return {
+                'vessel_id':               vid,
+                'type':                    'training' if vid in TRAIN_VESSELS else 'prediction',
+                'ship_class':              'W1' if vid in W1_SHIPS_SET else 'W2',
+                'avg_slip_pct':            avg_slip,
+                'recent_90d_slip_pct':     recent_90d,
+                'slip_trend':              None,
+                'avg_consumption_mt':      round(mean(cons_list), 2) if cons_list else None,
+                'urgency':                 urgency,
+                'days_since_maintenance':  days_since,
+                'excess_fuel_cost_usd_mtd': excess_mtd,
+                'total_records':           len(rows),
+                'total_voyages':           0,
+                'last_updated':            '',
+                'rank':                    None,
+            }
+
+        with ThreadPoolExecutor(max_workers=15) as pool:
+            futures = {pool.submit(_vessel_summary_fallback, vid): vid for vid in ALL}
+            for future in as_completed(futures):
+                try:
+                    per_vessel.append(future.result())
+                except Exception:
+                    pass
+
+    # Sort: training first, then prediction; within group by avg_slip desc
+    per_vessel.sort(key=lambda v: (0 if v['type'] == 'training' else 1, -(v['avg_slip_pct'] or 0)))
+
+    # Fleet-level aggregates (training vessels only for slip average)
+    training  = [v for v in per_vessel if v['type'] == 'training']
+    slip_vals = [v['avg_slip_pct'] for v in training if v['avg_slip_pct'] is not None]
+    pending   = [v for v in per_vessel if v['urgency'] != 'LOW']
+    total_excess = sum(v['excess_fuel_cost_usd_mtd'] for v in per_vessel)
+    worst = max(training, key=lambda v: v['avg_slip_pct'] or 0) if training else None
+
+    result = resp(200, {
+        'total_vessels':                  len(ALL),
+        'training_vessels':               len(TRAIN_VESSELS),
+        'prediction_vessels':             len(PRED_VESSELS),
+        'pending_maintenance':            len(pending),
+        'avg_fleet_slip_pct':             round(mean(slip_vals), 2) if slip_vals else None,
+        'total_excess_fuel_cost_usd_mtd': round(total_excess),
+        'worst_vessel': {
+            'vessel_id':    worst['vessel_id'],
+            'avg_slip_pct': worst['avg_slip_pct'],
+            'urgency':      worst['urgency'],
+        } if worst else None,
+        'per_vessel': per_vessel,
+    })
+    _cache_set(cache_key, result)
+    return result
+
+
+def _rank_one_vessel(vid: str) -> dict:
+    """Compute ranking stats for a single vessel (runs in thread pool)."""
+    rows = query_vessel(vid)
+
+    slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP')) for r in rows
+                 if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
+                 and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
+    cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
+
+    slip_sorted = sorted(
+        [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+         for r in rows
+         if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
+         and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+        key=lambda x: x[0]
+    )
+    recent_slip = [v for _, v in slip_sorted[-90:]] if len(slip_sorted) >= 10 else []
+    trend = round(mean(recent_slip) - mean(slip_list), 2) if recent_slip and slip_list else None
+
+    return {
+        'vessel_id':           vid,
+        'avg_slip_pct':        round(mean(slip_list), 2) if slip_list else None,
+        'recent_90d_slip_pct': round(mean(recent_slip), 2) if recent_slip else None,
+        'slip_trend':          trend,
+        'avg_consumption_mt':  round(mean(cons_list), 2) if cons_list else None,
+        'valid_slip_records':  len(slip_list),
+        'total_records':       len(rows),
+    }
+
+
+def get_fleet_ranking(event):
+    """Rank all training vessels by avg FULL_SPD_STW_SLIP (lower = better performance)."""
+    TRAIN_VESSELS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12']
+
+    # Return cached ranking if still fresh
+    cache_key = 'fleet:ranking'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Fetch all vessels in parallel (12 DynamoDB queries → concurrent threads)
     rankings = []
-
-    for vid in TRAIN_VESSELS:
-        rows = query_vessel(vid)
-
-        # FULL_SPD_STW_SLIP: 有效範圍 0-30%
-        slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP')) for r in rows
-                     if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                     and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
-        cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
-
-        # latest 90-day trend vs full-period avg
-        slip_sorted = sorted(
-            [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
-             for r in rows
-             if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-             and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
-            key=lambda x: x[0]
-        )
-        recent_slip = [v for _, v in slip_sorted[-90:]] if len(slip_sorted) >= 10 else []
-        trend = round(mean(recent_slip) - mean(slip_list), 2) if recent_slip and slip_list else None
-
-        rankings.append({
-            'vessel_id':          vid,
-            'avg_slip_pct':       round(mean(slip_list), 2) if slip_list else None,
-            'recent_90d_slip_pct': round(mean(recent_slip), 2) if recent_slip else None,
-            'slip_trend':         trend,   # + = 近期惡化, - = 近期改善
-            'avg_consumption_mt': round(mean(cons_list), 2) if cons_list else None,
-            'valid_slip_records': len(slip_list),
-            'total_records':      len(rows),
-        })
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = {pool.submit(_rank_one_vessel, vid): vid for vid in TRAIN_VESSELS}
+        for future in as_completed(futures):
+            try:
+                rankings.append(future.result())
+            except Exception:
+                pass  # skip failed vessel, don't crash the whole ranking
 
     # 排名：avg_slip_pct 越低越好
     rankings.sort(key=lambda x: x['avg_slip_pct'] if x['avg_slip_pct'] is not None else 99)
     for i, r in enumerate(rankings):
         r['rank'] = i + 1
 
-    return resp(200, {'fleet_ranking': rankings, 'total': len(rankings)})
+    result = resp(200, {'fleet_ranking': rankings, 'total': len(rankings)})
+    _cache_set(cache_key, result)
+    return result
 
 
 def _build_features(vessel_id, speed_kn, stw, wind_scale, wind_speed,

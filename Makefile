@@ -22,22 +22,24 @@ dev:
 	@printf "└──────────────────────────────────────────────┘\n"
 	@echo ""
 
-# ── Backend only（Docker container）─────────────────────────────────────────
+# ── Backend only（直接跑 uvicorn，不用 Docker）────────────────────────────────
 dev-api:
-	@# 先停掉舊的同名 container（如果有的話）
 	@docker rm -f ship-api-local 2>/dev/null || true
-	@docker run -d \
-		--name ship-api-local \
-		-p $(API_PORT):8000 \
-		-e AWS_REGION=us-east-1 \
-		-e AWS_ACCESS_KEY_ID=$$(aws configure get aws_access_key_id --profile $(AWS_PROFILE)) \
-		-e AWS_SECRET_ACCESS_KEY=$$(aws configure get aws_secret_access_key --profile $(AWS_PROFILE)) \
-		-e AWS_SESSION_TOKEN=$$(aws configure get aws_session_token --profile $(AWS_PROFILE)) \
-		-e VESSEL_TABLE=ship-analysis-dev-vessel-data \
-		-e MAINT_TABLE=ship-analysis-dev-maintenance-events \
-		$(DOCKER_IMAGE)
+	@pkill -f "uvicorn app:app" 2>/dev/null || true
+	@sleep 1
+	@cd backend-api && \
+		AWS_REGION=us-east-1 \
+		AWS_DEFAULT_REGION=us-east-1 \
+		AWS_ACCESS_KEY_ID=$$(aws configure get aws_access_key_id --profile $(AWS_PROFILE)) \
+		AWS_SECRET_ACCESS_KEY=$$(aws configure get aws_secret_access_key --profile $(AWS_PROFILE)) \
+		AWS_SESSION_TOKEN=$$(aws configure get aws_session_token --profile $(AWS_PROFILE)) \
+		VESSEL_TABLE=ship-analysis-dev-vessel-data \
+		MAINT_TABLE=ship-analysis-dev-maintenance-events \
+		FLEET_SUMMARY_TABLE=ship-analysis-dev-fleet-summary \
+		uvicorn app:app --host 0.0.0.0 --port $(API_PORT) > /tmp/backend-api.log 2>&1 &
+	@sleep 2
 	@echo "✅  Backend running at http://localhost:$(API_PORT)"
-	@echo "    Health: $$(sleep 2 && curl -s http://localhost:$(API_PORT)/health)"
+	@echo "    Health: $$(curl -s http://localhost:$(API_PORT)/health)"
 
 # ── Frontend only ─────────────────────────────────────────────────────────────
 dev-frontend:
@@ -49,9 +51,9 @@ dev-frontend:
 stop-all: stop
 	@pkill -f "vite" 2>/dev/null && echo "✅  Frontend stopped" || echo "No frontend running"
 
-# ── Stop backend container ────────────────────────────────────────────────────
+# ── Stop backend ─────────────────────────────────────────────────────────────
 stop:
-	@docker rm -f ship-api-local 2>/dev/null && echo "✅  Backend stopped" || echo "No backend container running"
+	@pkill -f "uvicorn app:app" 2>/dev/null && echo "✅  Backend stopped" || echo "No backend running"
 
 # ── Build Docker image（本機 arm64 測試用）────────────────────────────────────
 build:

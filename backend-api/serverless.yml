@@ -10,6 +10,7 @@ provider:
   environment:
     VESSEL_TABLE: ship-analysis-dev-vessel-data
     MAINT_TABLE:  ship-analysis-dev-maintenance-events
+    FLEET_SUMMARY_TABLE: ship-analysis-dev-fleet-summary
 
   iam:
     role:
@@ -22,6 +23,7 @@ provider:
           Resource:
             - arn:aws:dynamodb:us-east-1:151274905459:table/ship-analysis-dev-vessel-data
             - arn:aws:dynamodb:us-east-1:151274905459:table/ship-analysis-dev-maintenance-events
+            - arn:aws:dynamodb:us-east-1:151274905459:table/ship-analysis-dev-fleet-summary
 
 package:
   individually: false
