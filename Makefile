@@ -8,11 +8,19 @@ DOCKER_IMAGE = ship-analysis-api:local
 # ── Dev（同時啟動 backend + frontend）─────────────────────────────────────────
 # 使用方式：make dev
 dev:
-	@echo "Starting backend API (Docker) on port $(API_PORT)..."
-	@$(MAKE) dev-api
+	@$(MAKE) dev-api > /dev/null 2>&1
+	@cd frontend && VITE_BACKEND_BASE_URL=http://localhost:$(API_PORT) npm run dev > /tmp/vite.log 2>&1 &
+	@sleep 2
 	@echo ""
-	@echo "Starting frontend dev server..."
-	@$(MAKE) dev-frontend
+	@printf "┌──────────────────────────────────────────────┐\n"
+	@printf "│   Ship Analysis -- Dev Environment           │\n"
+	@printf "│                                              │\n"
+	@printf "│   Backend API  ->  http://localhost:8000     │\n"
+	@printf "│   Frontend     ->  http://localhost:5173     │\n"
+	@printf "│                                              │\n"
+	@printf "│   make stop-all  to stop everything          │\n"
+	@printf "└──────────────────────────────────────────────┘\n"
+	@echo ""
 
 # ── Backend only（Docker container）─────────────────────────────────────────
 dev-api:
@@ -36,6 +44,10 @@ dev-frontend:
 	@cd frontend && \
 		VITE_BACKEND_BASE_URL=http://localhost:$(API_PORT) \
 		npm run dev
+
+# ── Stop all ────────────────────────────────────────────────────────────────
+stop-all: stop
+	@pkill -f "vite" 2>/dev/null && echo "✅  Frontend stopped" || echo "No frontend running"
 
 # ── Stop backend container ────────────────────────────────────────────────────
 stop:
