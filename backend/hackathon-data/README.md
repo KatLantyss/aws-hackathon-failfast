@@ -75,7 +75,7 @@ W1 與 W2 為相同設計的姊妹船，營運於不同航線。
 | FULL_SPD_STW_SLIP             | 全速時段對水滑差            | %        |
 | HORSE_POWER                   | 主機功率                 | kW       |
 | LOAD_PCT                      | 主機負載                 | %MCR     |
-| SFOC                          | 比油耗 (單位馬力耗油率)    | g/kWh    |
+| SFOC                          | 比油耗                  | g/kWh    |
 | ME_SLIP                       | 主機/螺旋槳滑差             | %        |
 | THRUST                        | 推力                   | kN       |
 | THRUST_QUOTIENT               | 推力係數                 | —        |
@@ -133,7 +133,7 @@ W1 與 W2 為相同設計的姊妹船，營運於不同航線。
 |------|------|
 | ship_id | 船舶代號 (S1–S23) |
 | event_type | 養護類型：PP / UWI+PP / UWC / UWC+PP / DD / UWI |
-| event_date | 養護日期 (YYYY-MM-DD) |
+| event_day | 養護相對天數（與 `vt_fd.csv` 的 `NOON_UTC` 同一基準：Day 0 = 該船最早一筆紀錄）|
 | propeller_condition | 螺旋槳狀態 (Good/Fair/Poor) |
 | hull_fouling_type | 船殼汙損類型 (barnacle/slime/algae/tubeworm/calcium) |
 | hull_coating_condition | 塗層狀態 (Good/Fair/Poor) |
