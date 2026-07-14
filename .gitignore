@@ -1,1 +1,54 @@
+# ── macOS ──────────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Python ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# ── Environment / Secrets ──────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Node / Serverless ──────────────────────────────────────
+node_modules/
+sls-api/node_modules/
+.serverless/
+sls-api/.serverless/
+npm-debug.log*
+yarn-error.log*
+
+# ── Lambda build artifacts ─────────────────────────────────
+backend/lambda_layer.zip
+backend/lambda_layer_slim.zip
+backend/lambda_function.zip
+backend/layer/
+backend/layer_slim/
+backend/build/
+
+# ── AWS / credentials ──────────────────────────────────────
+*.pem
+*.key
+credentials
+.aws/
+
+# ── Misc ───────────────────────────────────────────────────
+*.log
+logs/
+output.json
+.idea/
+.vscode/
+*.swp
+*.swo

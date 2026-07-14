@@ -1,0 +1,1 @@
+# boto3 is built into Lambda runtime - no extra dependencies needed
