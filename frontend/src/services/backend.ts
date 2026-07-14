@@ -8,7 +8,7 @@
 // at a glance which values are raw backend data vs. frontend-adapted
 // (src/mock/api.ts does the adaptation into src/types/fleet.ts shapes).
 
-const BASE_URL = (import.meta.env?.VITE_BACKEND_BASE_URL as string | undefined) ?? 'https://4rh4qj5e3i.execute-api.us-east-1.amazonaws.com/dev'
+const BASE_URL = (import.meta.env?.VITE_BACKEND_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
 export class BackendError extends Error {}
 

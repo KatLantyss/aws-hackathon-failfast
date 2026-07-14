@@ -1,9 +1,11 @@
 /**
  * API client for the real backend endpoints.
- * Base URL is configurable via VITE_BACKEND_BASE_URL env variable.
+ * Base URL must be set via VITE_BACKEND_BASE_URL env variable.
+ * Local dev: http://localhost:8000 (set in .env.local, started by make dev)
  */
 
-const BASE_URL = import.meta.env.VITE_BACKEND_BASE_URL || 'https://4rh4qj5e3i.execute-api.us-east-1.amazonaws.com/dev'
+const BASE_URL = (import.meta.env.VITE_BACKEND_BASE_URL as string | undefined)?.replace(/\/$/, '')
+if (!BASE_URL) throw new Error('VITE_BACKEND_BASE_URL is not set. Add it to .env.local')
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`)
