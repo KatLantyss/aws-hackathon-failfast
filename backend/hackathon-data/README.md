@@ -75,7 +75,7 @@ W1 與 W2 為相同設計的姊妹船，營運於不同航線。
 | FULL_SPD_STW_SLIP             | 全速時段對水滑差            | %        |
 | HORSE_POWER                   | 主機功率                 | kW       |
 | LOAD_PCT                      | 主機負載                 | %MCR     |
-| SFOC                          | 比油耗                  | g/kWh    |
+| SFOC                          | 比油耗 (單位馬力耗油率)    | g/kWh    |
 | ME_SLIP                       | 主機/螺旋槳滑差             | %        |
 | THRUST                        | 推力                   | kN       |
 | THRUST_QUOTIENT               | 推力係數                 | —        |
