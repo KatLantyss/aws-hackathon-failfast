@@ -108,7 +108,6 @@ def update_cloudfront(cf, distribution_id, bucket_name, oac_id, backend_origin_i
     if existing_s3:
         existing_s3['DomainName'] = bucket_domain
         existing_s3['OriginAccessControlId'] = oac_id
-        existing_s3.pop('S3OriginConfig', None)
         existing_s3['S3OriginConfig'] = {'OriginAccessIdentity': ''}
     else:
         origins.append({
@@ -125,53 +124,54 @@ def update_cloudfront(cf, distribution_id, bucket_name, oac_id, backend_origin_i
     cfg['Origins']['Items']    = origins
     cfg['Origins']['Quantity'] = len(origins)
 
-    # ── 2. Default behavior → S3 (SPA: pass all paths, CF handles 403/404) ──
-    cfg['DefaultCacheBehavior'] = {
-        'TargetOriginId':       s3_origin_id,
-        'ViewerProtocolPolicy': 'redirect-to-https',
-        'AllowedMethods': {
-            'Quantity': 2,
-            'Items': ['GET', 'HEAD'],
-            'CachedMethods': {'Quantity': 2, 'Items': ['GET', 'HEAD']},
-        },
-        'Compress': True,
-        # Managed-CachingOptimized for S3 static assets
-        'CachePolicyId': '658327ea-f89d-4fab-a63d-7e88639e58f6',
-        'TrustedSigners': {'Enabled': False, 'Quantity': 0},
-        'TrustedKeyGroups': {'Enabled': False, 'Quantity': 0},
+    # ── 2. Use existing default behavior as template, only swap origin/policy ─
+    # This avoids missing-field errors — we keep all fields CF already expects.
+    dcb = cfg['DefaultCacheBehavior']
+    dcb['TargetOriginId']       = s3_origin_id
+    dcb['ViewerProtocolPolicy'] = 'redirect-to-https'
+    dcb['AllowedMethods'] = {
+        'Quantity': 2,
+        'Items': ['GET', 'HEAD'],
+        'CachedMethods': {'Quantity': 2, 'Items': ['GET', 'HEAD']},
     }
+    dcb['Compress']        = True
+    dcb['SmoothStreaming']  = False
+    # Managed-CachingOptimized for S3 static assets
+    dcb['CachePolicyId']   = '658327ea-f89d-4fab-a63d-7e88639e58f6'
+    # Remove fields that conflict with CachePolicyId
+    for key in ('ForwardedValues', 'MinTTL', 'DefaultTTL', 'MaxTTL',
+                'OriginRequestPolicyId'):
+        dcb.pop(key, None)
 
     # ── 3. Path behaviors: /api/* and /health → backend EC2 ──────────────────
-    no_cache_policy   = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'  # CachingDisabled
-    all_viewer_policy = 'b689b0a8-53d0-40ab-baf2-68738e2966ac'  # AllViewerExceptHostHeader
+    # Clone the existing default behavior for the backend path behaviors,
+    # then override only the fields we care about.
+    import copy
+    def make_backend_behavior(path_pattern, allowed_methods_count, allowed_methods):
+        b = copy.deepcopy(dcb)
+        b['PathPattern']           = path_pattern
+        b['TargetOriginId']        = backend_origin_id
+        b['ViewerProtocolPolicy']  = 'redirect-to-https'
+        b['AllowedMethods'] = {
+            'Quantity': allowed_methods_count,
+            'Items': allowed_methods,
+            'CachedMethods': {'Quantity': 2, 'Items': ['HEAD', 'GET']},
+        }
+        b['Compress']        = True
+        b['SmoothStreaming']  = False
+        # CachingDisabled policy for backend (no caching)
+        b['CachePolicyId']   = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad'
+        b['OriginRequestPolicyId'] = 'b689b0a8-53d0-40ab-baf2-68738e2966ac'
+        b.pop('ForwardedValues', None)
+        b.pop('MinTTL', None)
+        b.pop('DefaultTTL', None)
+        b.pop('MaxTTL', None)
+        return b
 
-    api_behavior = {
-        'PathPattern':           '/api/*',
-        'TargetOriginId':        backend_origin_id,
-        'ViewerProtocolPolicy':  'redirect-to-https',
-        'AllowedMethods': {
-            'Quantity': 7,
-            'Items': ['HEAD','DELETE','POST','GET','OPTIONS','PUT','PATCH'],
-            'CachedMethods': {'Quantity': 2, 'Items': ['HEAD','GET']},
-        },
-        'Compress': True,
-        'CachePolicyId':          no_cache_policy,
-        'OriginRequestPolicyId':  all_viewer_policy,
-        'TrustedSigners': {'Enabled': False, 'Quantity': 0},
-        'TrustedKeyGroups': {'Enabled': False, 'Quantity': 0},
-        'ForwardedValues': {
-            'QueryString': True,
-            'Cookies': {'Forward': 'none'},
-            'Headers': {'Quantity': 0},
-            'QueryStringCacheKeys': {'Quantity': 0},
-        },
-        'MinTTL': 0, 'DefaultTTL': 0, 'MaxTTL': 0,
-    }
-    health_behavior = {**api_behavior, 'PathPattern': '/health'}
-    health_behavior['AllowedMethods'] = {
-        'Quantity': 2, 'Items': ['GET','HEAD'],
-        'CachedMethods': {'Quantity': 2, 'Items': ['GET','HEAD']},
-    }
+    api_behavior    = make_backend_behavior(
+        '/api/*', 7, ['HEAD','DELETE','POST','GET','OPTIONS','PUT','PATCH'])
+    health_behavior = make_backend_behavior(
+        '/health', 2, ['GET', 'HEAD'])
 
     existing = cfg.get('CacheBehaviors', {}).get('Items', [])
     keep = [cb for cb in existing if cb['PathPattern'] not in ('/api/*', '/health')]
