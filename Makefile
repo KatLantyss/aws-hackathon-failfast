@@ -119,7 +119,7 @@ prod-backend: prod-login
 		--cli-input-json file:///tmp/ship-api-taskdef.json \
 		--query 'taskDefinition.taskDefinitionArn' --output text) && \
 		echo "  Registered: $$NEW_ARN"
-	@echo "▶  Deploying backend to ECS..."
+	@echo "▶  Updating ECS service to new task definition..."
 	@aws ecs update-service \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
 		--cluster $(ECS_CLUSTER) \
@@ -128,7 +128,34 @@ prod-backend: prod-login
 		--force-new-deployment \
 		--query 'service.deployments[0].{status:status,desired:desiredCount}' \
 		--output table
-	@echo "✅  Backend deploy triggered → $(BACKEND_CF_URL)/health"
+	@echo "▶  Stopping old running tasks to free port 8000 (host-network mode)..."
+	@OLD_TASKS=$$(aws ecs list-tasks \
+		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
+		--cluster $(ECS_CLUSTER) \
+		--output text --query 'taskArns[*]' 2>/dev/null) && \
+	if [ -n "$$OLD_TASKS" ]; then \
+		for TASK in $$OLD_TASKS; do \
+			echo "  Stopping task: $$TASK"; \
+			aws ecs stop-task \
+				--profile $(AWS_PROFILE) --region $(AWS_REGION) \
+				--cluster $(ECS_CLUSTER) \
+				--task "$$TASK" \
+				--reason "Forced by make prod — free port for new deployment" \
+				--query 'task.lastStatus' --output text 2>/dev/null || true; \
+		done; \
+	else \
+		echo "  No running tasks to stop"; \
+	fi
+	@echo "▶  Waiting for new task to become healthy..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		sleep 10; \
+		STATUS=$$(curl -sf http://52.45.130.183:8000/health 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null); \
+		if [ "$$STATUS" = "ok" ]; then \
+			echo "✅  Backend healthy after $$((i*10))s → $(BACKEND_CF_URL)/health"; \
+			break; \
+		fi; \
+		echo "  Waiting... ($$((i*10))s)"; \
+	done
 
 # ── Deploy frontend ───────────────────────────────────────────────────────────
 # 1. npm run build (Vite) with prod backend URL injected
