@@ -14,13 +14,12 @@ import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import FathometerGauge from '@/components/FathometerGauge.vue'
 import type { VesselSummary } from '@/types/fleet'
-import { formatDate, STATUS_LABEL, STATUS_COLOR, speedLossColor } from '@/utils/format'
+import { formatDate, speedLossColor } from '@/utils/format'
 
 const router = useRouter()
 const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
 
 const typeFilter = ref('all')
-const statusFilter = ref('all')
 const keyword = ref('')
 const expandedImo = ref<string | null>(null)
 const sorting = ref<SortingState>([])
@@ -34,7 +33,6 @@ const filtered = computed<VesselSummary[]>(() => {
   if (!vessels.value) return []
   return vessels.value.filter((v) => {
     if (typeFilter.value !== 'all' && v.type !== typeFilter.value) return false
-    if (statusFilter.value !== 'all' && v.status !== statusFilter.value) return false
     if (keyword.value && !`${v.name} ${v.imo}`.toLowerCase().includes(keyword.value.toLowerCase())) return false
     return true
   })
@@ -59,7 +57,6 @@ const columns: ColumnDef<VesselSummary>[] = [
     header: '下次建議維修窗口',
     accessorFn: (row) => row.nextRecommendedWindow.start,
   },
-  { accessorKey: 'status', header: '狀態' },
 ]
 
 const table = useVueTable({
@@ -106,18 +103,9 @@ function goToVessel(imo: string) {
           <option v-for="t in vesselTypes" :key="t" :value="t">{{ t }}</option>
         </select>
       </label>
-      <label class="flex items-center gap-2 text-sm">
-        <span class="col-head">狀態</span>
-        <select v-model="statusFilter" class="field">
-          <option value="all">全部</option>
-          <option value="underway">航行中</option>
-          <option value="moored">靠泊中</option>
-          <option value="anchored">錨泊中</option>
-        </select>
-      </label>
       <label class="flex items-center gap-2 text-sm flex-1 min-w-[200px]">
         <span class="col-head">關鍵字</span>
-        <input v-model="keyword" type="search" placeholder="船名 / IMO" class="field flex-1" />
+        <input v-model="keyword" type="search" placeholder="船舶代號" class="field flex-1" />
       </label>
     </div>
 
@@ -178,22 +166,9 @@ function goToVessel(imo: string) {
               <td class="px-3 py-3 font-data text-[var(--color-ink-muted)]">
                 {{ formatDate(row.original.nextRecommendedWindow.start) }} – {{ formatDate(row.original.nextRecommendedWindow.end) }}
               </td>
-              <td class="px-3 py-3">
-                <span
-                  class="inline-flex items-center gap-2 text-xs font-medium px-2 py-1 rounded-full border"
-                  :style="{
-                    color: STATUS_COLOR[row.original.status],
-                    borderColor: `color-mix(in srgb, ${STATUS_COLOR[row.original.status]} 35%, transparent)`,
-                    background: `color-mix(in srgb, ${STATUS_COLOR[row.original.status]} 10%, transparent)`,
-                  }"
-                >
-                  <span class="status-dot" style="width: 8px; height: 8px" :style="{ background: STATUS_COLOR[row.original.status] }" />
-                  {{ STATUS_LABEL[row.original.status] }}
-                </span>
-              </td>
             </tr>
             <tr v-if="expandedImo === row.original.imo" class="chart-divider bg-black/[0.015]">
-              <td colspan="9" class="px-6 py-4">
+              <td colspan="8" class="px-6 py-4">
                 <FathometerGauge
                   :value="Math.min(100, row.original.speedLossPct * 8)"
                   :grade="row.original.foulingGrade"

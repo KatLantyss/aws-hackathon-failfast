@@ -4,7 +4,6 @@ import { RouterLink, RouterView, useRoute } from 'vue-router'
 import { fetchVesselData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
-import { STATUS_LABEL, STATUS_COLOR } from '@/utils/format'
 
 const props = defineProps<{ imo: string }>()
 const route = useRoute()
@@ -42,10 +41,8 @@ const tabs = computed(() => [
             >
           </h1>
         </div>
-        <span class="inline-flex items-center gap-2 font-data text-sm">
-          <span class="status-dot" :style="{ background: STATUS_COLOR[vessel.status] }" />
-          {{ STATUS_LABEL[vessel.status] }}
-          <span v-if="vessel.currentPort"> · {{ vessel.currentPort }}</span>
+        <span class="inline-flex items-center gap-2 font-data text-sm text-[var(--color-ink-slate)]/60">
+          {{ vessel.type }} · 設計航速 {{ vessel.designSpeedKt }} kt
         </span>
       </div>
 

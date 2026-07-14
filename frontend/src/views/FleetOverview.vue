@@ -36,11 +36,9 @@ function goToVessel(imo: string) {
     </div>
 
     <!-- KPI row -->
-    <section aria-label="船隊關鍵指標" class="grid grid-cols-2 md:grid-cols-5 gap-3">
+    <section aria-label="船隊關鍵指標" class="grid grid-cols-2 md:grid-cols-3 gap-3">
       <template v-if="kpiState === 'success' && kpis">
         <KpiCard code="KPI-01" label="船隊總數" :value="kpis.totalVessels" />
-        <KpiCard code="KPI-02" label="目前航行中" :value="kpis.underway" tone="teal" />
-        <KpiCard code="KPI-03" label="目前停靠港" :value="kpis.inPort" />
         <KpiCard code="KPI-04" label="待安排維修船數" :value="kpis.pendingMaintenance" tone="amber" />
         <KpiCard
           code="KPI-05"
