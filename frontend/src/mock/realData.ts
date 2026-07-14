@@ -102,20 +102,50 @@ export function getRealShipList(): string[] {
 }
 
 export async function fetchRealFleetVessels(): Promise<VesselSummary[]> {
-  const summary = await fetchApiFleetSummary()
-  return summary.per_vessel.map((v) =>
-    buildVesselSummaryFromSummary(v),
-  )
+  try {
+    // Try /fleet/summary first (single request, pre-computed)
+    const summary = await fetchApiFleetSummary()
+    return summary.per_vessel.map((v) => buildVesselSummaryFromSummary(v))
+  } catch {
+    // Fallback: use /fleet/ranking + individual maintenance events
+    const ranking = await fetchApiFleetRanking()
+    const results = await Promise.all(
+      ALL_SHIPS.map(async (id) => {
+        try {
+          const rank = ranking.fleet_ranking.find((r) => r.vessel_id === id)
+          const maintResp = await fetchApiMaintenanceEvents(id)
+          const lastMaintDay = maintResp.events.length
+            ? Math.max(...maintResp.events.map((e) => e.event_day))
+            : 0
+          return buildVesselSummary(id, 0, rank, lastMaintDay, 0)
+        } catch {
+          return buildVesselSummary(id, 0, undefined)
+        }
+      }),
+    )
+    return results
+  }
 }
 
 export async function fetchRealFleetKpis(): Promise<FleetKpis> {
-  const summary = await fetchApiFleetSummary()
-  return {
-    totalVessels: summary.total_vessels,
-    underway: 0,
-    inPort: 0,
-    pendingMaintenance: summary.pending_maintenance,
-    monthlyExcessFuelCostUsd: summary.total_excess_fuel_cost_usd_mtd,
+  try {
+    const summary = await fetchApiFleetSummary()
+    return {
+      totalVessels: summary.total_vessels,
+      underway: 0,
+      inPort: 0,
+      pendingMaintenance: summary.pending_maintenance,
+      monthlyExcessFuelCostUsd: summary.total_excess_fuel_cost_usd_mtd,
+    }
+  } catch {
+    const vessels = await fetchRealFleetVessels()
+    return {
+      totalVessels: vessels.length,
+      underway: 0,
+      inPort: 0,
+      pendingMaintenance: vessels.filter((v) => v.maintenanceUrgency !== 'LOW').length,
+      monthlyExcessFuelCostUsd: vessels.reduce((sum, v) => sum + v.excessFuelCostUsdMtd, 0),
+    }
   }
 }
 
