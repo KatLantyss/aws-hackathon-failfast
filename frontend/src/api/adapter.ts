@@ -394,22 +394,49 @@ function buildVesselSummary(
     imo: shipId,
     name: shipId,
     type: W1_SHIPS.includes(shipId) ? 'W1' : 'W2',
+    shipClass: W1_SHIPS.includes(shipId) ? 'W1' : 'W2',
     teuCapacity: 0,
     builtYear: 0,
     flag: '',
     mainEngineModel: '',
     designSpeedKt: designSpeed,
-    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線' : 'W2 航線',
+    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線（跨太平洋）',
     status: 'underway',
     currentPort: null,
     destinationPort: null,
     position: { lat: 0, lon: 0, headingDeg: 0, speedKt: 0, courseTrueDeg: 0 },
     speedLossPct: Number(speedLossPct.toFixed(2)),
+    avgSlipPct: null,
+    slipTrend: null,
+    validSlipRecords: null,
     foulingGrade,
+    avgSpeedKn: null,
+    avgStwKn: null,
+    avgRpm: null,
+    avgConsumptionMt: avgConsumption || null,
+    avgSfoc: null,
+    avgLoadPct: null,
+    avgWindScale: null,
+    avgSeaHeightM: null,
+    avgSeaWaterTempC: null,
+    avgForeDraftM: null,
+    avgAftDraftM: null,
+    avgCargoOnBoardMt: null,
+    totalRecords: totalRecords || 0,
+    totalVoyages: 0,
+    dataDayMin: null,
+    dataDayMax: null,
+    dataSpanDays: null,
     lastDrydockDate: maintDay > 0 ? dayToDate(maintDay) : '—',
     nextDrydockDue: maintDay > 0 ? dayToDate(maintDay + 900) : '—',
     daysSinceHullClean: daysSinceClean,
+    daysSinceMaintenance: daysSinceClean,
+    daysSincePropPolish: null,
+    totalMaintEvents: null,
+    lastEventType: null,
+    lastHullCleanType: null,
     maintenanceUrgency: urgency,
+    maintenanceStatus: urgency === 'HIGH' ? 'needs_request' : 'normal',
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd,
     nextRecommendedWindow: {
@@ -430,19 +457,29 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
   const foulingGrade: FoulingGrade =
     speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
 
-  const daysSince = v.days_since_maintenance ?? 0
   const daysSinceHullClean = v.days_since_hull_clean ?? v.days_since_maintenance ?? 0
+
+  // Derive maintenanceStatus from urgency + days since maintenance
+  const maintenanceStatus: import('@/types/fleet').MaintenanceStatus =
+    urgency === 'HIGH' ? 'needs_request' : 'normal'
+
+  // Convert day numbers to ISO dates
+  const lastHullCleanDate = v.last_hull_clean_day != null ? dayToDate(v.last_hull_clean_day) : '—'
+  const nextDrydockDue = v.last_hull_clean_day != null ? dayToDate(v.last_hull_clean_day + 900) : '—'
+  const windowStart = v.day_range_max != null ? dayToDate(v.day_range_max + 30) : '—'
+  const windowEnd   = v.day_range_max != null ? dayToDate(v.day_range_max + 60) : '—'
 
   return {
     imo: shipId,
     name: shipId,
-    type: W1_SHIPS.includes(shipId) ? 'W1' : 'W2',
+    type: v.type === 'training' ? (W1_SHIPS.includes(shipId) ? 'W1' : 'W2') : v.type,
+    shipClass: v.ship_class || (W1_SHIPS.includes(shipId) ? 'W1' : 'W2'),
     teuCapacity: 0,
     builtYear: 0,
     flag: '',
     mainEngineModel: '',
     designSpeedKt: designSpeed,
-    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線' : 'W2 航線',
+    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線（跨太平洋）',
     status: 'underway',
     currentPort: null,
     destinationPort: null,
@@ -453,17 +490,47 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
       speedKt: v.speed_kt,
       courseTrueDeg: v.heading_deg,
     },
+    // slip
     speedLossPct: Number(speedLossPct.toFixed(2)),
+    avgSlipPct: v.avg_slip_pct,
+    slipTrend: v.slip_trend,
+    validSlipRecords: v.valid_slip_records,
     foulingGrade,
-    lastDrydockDate: '—',
-    nextDrydockDue: '—',
-    daysSinceHullClean: daysSinceHullClean,
+    // performance
+    avgSpeedKn: v.avg_speed_kn,
+    avgStwKn: v.avg_stw_kn,
+    avgRpm: v.avg_rpm,
+    avgConsumptionMt: v.avg_consumption_mt,
+    avgSfoc: v.avg_sfoc,
+    avgLoadPct: v.avg_load_pct,
+    // environment
+    avgWindScale: v.avg_wind_scale,
+    avgSeaHeightM: v.avg_sea_height_m,
+    avgSeaWaterTempC: v.avg_sea_water_temp_c,
+    // loading
+    avgForeDraftM: v.avg_fore_draft_m,
+    avgAftDraftM: v.avg_aft_draft_m,
+    avgCargoOnBoardMt: v.avg_cargo_on_board_mt,
+    // voyage
+    totalRecords: v.total_records,
+    totalVoyages: v.total_voyages,
+    dataDayMin: v.day_range_min,
+    dataDayMax: v.day_range_max,
+    dataSpanDays: v.data_span_days,
+    // maintenance
+    lastDrydockDate: lastHullCleanDate,
+    nextDrydockDue,
+    daysSinceHullClean,
+    daysSinceMaintenance: v.days_since_maintenance,
+    daysSincePropPolish: v.days_since_prop_polish,
+    totalMaintEvents: v.total_maint_events,
+    lastEventType: v.last_event_type,
+    lastHullCleanType: v.last_hull_clean_type,
     maintenanceUrgency: urgency,
+    maintenanceStatus,
+    // cost
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd: v.excess_fuel_cost_usd_per_day,
-    nextRecommendedWindow: {
-      start: dayToDate(1800 + 30),
-      end: dayToDate(1800 + 60),
-    },
+    nextRecommendedWindow: { start: windowStart, end: windowEnd },
   }
 }

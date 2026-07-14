@@ -22,6 +22,7 @@ export interface VesselSummary {
   imo: string
   name: string
   type: string
+  shipClass: string           // 'W1' | 'W2'
   teuCapacity: number
   builtYear: number
   flag: string
@@ -32,13 +33,45 @@ export interface VesselSummary {
   currentPort: string | null
   destinationPort: string | null
   position: VesselPosition
+  // slip / speed loss
   speedLossPct: number
+  avgSlipPct: number | null
+  slipTrend: number | null         // + = degrading, - = improving
+  validSlipRecords: number | null
   foulingGrade: FoulingGrade
+  // performance averages
+  avgSpeedKn: number | null
+  avgStwKn: number | null
+  avgRpm: number | null
+  avgConsumptionMt: number | null
+  avgSfoc: number | null
+  avgLoadPct: number | null
+  // environment averages
+  avgWindScale: number | null
+  avgSeaHeightM: number | null
+  avgSeaWaterTempC: number | null
+  // loading averages
+  avgForeDraftM: number | null
+  avgAftDraftM: number | null
+  avgCargoOnBoardMt: number | null
+  // voyage coverage
+  totalRecords: number
+  totalVoyages: number
+  dataDayMin: number | null
+  dataDayMax: number | null
+  dataSpanDays: number | null
+  // maintenance
   lastDrydockDate: string
   nextDrydockDue: string
   daysSinceHullClean: number
+  daysSinceMaintenance: number | null
+  daysSincePropPolish: number | null
+  totalMaintEvents: number | null
+  lastEventType: string | null
+  lastHullCleanType: string | null
   maintenanceUrgency: Urgency
   maintenanceStatus: MaintenanceStatus
+  // cost
   degradationRatePctPerDay: number
   excessFuelCostUsdMtd: number
   nextRecommendedWindow: { start: string; end: string }
