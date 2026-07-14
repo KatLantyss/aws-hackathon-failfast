@@ -675,6 +675,7 @@ def get_fleet_summary(event):
                 'avg_consumption_mt':      float(item['avg_consumption_mt'])      if item.get('avg_consumption_mt')      is not None else None,
                 'urgency':                 str(item.get('urgency', 'LOW')),
                 'days_since_maintenance':  int(item['days_since_maintenance'])    if item.get('days_since_maintenance')  is not None else None,
+                'days_since_hull_clean':   int(item['days_since_hull_clean'])     if item.get('days_since_hull_clean')   is not None else None,
                 'excess_fuel_cost_usd_per_day': float(item['excess_fuel_cost_usd_per_day']) if item.get('excess_fuel_cost_usd_per_day') is not None else 0.0,
                 'lat':                   float(item['lat'])         if item.get('lat')         is not None else 0.0,
                 'lon':                   float(item['lon'])         if item.get('lon')         is not None else 0.0,
@@ -720,6 +721,10 @@ def get_fleet_summary(event):
             last_day   = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
             latest_day = safe_float(max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0))
             days_since = round(latest_day - last_day) if rows else None
+            HULL_CLEAN_TYPES = {'DD', 'UWC', 'UWC+PP'}
+            hull_clean_events = [m for m in sorted_maint if str(m.get('event_type', '')).strip() in HULL_CLEAN_TYPES]
+            last_hull_day = safe_float(hull_clean_events[-1].get('event_day'), 0) if hull_clean_events else 0
+            days_since_hull = round(latest_day - last_hull_day) if (rows and hull_clean_events) else None
             slip_val   = recent_90d or avg_slip or 0
             urgency    = ('HIGH'   if (slip_val >= 10 or (days_since and days_since > 365)) else
                           'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
@@ -736,6 +741,7 @@ def get_fleet_summary(event):
                 'avg_consumption_mt':      round(mean(cons_list), 2) if cons_list else None,
                 'urgency':                 urgency,
                 'days_since_maintenance':  days_since,
+                'days_since_hull_clean':   days_since_hull,
                 'excess_fuel_cost_usd_per_day': excess_per_day,
                 'lat':         0.0,
                 'lon':         0.0,

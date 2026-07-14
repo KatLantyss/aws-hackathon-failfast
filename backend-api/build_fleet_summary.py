@@ -140,17 +140,26 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
     # ── voyages ───────────────────────────────────────────────────────────────
     voyages = {r.get('VOYAGE', '').strip() for r in rows if r.get('VOYAGE', '').strip()}
 
-    # ── days since last maintenance ───────────────────────────────────────────
-    sorted_maint  = sorted(maint_rows, key=lambda x: safe_float(x.get('event_day'), 0))
-    last_event_day = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
+    # ── days since last maintenance / hull clean ─────────────────────────────
+    HULL_CLEAN_EVENT_TYPES = {'DD', 'UWC', 'UWC+PP'}  # events that actually clean the hull
+
+    sorted_maint   = sorted(maint_rows, key=lambda x: safe_float(x.get('event_day'), 0))
     latest_noon    = max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0)
-    days_since     = round(latest_noon - last_event_day) if rows else None
+
+    # Any maintenance event
+    last_event_day = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
+    days_since_maintenance = round(latest_noon - last_event_day) if rows else None
+
+    # Hull-cleaning events only (DD, UWC, UWC+PP)
+    hull_clean_events = [m for m in sorted_maint if str(m.get('event_type', '')).strip() in HULL_CLEAN_EVENT_TYPES]
+    last_hull_clean_day = safe_float(hull_clean_events[-1].get('event_day'), 0) if hull_clean_events else 0
+    days_since_hull_clean = round(latest_noon - last_hull_clean_day) if (rows and hull_clean_events) else None
 
     # ── urgency ───────────────────────────────────────────────────────────────
     slip_val = recent_90d or avg_slip or 0
-    if slip_val >= 10 or (days_since is not None and days_since > 365):
+    if slip_val >= 10 or (days_since_maintenance is not None and days_since_maintenance > 365):
         urgency = 'HIGH'
-    elif slip_val >= 6 or (days_since is not None and days_since > 270):
+    elif slip_val >= 6 or (days_since_maintenance is not None and days_since_maintenance > 270):
         urgency = 'MEDIUM'
     else:
         urgency = 'LOW'
@@ -172,7 +181,8 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         'slip_trend':              slip_trend,
         'avg_consumption_mt':      avg_consumption,
         'urgency':                 urgency,
-        'days_since_maintenance':  days_since,
+        'days_since_maintenance':  days_since_maintenance,
+        'days_since_hull_clean':   days_since_hull_clean,
         'excess_fuel_cost_usd_per_day': excess_fuel_cost_usd_per_day,
         'lat':                     pos['lat'],
         'lon':                     pos['lon'],

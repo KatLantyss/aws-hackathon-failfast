@@ -431,6 +431,7 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
 
   const daysSince = v.days_since_maintenance ?? 0
+  const daysSinceHullClean = v.days_since_hull_clean ?? v.days_since_maintenance ?? 0
 
   return {
     imo: shipId,
@@ -456,7 +457,7 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     foulingGrade,
     lastDrydockDate: '—',
     nextDrydockDue: '—',
-    daysSinceHullClean: daysSince,
+    daysSinceHullClean: daysSinceHullClean,
     maintenanceUrgency: urgency,
     degradationRatePctPerDay: Number(rate.toFixed(4)),
     excessFuelCostUsdMtd: v.excess_fuel_cost_usd_per_day,
