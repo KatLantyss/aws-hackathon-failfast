@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-frontend stop stop-all build prod prod-backend prod-frontend predict clean
+.PHONY: dev dev-api dev-frontend stop stop-all build prod prod-login prod-backend prod-frontend prod-cloudfront prod-cloudfront-auto predict clean
 
 # AWS profile for hackathon credentials
 AWS_PROFILE  ?= hackathon
@@ -91,16 +91,16 @@ prod-login:
 		| docker login --username AWS --password-stdin $(ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 	@echo "✅  Logged in to ECR"
 
-# ── Full production deploy (backend + frontend) ───────────────────────────────
-prod: prod-login prod-backend prod-frontend
+# ── Full production deploy (backend + frontend + CloudFront) ──────────────────
+prod: prod-login prod-backend prod-frontend prod-cloudfront-auto
 	@echo ""
 	@printf "┌──────────────────────────────────────────────────────────────┐\n"
-	@printf "│   Production Deploy Complete                                  │\n"
+	@printf "│   Production Deploy Complete                                 │\n"
 	@printf "│                                                              │\n"
-	@printf "│   Backend API  ->  $(BACKEND_CF_URL)   │\n"
-	@printf "│   Frontend     ->  $(FRONTEND_CF_URL)   │\n"
+	@printf "│   App  ->  https://d1yvzz0da29zvi.cloudfront.net            │\n"
+	@printf "│   API  ->  https://d1yvzz0da29zvi.cloudfront.net/api/v1/    │\n"
 	@printf "│                                                              │\n"
-	@printf "│   ECS may take 1-3 min to roll out new tasks                 │\n"
+	@printf "│   CloudFront takes ~5 min to fully propagate                 │\n"
 	@printf "└──────────────────────────────────────────────────────────────┘\n"
 
 # ── Deploy backend ────────────────────────────────────────────────────────────
@@ -173,52 +173,65 @@ prod-frontend: prod-login
 	@echo "▶  Pushing frontend to ECR..."
 	@docker push $(ECR_FRONTEND):latest
 	@echo "▶  Creating or updating ECS Express Mode service..."
+	@if aws ecs describe-express-gateway-service \
+		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
+		--service-name $(ECS_FRONTEND_SVC) > /tmp/fe-svc.json 2>/dev/null; then \
+		echo "  Service exists — updating image..."; \
+		aws ecs update-express-gateway-service \
+			--profile $(AWS_PROFILE) --region $(AWS_REGION) \
+			--service-name $(ECS_FRONTEND_SVC) \
+			--primary-container "{\"image\":\"$(ECR_FRONTEND):latest\"}" \
+			--monitor-resources; \
+	else \
+		echo "  Service not found — creating..."; \
+		aws ecs create-express-gateway-service \
+			--profile $(AWS_PROFILE) --region $(AWS_REGION) \
+			--service-name $(ECS_FRONTEND_SVC) \
+			--execution-role-arn arn:aws:iam::$(ACCOUNT_ID):role/ecsTaskExecutionRole \
+			--infrastructure-role-arn arn:aws:iam::$(ACCOUNT_ID):role/ecsInfrastructureRoleForExpressServices \
+			--health-check-path "/health" \
+			--primary-container "{\"image\":\"$(ECR_FRONTEND):latest\",\"containerPort\":8080,\"environment\":[{\"name\":\"ANTHROPIC_MODEL\",\"value\":\"claude-sonnet-5\"},{\"name\":\"OPENAI_STT_MODEL\",\"value\":\"gpt-4o-transcribe\"}]}" \
+			--monitor-resources > /tmp/fe-svc.json; \
+	fi
+	@echo "▶  Extracting ECS Express Mode URL..."
 	@aws ecs describe-express-gateway-service \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
-		--service-name $(ECS_FRONTEND_SVC) 2>/dev/null \
-	&& aws ecs update-express-gateway-service \
+		--service-name $(ECS_FRONTEND_SVC) \
+		--query 'service.serviceConnectConfiguration.namespace' \
+		--output text 2>/dev/null || true
+	@FRONTEND_URL=$$(aws ecs describe-express-gateway-service \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
 		--service-name $(ECS_FRONTEND_SVC) \
-		--primary-container "{\"image\":\"$(ECR_FRONTEND):latest\"}" \
-		--monitor-resources \
-	|| aws ecs create-express-gateway-service \
-		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
-		--service-name $(ECS_FRONTEND_SVC) \
-		--execution-role-arn arn:aws:iam::$(ACCOUNT_ID):role/ecsTaskExecutionRole \
-		--infrastructure-role-arn arn:aws:iam::$(ACCOUNT_ID):role/ecsInfrastructureRoleForExpressServices \
-		--health-check-path "/health" \
-		--primary-container "{
-			\"image\": \"$(ECR_FRONTEND):latest\",
-			\"containerPort\": 8080,
-			\"environment\": [
-				{\"name\": \"ANTHROPIC_MODEL\", \"value\": \"claude-sonnet-5\"},
-				{\"name\": \"OPENAI_STT_MODEL\", \"value\": \"gpt-4o-transcribe\"}
-			]
-		}" \
-		--monitor-resources
-	@echo "✅  Frontend deploy complete"
+		--output json 2>/dev/null \
+		| python3 -c "import sys,json; d=json.load(sys.stdin); s=d.get('service',{}); print('https://'+s.get('serviceName','$(ECS_FRONTEND_SVC)')+'.ecs.$(AWS_REGION).on.aws')") && \
+		echo "$$FRONTEND_URL" > /tmp/frontend-ecs-url && \
+		echo "✅  Frontend URL: $$FRONTEND_URL"
 
-# ── (Optional) Update CloudFront to route frontend + backend on one domain ───
-# Run AFTER prod-frontend completes and you have the ECS Express Mode URL.
-# Set FRONTEND_ECS_URL to the Express Mode endpoint before running.
-# e.g.:  make prod-cloudfront FRONTEND_ECS_URL=https://ym-fleet-ops-frontend-svc.ecs.us-east-1.on.aws
-FRONTEND_ECS_URL ?= https://REPLACE-WITH-ECS-EXPRESS-URL.ecs.us-east-1.on.aws
-prod-cloudfront:
-	@test "$(FRONTEND_ECS_URL)" != "https://REPLACE-WITH-ECS-EXPRESS-URL.ecs.us-east-1.on.aws" \
-		|| (echo "❌  Set FRONTEND_ECS_URL first.  e.g.: make prod-cloudfront FRONTEND_ECS_URL=https://..." && exit 1)
-	@echo "▶  Fetching current CloudFront config..."
-	@CF_ETAG=$$(aws cloudfront get-distribution-config --profile $(AWS_PROFILE) \
+# ── Auto CloudFront update (called by prod, reads URL written by prod-frontend)
+prod-cloudfront-auto:
+	@test -f /tmp/frontend-ecs-url || (echo "❌  /tmp/frontend-ecs-url not found — run prod-frontend first" && exit 1)
+	@FRONTEND_URL=$$(cat /tmp/frontend-ecs-url) && \
+	echo "▶  Updating CloudFront → frontend: $$FRONTEND_URL" && \
+	CF_ETAG=$$(aws cloudfront get-distribution-config --profile $(AWS_PROFILE) \
 		--id EYQC35Y9OSEQD --query 'ETag' --output text) && \
 	aws cloudfront get-distribution-config --profile $(AWS_PROFILE) \
 		--id EYQC35Y9OSEQD --query 'DistributionConfig' > /tmp/cf-config.json && \
-	echo "Got ETag: $$CF_ETAG" && \
-	python3 scripts/patch_cloudfront.py /tmp/cf-config.json "$(FRONTEND_ECS_URL)" > /tmp/cf-config-patched.json && \
+	python3 scripts/patch_cloudfront.py /tmp/cf-config.json "$$FRONTEND_URL" > /tmp/cf-config-patched.json && \
 	aws cloudfront update-distribution --profile $(AWS_PROFILE) \
 		--id EYQC35Y9OSEQD \
 		--if-match "$$CF_ETAG" \
 		--distribution-config file:///tmp/cf-config-patched.json \
-		--query 'Distribution.Status' --output text && \
-	echo "✅  CloudFront update submitted (status: InProgress → ~5 min to Deployed)"
+		--query 'Distribution.{Status:Status,Id:Id}' --output table && \
+	echo "✅  CloudFront updated — propagation ~5 min"
+
+# ── Manual CloudFront update (if you already know the frontend URL) ───────────
+# make prod-cloudfront FRONTEND_ECS_URL=https://ym-fleet-ops-frontend-svc.ecs.us-east-1.on.aws
+FRONTEND_ECS_URL ?= SET-ME
+prod-cloudfront:
+	@test "$(FRONTEND_ECS_URL)" != "SET-ME" \
+		|| (echo "❌  Usage: make prod-cloudfront FRONTEND_ECS_URL=https://..." && exit 1)
+	@echo "$(FRONTEND_ECS_URL)" > /tmp/frontend-ecs-url
+	@$(MAKE) prod-cloudfront-auto
 
 # ── 批次預測 → submission.csv ─────────────────────────────────────────────────
 # 預設打 CloudFront；若要打本機：make predict URL=http://localhost:8000
