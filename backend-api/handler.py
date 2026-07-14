@@ -664,27 +664,76 @@ def get_fleet_summary(event):
         raw_items = []
 
     if raw_items:
+        def _f(item, key):
+            v = item.get(key)
+            return float(v) if v is not None else None
+
+        def _i(item, key):
+            v = item.get(key)
+            return int(v) if v is not None else None
+
+        def _s(item, key, default=''):
+            v = item.get(key)
+            return str(v) if v is not None else default
+
         for item in raw_items:
             per_vessel.append({
-                'vessel_id':               str(item.get('vessel_id', '')),
-                'type':                    str(item.get('vessel_type', 'training')),
-                'ship_class':              str(item.get('ship_class', '')),
-                'avg_slip_pct':            float(item['avg_slip_pct'])            if item.get('avg_slip_pct')            is not None else None,
-                'recent_90d_slip_pct':     float(item['recent_90d_slip_pct'])     if item.get('recent_90d_slip_pct')     is not None else None,
-                'slip_trend':              float(item['slip_trend'])              if item.get('slip_trend')              is not None else None,
-                'avg_consumption_mt':      float(item['avg_consumption_mt'])      if item.get('avg_consumption_mt')      is not None else None,
-                'urgency':                 str(item.get('urgency', 'LOW')),
-                'days_since_maintenance':  int(item['days_since_maintenance'])    if item.get('days_since_maintenance')  is not None else None,
-                'days_since_hull_clean':   int(item['days_since_hull_clean'])     if item.get('days_since_hull_clean')   is not None else None,
+                # identification
+                'vessel_id':    _s(item, 'vessel_id'),
+                'type':         _s(item, 'vessel_type', 'training'),
+                'ship_class':   _s(item, 'ship_class'),
+                # slip
+                'avg_slip_pct':        _f(item, 'avg_slip_pct'),
+                'recent_90d_slip_pct': _f(item, 'recent_90d_slip_pct'),
+                'slip_trend':          _f(item, 'slip_trend'),
+                'valid_slip_records':  _i(item, 'valid_slip_records'),
+                # performance
+                'avg_speed_kn':       _f(item, 'avg_speed_kn'),
+                'avg_stw_kn':         _f(item, 'avg_stw_kn'),
+                'avg_rpm':            _f(item, 'avg_rpm'),
+                'avg_consumption_mt': _f(item, 'avg_consumption_mt'),
+                'avg_sfoc':           _f(item, 'avg_sfoc'),
+                'avg_horse_power':    _f(item, 'avg_horse_power'),
+                'avg_me_slip_pct':    _f(item, 'avg_me_slip_pct'),
+                'avg_load_pct':       _f(item, 'avg_load_pct'),
+                # environment
+                'avg_wind_scale':       _f(item, 'avg_wind_scale'),
+                'avg_sea_height_m':     _f(item, 'avg_sea_height_m'),
+                'avg_sea_water_temp_c': _f(item, 'avg_sea_water_temp_c'),
+                # loading
+                'avg_fore_draft_m':      _f(item, 'avg_fore_draft_m'),
+                'avg_aft_draft_m':       _f(item, 'avg_aft_draft_m'),
+                'avg_mid_draft_m':       _f(item, 'avg_mid_draft_m'),
+                'avg_cargo_on_board_mt': _f(item, 'avg_cargo_on_board_mt'),
+                'avg_displacement_mt':   _f(item, 'avg_displacement_mt'),
+                # voyage coverage
+                'total_records':   _i(item, 'total_records') or 0,
+                'total_voyages':   _i(item, 'total_voyages') or 0,
+                'day_range_min':   _i(item, 'day_range_min'),
+                'day_range_max':   _i(item, 'day_range_max'),
+                'data_span_days':  _i(item, 'data_span_days'),
+                # maintenance
+                'total_maint_events':     _i(item, 'total_maint_events'),
+                'last_event_type':        _s(item, 'last_event_type') or None,
+                'last_event_day':         _i(item, 'last_event_day'),
+                'days_since_maintenance': _i(item, 'days_since_maintenance'),
+                'days_since_hull_clean':  _i(item, 'days_since_hull_clean'),
+                'last_hull_clean_type':   _s(item, 'last_hull_clean_type') or None,
+                'last_hull_clean_day':    _i(item, 'last_hull_clean_day'),
+                'last_prop_polish_day':   _i(item, 'last_prop_polish_day'),
+                'days_since_prop_polish': _i(item, 'days_since_prop_polish'),
+                # cost
                 'excess_fuel_cost_usd_per_day': float(item['excess_fuel_cost_usd_per_day']) if item.get('excess_fuel_cost_usd_per_day') is not None else 0.0,
-                'lat':                   float(item['lat'])         if item.get('lat')         is not None else 0.0,
-                'lon':                   float(item['lon'])         if item.get('lon')         is not None else 0.0,
-                'heading_deg':           float(item['heading_deg']) if item.get('heading_deg') is not None else 0.0,
-                'speed_kt':              float(item['speed_kt'])    if item.get('speed_kt')    is not None else 0.0,
-                'total_records':           int(item['total_records'])             if item.get('total_records')           is not None else 0,
-                'total_voyages':           int(item['total_voyages'])             if item.get('total_voyages')           is not None else 0,
-                'last_updated':            str(item.get('last_updated', '')),
-                'rank':                    None,  # populated below from ranking
+                # urgency
+                'urgency': _s(item, 'urgency', 'LOW'),
+                # position
+                'lat':         float(item['lat'])         if item.get('lat')         is not None else 0.0,
+                'lon':         float(item['lon'])         if item.get('lon')         is not None else 0.0,
+                'heading_deg': float(item['heading_deg']) if item.get('heading_deg') is not None else 0.0,
+                'speed_kt':    float(item['speed_kt'])    if item.get('speed_kt')    is not None else 0.0,
+                # meta
+                'last_updated': _s(item, 'last_updated'),
+                'rank': None,
             })
 
         # Attach rank from fleet/ranking (uses its own cache)

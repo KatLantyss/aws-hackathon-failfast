@@ -136,18 +136,58 @@ export type VesselUrgency = 'LOW' | 'MEDIUM' | 'HIGH'
 export interface ApiFleetSummaryVessel {
   vessel_id: string
   type: 'training' | 'prediction'
+  ship_class: string
+  // slip / speed loss
   avg_slip_pct: number | null
   recent_90d_slip_pct: number | null
   slip_trend: number | null
+  valid_slip_records: number | null
+  // performance
+  avg_speed_kn: number | null
+  avg_stw_kn: number | null
+  avg_rpm: number | null
   avg_consumption_mt: number | null
-  urgency: VesselUrgency
+  avg_sfoc: number | null
+  avg_horse_power: number | null
+  avg_me_slip_pct: number | null
+  avg_load_pct: number | null
+  // environment
+  avg_wind_scale: number | null
+  avg_sea_height_m: number | null
+  avg_sea_water_temp_c: number | null
+  // loading
+  avg_fore_draft_m: number | null
+  avg_aft_draft_m: number | null
+  avg_mid_draft_m: number | null
+  avg_cargo_on_board_mt: number | null
+  avg_displacement_mt: number | null
+  // voyage coverage
+  total_records: number
+  total_voyages: number
+  day_range_min: number | null
+  day_range_max: number | null
+  data_span_days: number | null
+  // maintenance
+  total_maint_events: number | null
+  last_event_type: string | null
+  last_event_day: number | null
   days_since_maintenance: number | null
   days_since_hull_clean: number | null
+  last_hull_clean_type: string | null
+  last_hull_clean_day: number | null
+  last_prop_polish_day: number | null
+  days_since_prop_polish: number | null
+  // cost
   excess_fuel_cost_usd_per_day: number
+  // urgency
+  urgency: VesselUrgency
+  // position
   lat: number
   lon: number
   heading_deg: number
   speed_kt: number
+  // meta
+  last_updated: string
   rank: number | null
 }
 

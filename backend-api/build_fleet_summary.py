@@ -6,43 +6,77 @@ Computes per-vessel fleet summary statistics from vt_fd.csv + maintenance.csv
 and writes them into DynamoDB table: ship-analysis-dev-fleet-summary
 
 Usage:
-    # With env vars already set:
-    python3 build_fleet_summary.py
-
-    # With explicit credentials:
-    AWS_ACCESS_KEY_ID=xxx AWS_SECRET_ACCESS_KEY=yyy python3 build_fleet_summary.py
-
-    # Dry-run (print items, don't write to DynamoDB):
-    python3 build_fleet_summary.py --dry-run
+    python3 build_fleet_summary.py           # write to DynamoDB
+    python3 build_fleet_summary.py --dry-run # print without writing
 
 Table schema (PK = vessel_id):
-    vessel_id               String  e.g. "S1"
-    vessel_type             String  "training" | "prediction"
-    ship_class              String  "W1" | "W2"
-    total_records           Number
-    total_voyages           Number
-    avg_slip_pct            Number  mean FULL_SPD_STW_SLIP (0-30% valid)
-    recent_90d_slip_pct     Number  mean of last-90-record slip values
-    slip_trend              Number  recent_90d - avg (positive = degrading)
-    avg_consumption_mt      Number  mean ME_CONSUMPTION
-    urgency                 String  "LOW" | "MEDIUM" | "HIGH"
-    days_since_maintenance  Number  latest NOON_UTC - last event_day
-    excess_fuel_cost_usd_mtd Number  estimated monthly excess fuel cost USD
-    last_updated            String  ISO-8601 UTC timestamp
+  Identification
+    vessel_id, vessel_type, ship_class
+
+  Slip / Speed Loss  (FULL_SPD_STW_SLIP, valid 0–30%)
+    avg_slip_pct           mean over all valid records
+    recent_90d_slip_pct    mean of last 90 valid records
+    slip_trend             recent_90d - avg  (+ = degrading)
+    valid_slip_records     count of valid slip records
+
+  Performance indicators
+    avg_speed_kn           mean AVG_SPEED (SOG)
+    avg_stw_kn             mean SPEED_THROUGH_WATER
+    avg_rpm                mean ME_AVG_RPM
+    avg_consumption_mt     mean ME_CONSUMPTION (MT/day)
+    avg_sfoc               mean SFOC (g/kWh)  — may be null (hidden field)
+    avg_horse_power        mean HORSE_POWER (kW) — may be null
+    avg_me_slip_pct        mean ME_SLIP (%) — may be null
+
+  Environmental conditions (average over all records)
+    avg_wind_scale         mean WIND_SCALE (Beaufort)
+    avg_sea_height_m       mean SEA_HEIGHT (m)
+    avg_sea_water_temp_c   mean SEA_WATER_TEMP (°C)
+    avg_fore_draft_m       mean FORE_DRAFT (m)
+    avg_aft_draft_m        mean AFTER_DRAFT (m)
+    avg_cargo_on_board_mt  mean CARGO_ON_BOARD (MT)
+    avg_displacement_mt    mean DISPLACEMENT (MT)
+
+  Voyage coverage
+    total_records          total noon-report rows
+    total_voyages          distinct VOYAGE values
+    day_range_min          earliest NOON_UTC
+    day_range_max          latest NOON_UTC
+    data_span_days         day_range_max - day_range_min
+
+  Maintenance
+    total_maint_events     total maintenance events
+    last_event_type        event_type of last maintenance event
+    last_event_day         NOON_UTC of last maintenance event
+    days_since_maintenance latest noon - last any event
+    days_since_hull_clean  latest noon - last DD/UWC/UWC+PP
+    last_hull_clean_type   event_type of last hull-cleaning event
+    last_propeller_polish_day latest PP/UWC+PP/UWI+PP day
+    days_since_prop_polish latest noon - last propeller polish
+
+  Cost
+    excess_fuel_cost_usd_per_day  estimated daily excess cost from slip
+
+  Urgency
+    urgency                LOW / MEDIUM / HIGH
+
+  Position (static — no AIS in competition data)
+    lat, lon, heading_deg, speed_kt
+
+  Meta
+    last_updated           ISO-8601 UTC timestamp of this summary build
 """
 
 import argparse
 import csv
 import json
 import os
-import sys
 import statistics
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import boto3
-from boto3.dynamodb.conditions import Key
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).resolve().parent.parent
@@ -50,8 +84,8 @@ VT_FD_CSV = BASE_DIR / 'backend' / 'hackathon-data' / 'vt_fd.csv'
 MAINT_CSV = BASE_DIR / 'backend' / 'hackathon-data' / 'maintenance.csv'
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TABLE_NAME   = os.environ.get('FLEET_SUMMARY_TABLE', 'ship-analysis-dev-fleet-summary')
-REGION       = os.environ.get('AWS_DEFAULT_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+TABLE_NAME = os.environ.get('FLEET_SUMMARY_TABLE', 'ship-analysis-dev-fleet-summary')
+REGION     = os.environ.get('AWS_DEFAULT_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
 
 TRAIN_VESSELS = {'S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12'}
 PRED_VESSELS  = {'S21','S22','S23'}
@@ -59,8 +93,13 @@ W1_SHIPS      = {'S1','S2','S3','S4','S5','S6','S7','S8','S21'}
 W2_SHIPS      = {'S9','S10','S11','S12','S22','S23'}
 
 FUEL_PRICE_USD_MT  = 620   # USD per MT
-BASELINE_MT_DAY_W1 = 155   # W1 ship baseline daily consumption MT
-BASELINE_MT_DAY_W2 = 92    # W2 ship baseline daily consumption MT
+BASELINE_MT_DAY_W1 = 155   # W1 baseline daily consumption MT
+BASELINE_MT_DAY_W2 = 92    # W2 baseline daily consumption MT
+
+# Event type classification (from README)
+HULL_CLEAN_TYPES  = {'DD', 'UWC', 'UWC+PP'}           # hull physically cleaned
+PROP_POLISH_TYPES = {'PP', 'UWC+PP', 'UWI+PP', 'DD'}  # propeller polished
+EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}  # any physical intervention
 
 # Static AIS positions (no real-time AIS in competition data)
 SHIP_POSITIONS: dict[str, dict] = {
@@ -82,81 +121,122 @@ SHIP_POSITIONS: dict[str, dict] = {
 }
 
 
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def safe_float(val, default=None):
     if val is None:
         return default
+    s = str(val).strip()
+    if s in ('', 'HIDDEN', 'PREDICT', 'NA', 'N/A', 'nan', 'None'):
+        return default
     try:
-        return float(val)
+        return float(s)
     except (ValueError, TypeError):
         return default
 
 
+def mean_or_none(values: list) -> float | None:
+    clean = [v for v in values if v is not None]
+    return round(statistics.mean(clean), 4) if clean else None
+
+
+def last_event_of_type(sorted_events: list, types: set) -> dict | None:
+    matches = [e for e in sorted_events if str(e.get('event_type', '')).strip() in types]
+    return matches[-1] if matches else None
+
+
 def load_vessel_data() -> dict[str, list[dict]]:
-    """Load vt_fd.csv grouped by De-identification Name."""
     ships: dict[str, list[dict]] = {}
-    with open(VT_FD_CSV, newline='') as f:
+    with open(VT_FD_CSV, newline='', encoding='utf-8-sig') as f:
         for row in csv.DictReader(f):
             sid = row['De-identification Name'].strip()
-            if sid not in ships:
-                ships[sid] = []
-            ships[sid].append(row)
+            ships.setdefault(sid, []).append(row)
     return ships
 
 
 def load_maintenance_data() -> dict[str, list[dict]]:
-    """Load maintenance.csv grouped by ship_id."""
     maint: dict[str, list[dict]] = {}
-    with open(MAINT_CSV, newline='') as f:
+    with open(MAINT_CSV, newline='', encoding='utf-8-sig') as f:
         for row in csv.DictReader(f):
             sid = row['ship_id'].strip()
-            if sid not in maint:
-                maint[sid] = []
-            maint[sid].append(row)
+            maint.setdefault(sid, []).append(row)
     return maint
 
 
+# ── Core computation ──────────────────────────────────────────────────────────
+
 def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) -> dict:
-    """Compute all summary stats for one vessel."""
-    # ── slip stats ────────────────────────────────────────────────────────────
-    slip_timeline = []
-    for r in rows:
-        day  = safe_float(r.get('NOON_UTC'))
-        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
-        if day is not None and slip is not None and 0 <= slip <= 30:
-            slip_timeline.append((day, slip))
+    """Compute all summary stats for one vessel from raw CSV rows."""
 
-    slip_timeline.sort(key=lambda x: x[0])
-    all_slips    = [s for _, s in slip_timeline]
-    recent_slips = [s for _, s in slip_timeline[-90:]]
+    # ── Sort rows by NOON_UTC ──────────────────────────────────────────────
+    rows_sorted = sorted(rows, key=lambda r: safe_float(r.get('NOON_UTC'), 0))
+    latest_noon = safe_float(rows_sorted[-1].get('NOON_UTC'), 0) if rows_sorted else 0
+    earliest_noon = safe_float(rows_sorted[0].get('NOON_UTC'), 0) if rows_sorted else 0
 
-    avg_slip    = round(statistics.mean(all_slips), 4)    if all_slips    else None
-    recent_90d  = round(statistics.mean(recent_slips), 4) if recent_slips else avg_slip
-    slip_trend  = round((recent_90d or 0) - (avg_slip or 0), 4)
+    # ── Slip stats (FULL_SPD_STW_SLIP, valid 0–30%) ────────────────────────
+    slip_pts = [
+        (safe_float(r.get('NOON_UTC')), safe_float(r.get('FULL_SPD_STW_SLIP')))
+        for r in rows_sorted
+    ]
+    slip_pts = [(d, s) for d, s in slip_pts if d is not None and s is not None and 0 <= s <= 30]
 
-    # ── consumption ──────────────────────────────────────────────────────────
-    cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if safe_float(r.get('ME_CONSUMPTION')) is not None]
-    avg_consumption = round(statistics.mean(cons_list), 4) if cons_list else None
+    all_slips    = [s for _, s in slip_pts]
+    recent_slips = [s for _, s in slip_pts[-90:]]
 
-    # ── voyages ───────────────────────────────────────────────────────────────
-    voyages = {r.get('VOYAGE', '').strip() for r in rows if r.get('VOYAGE', '').strip()}
+    avg_slip           = mean_or_none(all_slips)
+    recent_90d_slip    = mean_or_none(recent_slips) if recent_slips else avg_slip
+    slip_trend         = round((recent_90d_slip or 0) - (avg_slip or 0), 4) if avg_slip is not None else None
+    valid_slip_records = len(all_slips)
 
-    # ── days since last maintenance / hull clean ─────────────────────────────
-    HULL_CLEAN_EVENT_TYPES = {'DD', 'UWC', 'UWC+PP'}  # events that actually clean the hull
+    # ── Speed / RPM ────────────────────────────────────────────────────────
+    avg_speed_kn = mean_or_none([safe_float(r.get('AVG_SPEED')) for r in rows_sorted])
+    avg_stw_kn   = mean_or_none([safe_float(r.get('SPEED_THROUGH_WATER')) for r in rows_sorted])
+    avg_rpm      = mean_or_none([safe_float(r.get('ME_AVG_RPM')) for r in rows_sorted])
 
-    sorted_maint   = sorted(maint_rows, key=lambda x: safe_float(x.get('event_day'), 0))
-    latest_noon    = max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0)
+    # ── Fuel / Engine performance ──────────────────────────────────────────
+    avg_consumption  = mean_or_none([safe_float(r.get('ME_CONSUMPTION')) for r in rows_sorted])
+    avg_sfoc         = mean_or_none([safe_float(r.get('SFOC')) for r in rows_sorted])
+    avg_horse_power  = mean_or_none([safe_float(r.get('HORSE_POWER')) for r in rows_sorted])
+    avg_me_slip_pct  = mean_or_none([safe_float(r.get('ME_SLIP')) for r in rows_sorted])
+    avg_load_pct     = mean_or_none([safe_float(r.get('LOAD_PCT')) for r in rows_sorted])
 
-    # Any maintenance event
-    last_event_day = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
-    days_since_maintenance = round(latest_noon - last_event_day) if rows else None
+    # ── Environment ────────────────────────────────────────────────────────
+    avg_wind_scale    = mean_or_none([safe_float(r.get('WIND_SCALE')) for r in rows_sorted])
+    avg_sea_height    = mean_or_none([safe_float(r.get('SEA_HEIGHT')) for r in rows_sorted])
+    avg_sea_water_temp= mean_or_none([safe_float(r.get('SEA_WATER_TEMP')) for r in rows_sorted])
 
-    # Hull-cleaning events only (DD, UWC, UWC+PP)
-    hull_clean_events = [m for m in sorted_maint if str(m.get('event_type', '')).strip() in HULL_CLEAN_EVENT_TYPES]
-    last_hull_clean_day = safe_float(hull_clean_events[-1].get('event_day'), 0) if hull_clean_events else 0
-    days_since_hull_clean = round(latest_noon - last_hull_clean_day) if (rows and hull_clean_events) else None
+    # ── Loading condition ──────────────────────────────────────────────────
+    avg_fore_draft    = mean_or_none([safe_float(r.get('FORE_DRAFT')) for r in rows_sorted])
+    avg_aft_draft     = mean_or_none([safe_float(r.get('AFTER_DRAFT')) for r in rows_sorted])
+    avg_mid_draft     = mean_or_none([safe_float(r.get('MID_DRAFT')) for r in rows_sorted])
+    avg_cargo         = mean_or_none([safe_float(r.get('CARGO_ON_BOARD')) for r in rows_sorted])
+    avg_displacement  = mean_or_none([safe_float(r.get('DISPLACEMENT')) for r in rows_sorted])
 
-    # ── urgency ───────────────────────────────────────────────────────────────
-    slip_val = recent_90d or avg_slip or 0
+    # ── Voyage coverage ────────────────────────────────────────────────────
+    voyages = {r.get('VOYAGE', '').strip() for r in rows_sorted if r.get('VOYAGE', '').strip()}
+
+    # ── Maintenance ────────────────────────────────────────────────────────
+    sorted_maint = sorted(maint_rows, key=lambda x: safe_float(x.get('event_day'), 0))
+
+    # Any event
+    last_any = sorted_maint[-1] if sorted_maint else None
+    last_event_day  = safe_float(last_any.get('event_day'), 0) if last_any else None
+    last_event_type = str(last_any.get('event_type', '')).strip() if last_any else None
+    days_since_maintenance = round(latest_noon - last_event_day) if (rows_sorted and last_event_day is not None) else None
+
+    # Hull clean (DD / UWC / UWC+PP)
+    last_hull = last_event_of_type(sorted_maint, HULL_CLEAN_TYPES)
+    last_hull_clean_day  = safe_float(last_hull.get('event_day')) if last_hull else None
+    last_hull_clean_type = str(last_hull.get('event_type', '')).strip() if last_hull else None
+    days_since_hull_clean = round(latest_noon - last_hull_clean_day) if (rows_sorted and last_hull_clean_day is not None) else None
+
+    # Propeller polish (PP / UWC+PP / UWI+PP / DD)
+    last_prop = last_event_of_type(sorted_maint, PROP_POLISH_TYPES)
+    last_prop_polish_day  = safe_float(last_prop.get('event_day')) if last_prop else None
+    days_since_prop_polish = round(latest_noon - last_prop_polish_day) if (rows_sorted and last_prop_polish_day is not None) else None
+
+    # ── Urgency ────────────────────────────────────────────────────────────
+    slip_val = recent_90d_slip or avg_slip or 0
     if slip_val >= 10 or (days_since_maintenance is not None and days_since_maintenance > 365):
         urgency = 'HIGH'
     elif slip_val >= 6 or (days_since_maintenance is not None and days_since_maintenance > 270):
@@ -164,40 +244,90 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
     else:
         urgency = 'LOW'
 
-    # ── excess fuel cost per day ──────────────────────────────────────────────
+    # ── Excess fuel cost per day ───────────────────────────────────────────
     baseline = BASELINE_MT_DAY_W1 if vessel_id in W1_SHIPS else BASELINE_MT_DAY_W2
-    excess_fuel_cost_usd_per_day = round(baseline * (max(0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
+    excess_fuel_cost_usd_per_day = round(baseline * (max(0.0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
 
+    # ── Position ───────────────────────────────────────────────────────────
     pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0, 'heading_deg': 0, 'speed_kt': 0.0})
 
     return {
-        'vessel_id':               vessel_id,
-        'vessel_type':             'training' if vessel_id in TRAIN_VESSELS else 'prediction',
-        'ship_class':              'W1' if vessel_id in W1_SHIPS else 'W2',
-        'total_records':           len(rows),
-        'total_voyages':           len(voyages),
-        'avg_slip_pct':            avg_slip,
-        'recent_90d_slip_pct':     recent_90d,
-        'slip_trend':              slip_trend,
-        'avg_consumption_mt':      avg_consumption,
-        'urgency':                 urgency,
-        'days_since_maintenance':  days_since_maintenance,
-        'days_since_hull_clean':   days_since_hull_clean,
+        # ── identification ────────────────────────────────────────────────
+        'vessel_id':    vessel_id,
+        'vessel_type':  'training' if vessel_id in TRAIN_VESSELS else 'prediction',
+        'ship_class':   'W1' if vessel_id in W1_SHIPS else 'W2',
+
+        # ── slip / speed loss ─────────────────────────────────────────────
+        'avg_slip_pct':        avg_slip,
+        'recent_90d_slip_pct': recent_90d_slip,
+        'slip_trend':          slip_trend,
+        'valid_slip_records':  valid_slip_records,
+
+        # ── performance ───────────────────────────────────────────────────
+        'avg_speed_kn':       avg_speed_kn,
+        'avg_stw_kn':         avg_stw_kn,
+        'avg_rpm':            avg_rpm,
+        'avg_consumption_mt': avg_consumption,
+        'avg_sfoc':           avg_sfoc,
+        'avg_horse_power':    avg_horse_power,
+        'avg_me_slip_pct':    avg_me_slip_pct,
+        'avg_load_pct':       avg_load_pct,
+
+        # ── environment ───────────────────────────────────────────────────
+        'avg_wind_scale':      avg_wind_scale,
+        'avg_sea_height_m':    avg_sea_height,
+        'avg_sea_water_temp_c':avg_sea_water_temp,
+
+        # ── loading ───────────────────────────────────────────────────────
+        'avg_fore_draft_m':      avg_fore_draft,
+        'avg_aft_draft_m':       avg_aft_draft,
+        'avg_mid_draft_m':       avg_mid_draft,
+        'avg_cargo_on_board_mt': avg_cargo,
+        'avg_displacement_mt':   avg_displacement,
+
+        # ── voyage coverage ───────────────────────────────────────────────
+        'total_records':   len(rows),
+        'total_voyages':   len(voyages),
+        'day_range_min':   int(earliest_noon),
+        'day_range_max':   int(latest_noon),
+        'data_span_days':  int(latest_noon - earliest_noon),
+
+        # ── maintenance ───────────────────────────────────────────────────
+        'total_maint_events':       len(sorted_maint),
+        'last_event_type':          last_event_type,
+        'last_event_day':           int(last_event_day) if last_event_day is not None else None,
+        'days_since_maintenance':   days_since_maintenance,
+        'days_since_hull_clean':    days_since_hull_clean,
+        'last_hull_clean_type':     last_hull_clean_type,
+        'last_hull_clean_day':      int(last_hull_clean_day) if last_hull_clean_day is not None else None,
+        'last_prop_polish_day':     int(last_prop_polish_day) if last_prop_polish_day is not None else None,
+        'days_since_prop_polish':   days_since_prop_polish,
+
+        # ── cost ──────────────────────────────────────────────────────────
         'excess_fuel_cost_usd_per_day': excess_fuel_cost_usd_per_day,
-        'lat':                     pos['lat'],
-        'lon':                     pos['lon'],
-        'heading_deg':             pos['heading_deg'],
-        'speed_kt':                pos['speed_kt'],
-        'last_updated':            datetime.now(timezone.utc).isoformat(timespec='seconds'),
+
+        # ── urgency ───────────────────────────────────────────────────────
+        'urgency': urgency,
+
+        # ── position ──────────────────────────────────────────────────────
+        'lat':         pos['lat'],
+        'lon':         pos['lon'],
+        'heading_deg': pos['heading_deg'],
+        'speed_kt':    pos['speed_kt'],
+
+        # ── meta ──────────────────────────────────────────────────────────
+        'last_updated': datetime.now(timezone.utc).isoformat(timespec='seconds'),
     }
 
 
+# ── DynamoDB helpers ──────────────────────────────────────────────────────────
+
 def to_dynamo_item(summary: dict) -> dict:
-    """Convert Python dict to DynamoDB-safe item (floats → Decimal)."""
+    """Convert Python dict to DynamoDB-safe item (None removed, numbers → Decimal)."""
     item = {}
     for k, v in summary.items():
         if v is None:
-            continue  # skip None — DynamoDB doesn't accept null via resource API
+            continue
         if isinstance(v, float):
             item[k] = Decimal(str(v))
         elif isinstance(v, int):
@@ -208,7 +338,6 @@ def to_dynamo_item(summary: dict) -> dict:
 
 
 def create_table_if_not_exists(dynamodb):
-    """Create the fleet-summary table if it doesn't already exist."""
     client = dynamodb.meta.client
     try:
         client.describe_table(TableName=TABLE_NAME)
@@ -220,39 +349,32 @@ def create_table_if_not_exists(dynamodb):
     print(f"  Creating table '{TABLE_NAME}' ...")
     dynamodb.create_table(
         TableName=TABLE_NAME,
-        KeySchema=[
-            {'AttributeName': 'vessel_id', 'KeyType': 'HASH'},
-        ],
-        AttributeDefinitions=[
-            {'AttributeName': 'vessel_id', 'AttributeType': 'S'},
-        ],
+        KeySchema=[{'AttributeName': 'vessel_id', 'KeyType': 'HASH'}],
+        AttributeDefinitions=[{'AttributeName': 'vessel_id', 'AttributeType': 'S'}],
         BillingMode='PAY_PER_REQUEST',
     )
-    # Wait until active
-    waiter = dynamodb.meta.client.get_waiter('table_exists')
-    waiter.wait(TableName=TABLE_NAME)
+    dynamodb.meta.client.get_waiter('table_exists').wait(TableName=TABLE_NAME)
     print(f"  Table '{TABLE_NAME}' created and active.")
 
 
 def write_to_dynamodb(items: list[dict]):
-    """Batch-write all items to DynamoDB."""
     dynamodb = boto3.resource('dynamodb', region_name=REGION)
     create_table_if_not_exists(dynamodb)
     table = dynamodb.Table(TABLE_NAME)
-
     with table.batch_writer() as batch:
         for item in items:
             batch.put_item(Item=to_dynamo_item(item))
-
     print(f"\n  Wrote {len(items)} items to '{TABLE_NAME}'.")
 
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
-    parser = argparse.ArgumentParser(description='Build fleet summary DynamoDB table from CSV data.')
-    parser.add_argument('--dry-run', action='store_true', help='Print items without writing to DynamoDB')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dry-run', action='store_true', help='Print items, skip DynamoDB write')
     args = parser.parse_args()
 
-    print("Loading vessel data from CSV ...")
+    print("Loading CSV data ...")
     vessel_data = load_vessel_data()
     maint_data  = load_maintenance_data()
 
@@ -261,21 +383,26 @@ def main():
 
     print(f"Computing summaries for {len(all_vessels)} vessels ...")
     for vid in all_vessels:
-        rows        = vessel_data.get(vid, [])
-        maint_rows  = maint_data.get(vid, [])
-        summary     = compute_summary(vid, rows, maint_rows)
+        rows       = vessel_data.get(vid, [])
+        maint_rows = maint_data.get(vid, [])
+        summary    = compute_summary(vid, rows, maint_rows)
         summaries.append(summary)
-        print(f"  {vid:4s}: records={summary['total_records']:4d}  "
-              f"slip={str(summary['avg_slip_pct']):6s}  "
-              f"recent_90d={str(summary['recent_90d_slip_pct']):6s}  "
-              f"urgency={summary['urgency']}")
+        print(
+            f"  {vid:4s}  records={summary['total_records']:4d}"
+            f"  slip={str(summary['avg_slip_pct'] or '—'):6s}"
+            f"  recent90d={str(summary['recent_90d_slip_pct'] or '—'):6s}"
+            f"  maint={summary['days_since_maintenance']}d"
+            f"  hull_clean={summary['days_since_hull_clean']}d"
+            f"  urgency={summary['urgency']}"
+        )
 
     if args.dry_run:
-        print("\n[DRY RUN] Items that would be written:")
-        print(json.dumps(summaries, indent=2, default=str))
+        print("\n[DRY RUN] Sample item (S1):")
+        s1 = next((s for s in summaries if s['vessel_id'] == 'S1'), summaries[0])
+        print(json.dumps(s1, indent=2, default=str))
         return
 
-    print(f"\nWriting to DynamoDB table '{TABLE_NAME}' (region={REGION}) ...")
+    print(f"\nWriting to DynamoDB '{TABLE_NAME}' (region={REGION}) ...")
     write_to_dynamodb(summaries)
     print("Done.")
 
