@@ -219,53 +219,120 @@ def get_noon_reports(vessel_id, event):
 
 def get_speed_loss(vessel_id, event):
     """
-    Speed Loss = reference_speed - actual_speed
-    Reference: median speed in calm conditions (wind≤3, sea≤1m)
+    Speed Loss 基於 ISO 19030 框架，使用 FULL_SPD_STW_SLIP。
+    FULL_SPD_STW_SLIP = 全速航行時段的螺旋槳對水滑差(%)，數值越高代表推進效能越差。
+    有效範圍：0–30%（排除異常值）
+
+    同時計算 ISO 19030-style speed loss：
+    以 calm condition (WIND≤3, HOURS_FULL_SPEED≥22) 的前 baseline 期 STW vs RPM 作為基準，
+    每筆資料在相同 RPM bin 下比較實際 STW，差值即 speed loss (kn)。
     """
     rows = query_vessel(vessel_id)
     if not rows:
         return err(404, f'Vessel {vessel_id} not found')
 
-    # Reference speed: calm condition rows
-    calm = [r for r in rows
-            if safe_float(r.get('WIND_SCALE'), 99) <= 3
-            and safe_float(r.get('SEA_HEIGHT'), 99) <= 1.0]
-
-    calm_speeds = [safe_float(r['SPEED_THROUGH_WATER']) for r in calm if r.get('SPEED_THROUGH_WATER')]
-    ref_speed   = sorted(calm_speeds)[len(calm_speeds)//2] if calm_speeds else None  # median
-
-    # Calculate speed loss per record
-    timeline = []
+    # ── Step 1: FULL_SPD_STW_SLIP 趨勢（主指標）──────────────────────────
+    slip_timeline = []
     for r in rows:
-        stw = safe_float(r.get('SPEED_THROUGH_WATER'))
-        if stw is None or ref_speed is None:
+        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
+        if slip is None or slip < 0 or slip > 30:
             continue
-        loss = round(ref_speed - stw, 3)
-        timeline.append({
+        slip_timeline.append({
             'noon_day':   safe_float(r.get('NOON_UTC')),
             'voyage':     safe_float(r.get('VOYAGE')),
-            'stw':        round(stw, 2),
-            'ref_speed':  round(ref_speed, 2),
-            'speed_loss': loss,
+            'slip_pct':   round(slip, 2),
             'wind_scale': safe_float(r.get('WIND_SCALE')),
-            'sea_height': safe_float(r.get('SEA_HEIGHT')),
+            'hours_full_speed': safe_float(r.get('HOURS_FULL_SPEED')),
+        })
+    slip_timeline.sort(key=lambda x: x['noon_day'] or 0)
+
+    avg_slip = round(mean([t['slip_pct'] for t in slip_timeline]), 2) if slip_timeline else None
+
+    # ── Step 2: ISO 19030-style — RPM-bucket baseline ────────────────────
+    # calm condition: WIND≤3, HOURS_FULL_SPEED≥22
+    calm = [r for r in rows
+            if safe_float(r.get('WIND_SCALE'), 99) <= 3
+            and safe_float(r.get('HOURS_FULL_SPEED'), 0) >= 22
+            and r.get('ME_AVG_RPM') and r.get('SPEED_THROUGH_WATER')]
+
+    # baseline = first 10% of calm records (earliest days = cleanest hull)
+    calm_sorted = sorted(calm, key=lambda x: safe_float(x.get('NOON_UTC'), 0))
+    baseline_n  = max(5, len(calm_sorted) // 10)
+    baseline    = calm_sorted[:baseline_n]
+
+    # build RPM → STW lookup (5-RPM bins)
+    rpm_stw = {}
+    for r in baseline:
+        rpm = safe_float(r.get('ME_AVG_RPM'))
+        stw = safe_float(r.get('SPEED_THROUGH_WATER'))
+        if rpm and stw:
+            bucket = int(rpm // 5) * 5  # e.g. 67 → 65
+            if bucket not in rpm_stw:
+                rpm_stw[bucket] = []
+            rpm_stw[bucket].append(stw)
+    rpm_baseline = {k: round(mean(v), 3) for k, v in rpm_stw.items()}
+
+    # calculate speed loss per calm record
+    iso_timeline = []
+    for r in calm_sorted:
+        rpm = safe_float(r.get('ME_AVG_RPM'))
+        stw = safe_float(r.get('SPEED_THROUGH_WATER'))
+        if not rpm or not stw:
+            continue
+        bucket = int(rpm // 5) * 5
+        ref = rpm_baseline.get(bucket)
+        if ref is None:
+            # find nearest bucket
+            buckets = list(rpm_baseline.keys())
+            if not buckets:
+                continue
+            bucket = min(buckets, key=lambda b: abs(b - bucket))
+            ref = rpm_baseline[bucket]
+        iso_timeline.append({
+            'noon_day':    safe_float(r.get('NOON_UTC')),
+            'voyage':      safe_float(r.get('VOYAGE')),
+            'rpm':         round(rpm, 1),
+            'stw':         round(stw, 2),
+            'ref_stw':     ref,
+            'speed_loss_kn': round(ref - stw, 3),
+            'wind_scale':  safe_float(r.get('WIND_SCALE')),
         })
 
-    avg_loss = round(mean([t['speed_loss'] for t in timeline]), 3) if timeline else None
+    avg_iso_loss = round(mean([t['speed_loss_kn'] for t in iso_timeline]), 3) if iso_timeline else None
 
     return resp(200, {
-        'vessel_id':        vessel_id,
-        'reference_speed':  round(ref_speed, 2) if ref_speed else None,
-        'avg_speed_loss_kn': avg_loss,
-        'calm_records_used': len(calm_speeds),
-        'timeline':         timeline,
+        'vessel_id': vessel_id,
+        'method': 'FULL_SPD_STW_SLIP + ISO19030-RPM-baseline',
+        # FULL_SPD_STW_SLIP 趨勢（所有有效資料）
+        'slip_summary': {
+            'avg_slip_pct':    avg_slip,
+            'valid_records':   len(slip_timeline),
+            'total_records':   len(rows),
+        },
+        'slip_timeline': slip_timeline,
+        # ISO 19030-style speed loss（calm condition only）
+        'iso_summary': {
+            'avg_speed_loss_kn': avg_iso_loss,
+            'baseline_records':  len(baseline),
+            'calm_records':      len(calm_sorted),
+            'rpm_baseline':      rpm_baseline,
+        },
+        'iso_timeline': iso_timeline,
     })
 
 
 def get_speed_loss_attribution(vessel_id, event):
     """
-    Attribute speed loss to: hull_fouling, weather, propeller, other
-    Simple heuristic model based on time since last maintenance + weather
+    Speed Loss 歸因分析：基於養護事件前後 FULL_SPD_STW_SLIP 的實際差值。
+
+    邏輯：
+    - DD (乾塢) → hull + propeller 同時恢復
+    - UWC / UWC+PP → hull cleaning 效果
+    - PP / UWI+PP  → propeller polishing 效果
+    - UWI          → 純檢查，理論上無改善（用來驗證模型）
+    - weather      → DIFF_STW_SOG_SLIP（洋流/天候代理）
+
+    每個事件計算前後 30 天的 avg slip 差值，正值 = 改善（slip 下降）。
     """
     rows  = query_vessel(vessel_id)
     maint = query_maintenance(vessel_id)
@@ -273,51 +340,89 @@ def get_speed_loss_attribution(vessel_id, event):
     if not rows:
         return err(404, f'Vessel {vessel_id} not found')
 
-    # Last dry-dock / UWC events
-    dd_events  = sorted([m for m in maint if 'DD' in str(m.get('event_type',''))],
-                        key=lambda x: safe_float(x.get('event_day'), 0))
-    last_dd_day = safe_float(dd_events[-1].get('event_day'), 0) if dd_events else 0
-
-    # Compute attributions over time
-    timeline = []
+    # 有效 slip 資料（0–30%）
+    slip_map = {}  # noon_day → slip_pct
     for r in rows:
-        noon = safe_float(r.get('NOON_UTC'), 0)
-        stw  = safe_float(r.get('SPEED_THROUGH_WATER'))
-        ref  = safe_float(r.get('FULL_SPD_STW_SLIP'))  # full-speed reference slip
-        wind = safe_float(r.get('WIND_SCALE'), 0)
-        sea  = safe_float(r.get('SEA_HEIGHT'), 0)
+        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
+        day  = safe_float(r.get('NOON_UTC'))
+        if slip is not None and 0 <= slip <= 30 and day is not None:
+            slip_map[day] = slip
 
-        if stw is None:
-            continue
+    def avg_slip_in_window(start, end):
+        vals = [v for d, v in slip_map.items() if start <= d <= end]
+        return round(mean(vals), 2) if len(vals) >= 3 else None
 
-        days_since_dd = max(0, noon - last_dd_day)
+    # 養護事件歸因
+    WINDOW = 30
+    event_attributions = []
+    for m in sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0)):
+        day   = safe_float(m.get('event_day'), 0)
+        etype = str(m.get('event_type', ''))
 
-        # Heuristics (tuned for 5-yr dataset)
-        weather_loss = round(max(0, wind * 0.04 + sea * 0.08), 3)
-        hull_loss    = round(min(1.5, days_since_dd * 0.0005), 3)   # grows with time since DD
-        prop_loss    = round(safe_float(r.get('ME_SLIP'), 0) * 0.02, 3) if r.get('ME_SLIP') else 0
-        other_loss   = round(max(0, 0.1), 3)
+        before = avg_slip_in_window(day - WINDOW, day)
+        after  = avg_slip_in_window(day, day + WINDOW)
 
-        timeline.append({
-            'noon_day':      noon,
-            'weather_loss':  weather_loss,
-            'hull_loss':     hull_loss,
-            'propeller_loss': prop_loss,
-            'other_loss':    other_loss,
-            'total_loss':    round(weather_loss + hull_loss + prop_loss + other_loss, 3),
+        if before is None or after is None:
+            delta = None
+            physical = False
+        else:
+            delta    = round(before - after, 2)   # 正值 = 改善（slip 降低）
+            physical = 'UWI' not in etype or 'PP' in etype or 'UWC' in etype or 'DD' in etype
+
+        # 歸因分類
+        if 'DD' in etype:
+            category = 'hull+propeller'
+        elif 'UWC' in etype and 'PP' in etype:
+            category = 'hull+propeller'
+        elif 'UWC' in etype:
+            category = 'hull'
+        elif 'PP' in etype:
+            category = 'propeller'
+        elif etype == 'UWI':
+            category = 'inspection_only'  # 不應有改善
+        else:
+            category = 'other'
+
+        event_attributions.append({
+            'event_type':     etype,
+            'event_day':      day,
+            'category':       category,
+            'physical_intervention': physical,
+            'slip_before_pct': before,
+            'slip_after_pct':  after,
+            'slip_delta_pct':  delta,   # 正值 = 改善
+            'notes': (
+                'No physical intervention expected' if etype == 'UWI'
+                else f'Expected improvement: {delta:+.2f}%' if delta is not None
+                else 'Insufficient data'
+            ),
         })
 
-    # Summary
-    if timeline:
-        summary = {k: round(mean([t[k] for t in timeline]), 3)
-                   for k in ('weather_loss','hull_loss','propeller_loss','other_loss','total_loss')}
-    else:
-        summary = {}
+    # 全時間軸：DIFF_STW_SOG_SLIP 代表洋流/天候影響
+    weather_timeline = []
+    for r in sorted(rows, key=lambda x: safe_float(x.get('NOON_UTC'), 0)):
+        diff = safe_float(r.get('DIFF_STW_SOG_SLIP'))
+        day  = safe_float(r.get('NOON_UTC'))
+        if diff is not None and -15 <= diff <= 15 and day is not None:
+            weather_timeline.append({
+                'noon_day':      day,
+                'diff_stw_sog':  round(diff, 3),  # + = STW > SOG (尾流/洋流順), - = STW < SOG (逆流)
+            })
+
+    # 彙總：各類別的平均改善量
+    categories = {}
+    for e in event_attributions:
+        cat = e['category']
+        if e['slip_delta_pct'] is not None and e['physical_intervention']:
+            categories.setdefault(cat, []).append(e['slip_delta_pct'])
+    summary = {cat: round(mean(vals), 2) for cat, vals in categories.items()}
 
     return resp(200, {
-        'vessel_id': vessel_id,
-        'summary':   summary,
-        'timeline':  timeline,
+        'vessel_id':   vessel_id,
+        'method':      'maintenance_event_before_after_slip_delta',
+        'summary':     summary,
+        'event_attributions': event_attributions,
+        'weather_timeline': weather_timeline[:200],  # 限制回傳量
     })
 
 
@@ -381,34 +486,42 @@ def get_maintenance_recommendation(vessel_id, event):
 
 
 def get_fleet_ranking(event):
-    """Rank all training vessels by average speed loss"""
+    """Rank all training vessels by avg FULL_SPD_STW_SLIP (lower = better performance)"""
     TRAIN_VESSELS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12']
     rankings = []
 
     for vid in TRAIN_VESSELS:
         rows = query_vessel(vid)
-        stw_list = [safe_float(r.get('SPEED_THROUGH_WATER')) for r in rows if r.get('SPEED_THROUGH_WATER')]
-        slip_list = [safe_float(r.get('ME_SLIP')) for r in rows if r.get('ME_SLIP')]
+
+        # FULL_SPD_STW_SLIP: 有效範圍 0-30%
+        slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP')) for r in rows
+                     if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
+                     and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
         cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
 
-        calm = [r for r in rows
-                if safe_float(r.get('WIND_SCALE'), 99) <= 3
-                and safe_float(r.get('SEA_HEIGHT'), 99) <= 1.0]
-        calm_speeds = sorted([safe_float(r.get('SPEED_THROUGH_WATER')) for r in calm if r.get('SPEED_THROUGH_WATER')])
-        ref = calm_speeds[len(calm_speeds)//2] if calm_speeds else None
-        avg_stw = mean(stw_list) if stw_list else 0
-        speed_loss = round(ref - avg_stw, 3) if ref else None
+        # latest 90-day trend vs full-period avg
+        slip_sorted = sorted(
+            [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+             for r in rows
+             if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
+             and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+            key=lambda x: x[0]
+        )
+        recent_slip = [v for _, v in slip_sorted[-90:]] if len(slip_sorted) >= 10 else []
+        trend = round(mean(recent_slip) - mean(slip_list), 2) if recent_slip and slip_list else None
 
         rankings.append({
             'vessel_id':          vid,
-            'avg_speed_loss_kn':  speed_loss,
-            'avg_me_slip_pct':    round(mean(slip_list), 2) if slip_list else None,
+            'avg_slip_pct':       round(mean(slip_list), 2) if slip_list else None,
+            'recent_90d_slip_pct': round(mean(recent_slip), 2) if recent_slip else None,
+            'slip_trend':         trend,   # + = 近期惡化, - = 近期改善
             'avg_consumption_mt': round(mean(cons_list), 2) if cons_list else None,
-            'records':            len(rows),
+            'valid_slip_records': len(slip_list),
+            'total_records':      len(rows),
         })
 
-    # Sort by speed loss ascending (less loss = better)
-    rankings.sort(key=lambda x: x['avg_speed_loss_kn'] or 99)
+    # 排名：avg_slip_pct 越低越好
+    rankings.sort(key=lambda x: x['avg_slip_pct'] if x['avg_slip_pct'] is not None else 99)
     for i, r in enumerate(rankings):
         r['rank'] = i + 1
 
