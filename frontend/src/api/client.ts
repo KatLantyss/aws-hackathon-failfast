@@ -143,6 +143,10 @@ export interface ApiFleetSummaryVessel {
   urgency: VesselUrgency
   days_since_maintenance: number | null
   excess_fuel_cost_usd_per_day: number
+  lat: number
+  lon: number
+  heading_deg: number
+  speed_kt: number
   rank: number | null
 }
 

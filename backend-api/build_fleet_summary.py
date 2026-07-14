@@ -62,6 +62,25 @@ FUEL_PRICE_USD_MT  = 620   # USD per MT
 BASELINE_MT_DAY_W1 = 155   # W1 ship baseline daily consumption MT
 BASELINE_MT_DAY_W2 = 92    # W2 ship baseline daily consumption MT
 
+# Static AIS positions (no real-time AIS in competition data)
+SHIP_POSITIONS: dict[str, dict] = {
+    'S1':  {'lat': 22.28, 'lon': 114.17, 'heading_deg': 210, 'speed_kt': 19.2},
+    'S2':  {'lat':  1.26, 'lon': 103.84, 'heading_deg':   0, 'speed_kt':  0.0},
+    'S3':  {'lat': 13.45, 'lon':  56.32, 'heading_deg': 285, 'speed_kt': 17.8},
+    'S4':  {'lat': 51.89, 'lon':   4.48, 'heading_deg':   0, 'speed_kt':  0.0},
+    'S5':  {'lat': 35.32, 'lon':  29.78, 'heading_deg': 105, 'speed_kt': 18.5},
+    'S6':  {'lat':  6.93, 'lon':  79.85, 'heading_deg':  70, 'speed_kt': 20.1},
+    'S7':  {'lat': 25.28, 'lon':  55.32, 'heading_deg':   0, 'speed_kt':  0.0},
+    'S8':  {'lat': 29.87, 'lon': 121.55, 'heading_deg': 180, 'speed_kt': 16.9},
+    'S9':  {'lat': 34.05, 'lon':-118.25, 'heading_deg':   0, 'speed_kt':  0.0},
+    'S10': {'lat': 33.73, 'lon':-140.22, 'heading_deg':  90, 'speed_kt': 19.7},
+    'S11': {'lat': 22.62, 'lon': 120.30, 'heading_deg':   0, 'speed_kt':  0.0},
+    'S12': {'lat': 37.47, 'lon':-165.88, 'heading_deg':  72, 'speed_kt': 18.3},
+    'S21': {'lat': 10.24, 'lon':  75.82, 'heading_deg': 255, 'speed_kt': 19.4},
+    'S22': {'lat': 25.02, 'lon': 170.54, 'heading_deg':  55, 'speed_kt': 17.6},
+    'S23': {'lat': 31.23, 'lon': 121.47, 'heading_deg':   0, 'speed_kt':  0.0},
+}
+
 
 def safe_float(val, default=None):
     if val is None:
@@ -140,6 +159,8 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
     baseline = BASELINE_MT_DAY_W1 if vessel_id in W1_SHIPS else BASELINE_MT_DAY_W2
     excess_fuel_cost_usd_per_day = round(baseline * (max(0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
 
+    pos = SHIP_POSITIONS.get(vessel_id, {'lat': 0.0, 'lon': 0.0, 'heading_deg': 0, 'speed_kt': 0.0})
+
     return {
         'vessel_id':               vessel_id,
         'vessel_type':             'training' if vessel_id in TRAIN_VESSELS else 'prediction',
@@ -153,6 +174,10 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         'urgency':                 urgency,
         'days_since_maintenance':  days_since,
         'excess_fuel_cost_usd_per_day': excess_fuel_cost_usd_per_day,
+        'lat':                     pos['lat'],
+        'lon':                     pos['lon'],
+        'heading_deg':             pos['heading_deg'],
+        'speed_kt':                pos['speed_kt'],
         'last_updated':            datetime.now(timezone.utc).isoformat(timespec='seconds'),
     }
 

@@ -42,25 +42,6 @@ const W1_SHIPS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S21']
 const W2_SHIPS = ['S9', 'S10', 'S11', 'S12', 'S22', 'S23']
 const ALL_SHIPS = [...W1_SHIPS, ...W2_SHIPS]
 
-// Mock coordinates — competition data has no AIS positions
-const SHIP_POSITIONS: Record<string, { lat: number; lon: number; headingDeg: number; speedKt: number }> = {
-  S1: { lat: 22.28, lon: 114.17, headingDeg: 210, speedKt: 19.2 },
-  S2: { lat: 1.26, lon: 103.84, headingDeg: 0, speedKt: 0 },
-  S3: { lat: 13.45, lon: 56.32, headingDeg: 285, speedKt: 17.8 },
-  S4: { lat: 51.89, lon: 4.48, headingDeg: 0, speedKt: 0 },
-  S5: { lat: 35.32, lon: 29.78, headingDeg: 105, speedKt: 18.5 },
-  S6: { lat: 6.93, lon: 79.85, headingDeg: 70, speedKt: 20.1 },
-  S7: { lat: 25.28, lon: 55.32, headingDeg: 0, speedKt: 0 },
-  S8: { lat: 29.87, lon: 121.55, headingDeg: 180, speedKt: 16.9 },
-  S9: { lat: 34.05, lon: -118.25, headingDeg: 0, speedKt: 0 },
-  S10: { lat: 33.73, lon: -140.22, headingDeg: 90, speedKt: 19.7 },
-  S11: { lat: 22.62, lon: 120.30, headingDeg: 0, speedKt: 0 },
-  S12: { lat: 37.47, lon: -165.88, headingDeg: 72, speedKt: 18.3 },
-  S21: { lat: 10.24, lon: 75.82, headingDeg: 255, speedKt: 19.4 },
-  S22: { lat: 25.02, lon: 170.54, headingDeg: 55, speedKt: 17.6 },
-  S23: { lat: 31.23, lon: 121.47, headingDeg: 0, speedKt: 0 },
-}
-
 // Day 0 = 2020-01-01 (arbitrary baseline for display)
 const BASE_DATE = new Date('2020-01-01')
 function dayToDate(day: number): string {
@@ -406,9 +387,8 @@ function buildVesselSummary(
   const maintDay = lastMaintDay || 0
   const daysSinceClean = maintDay > 0 ? Math.max(0, APPROX_CURRENT_DAY - maintDay) : 0
 
-  const pos = SHIP_POSITIONS[shipId] || { lat: 22.6, lon: 120.3, headingDeg: 180, speedKt: 0 }
   const baselineFuel = W1_SHIPS.includes(shipId) ? 155 : 92
-  const excessFuelCostUsdMtd = Math.round(Math.max(0, speedLossPct) * baselineFuel * 0.018 * 620 * 30)
+  const excessFuelCostUsdMtd = Math.round(Math.max(0, speedLossPct) * baselineFuel * 0.018 * 620)
 
   return {
     imo: shipId,
@@ -423,7 +403,7 @@ function buildVesselSummary(
     status: 'underway',
     currentPort: null,
     destinationPort: null,
-    position: { lat: pos.lat, lon: pos.lon, headingDeg: pos.headingDeg, speedKt: pos.speedKt, courseTrueDeg: pos.headingDeg },
+    position: { lat: 0, lon: 0, headingDeg: 0, speedKt: 0, courseTrueDeg: 0 },
     speedLossPct: Number(speedLossPct.toFixed(2)),
     foulingGrade,
     lastDrydockDate: maintDay > 0 ? dayToDate(maintDay) : '—',
@@ -451,7 +431,6 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
 
   const daysSince = v.days_since_maintenance ?? 0
-  const pos = SHIP_POSITIONS[shipId] || { lat: 22.6, lon: 120.3, headingDeg: 180, speedKt: 0 }
 
   return {
     imo: shipId,
@@ -466,7 +445,13 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     status: 'underway',
     currentPort: null,
     destinationPort: null,
-    position: { lat: pos.lat, lon: pos.lon, headingDeg: pos.headingDeg, speedKt: pos.speedKt, courseTrueDeg: pos.headingDeg },
+    position: {
+      lat: v.lat,
+      lon: v.lon,
+      headingDeg: v.heading_deg,
+      speedKt: v.speed_kt,
+      courseTrueDeg: v.heading_deg,
+    },
     speedLossPct: Number(speedLossPct.toFixed(2)),
     foulingGrade,
     lastDrydockDate: '—',
