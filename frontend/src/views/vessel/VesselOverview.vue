@@ -110,6 +110,7 @@ function trendColor(trend: number | null): string {
             :value="Math.min(100, vessel.speedLossPct * 8)"
             :grade="vessel.foulingGrade"
             :display-value="`${vessel.speedLossPct.toFixed(1)}%`"
+            hide-grade-badge
           />
         </div>
         <div class="flex flex-col gap-2">

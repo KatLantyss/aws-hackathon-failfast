@@ -15,6 +15,8 @@ const props = defineProps<{
   /** raw display value, e.g. "6.4%" — falls back to value+unit */
   displayValue?: string
   size?: 'sm' | 'md' | 'lg'
+  /** hide the bottom grade badge (e.g. "HEAVY") */
+  hideGradeBadge?: boolean
 }>()
 
 const bands: { grade: FoulingGrade; from: number; to: number; color: string }[] = [
@@ -91,6 +93,7 @@ const dims = computed(() => {
         </p>
       </div>
       <span
+        v-if="!hideGradeBadge"
         class="inline-flex items-center gap-1.5 uppercase text-[10px] tracking-wide font-body font-semibold px-1.5 py-0.5 rounded-[2px] border w-fit"
         :style="{ color: gradeColor, borderColor: gradeColor }"
       >
