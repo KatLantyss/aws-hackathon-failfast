@@ -26,8 +26,8 @@ td = {
         {
             "name": "ship-api",
             "image": image,
-            "cpu": 512,
-            "memory": 1024,
+            "cpu": 2048,
+            "memoryReservation": 3584,
             "portMappings": [
                 {"containerPort": 8000, "hostPort": 8000, "protocol": "tcp"}
             ],

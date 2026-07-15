@@ -2,6 +2,10 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+# lightgbm needs libgomp1 (OpenMP runtime), not included in python:slim
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install all dependencies
 RUN pip install --no-cache-dir \
     fastapi \
