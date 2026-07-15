@@ -360,6 +360,34 @@ function cleanDayColor(days: number): string {
                       <p class="text-[var(--color-ink-muted)] mb-0.5">近90天平均</p>
                       <p class="tabular-nums">{{ v.avgSpeedLossPct?.toFixed(2) ?? '—' }} %</p>
                     </div>
+                    <!-- 超額成本解釋 -->
+                    <div class="col-span-2 sm:col-span-4 mt-2 pt-2 border-t chart-divider">
+                      <p class="text-[var(--color-ink-muted)] mb-1 text-[10px] uppercase tracking-wide font-display">超額成本說明</p>
+                      <p class="text-xs text-[var(--color-ink-slate)]/70 leading-relaxed">
+                        <template v-if="v.excessFuelCostUsdMtd > 0">
+                          近 90 天穩態日平均實際油耗超過操作條件模型預期約
+                          <strong class="font-data text-[var(--color-signal-red)]">{{ (v.excessFuelCostUsdMtd / 620).toFixed(2) }} MT/天</strong>，
+                          按 VLSFO $620/MT 換算為
+                          <strong class="font-data text-[var(--color-signal-red)]">{{ formatUsd(v.excessFuelCostUsdMtd) }}/天</strong>。
+                          主要歸因：距上次船殼清洗 {{ v.daysSinceHullClean }} 天<template v-if="v.daysSincePropPolish != null">、距螺旋槳拋光 {{ v.daysSincePropPolish }} 天</template>。
+                          <template v-if="v.recommendedAction">建議動作：<strong>{{ v.recommendedAction }}</strong>。</template>
+                        </template>
+                        <template v-else>
+                          超額成本為 $0 — 近 90 天穩態日的實際油耗 ≤ 操作條件模型預期（即「同航速/轉速/吃水/天候下應燒多少油」）。
+                          <template v-if="v.speedLossPct < 0">
+                            Speed Loss 為負（{{ v.speedLossPct.toFixed(1) }}%），效能優於週期基準，無超額。
+                          </template>
+                          <template v-else-if="v.speedLossPct >= 7">
+                            注意：Speed Loss 為 {{ v.speedLossPct.toFixed(1) }}%（{{ v.foulingGrade }}），
+                            但近期航行條件（低 RPM / 有利海況 / 載貨輕）使實際油耗未超過模型預期。
+                            不代表無汙損風險，建議持續監控。
+                          </template>
+                          <template v-else>
+                            船殼/螺旋槳狀態良好或近期已清洗，無可歸因的超額燃油消耗。
+                          </template>
+                        </template>
+                      </p>
+                    </div>
                   </div>
                 </div>
               </td>
