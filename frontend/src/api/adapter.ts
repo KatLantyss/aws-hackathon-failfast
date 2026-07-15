@@ -387,10 +387,17 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
     // Optimal timing — compute from most recent data
     const lastPoint = primaryData[primaryData.length - 1]
-    const currentSL = lastPoint?.speed_loss_pct ?? 0
 
-    // Degradation rate (last 60 points)
+    // "Current" SL + degradation rate both come from a trailing window (last
+    // 60 raw points), not a single last-day point — per-day speed_loss_pct is
+    // extremely noisy (a single maneuvering/idle/bad-weather day can spike
+    // past 60% even on a healthy hull), so averaging is required to land near
+    // the backend's own filtered foc_summary.avg_speed_loss_pct.
     const recent = primaryData.slice(-60)
+    const currentSL = recent.length > 0
+      ? recent.reduce((s, p) => s + p.speed_loss_pct, 0) / recent.length
+      : lastPoint?.speed_loss_pct ?? 0
+
     let rate = 0
     if (recent.length >= 2) {
       const slStart = recent[0].speed_loss_pct
