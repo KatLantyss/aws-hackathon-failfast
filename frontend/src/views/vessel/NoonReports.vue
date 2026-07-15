@@ -513,7 +513,8 @@ function onRequestSubmitted() {
     <MaintenanceRequestModal
       v-model:open="requestModalOpen"
       :vessel="vessel"
-      :default-note="requestDefaultNote"
+      :context-note="requestDefaultNote"
+      :diagnosis="diagnosis"
       @submitted="onRequestSubmitted"
     />
   </div>
