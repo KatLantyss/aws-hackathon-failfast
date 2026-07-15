@@ -56,9 +56,9 @@ const router = createRouter({
           props: true,
         },
         {
-          path: 'fuel-prediction',
-          name: 'vessel-fuel-prediction',
-          component: () => import('@/views/vessel/FuelPrediction.vue'),
+          path: 'maintenance-decision',
+          name: 'vessel-maintenance-decision',
+          component: () => import('@/views/vessel/MaintenanceDecision.vue'),
           props: true,
         },
         {

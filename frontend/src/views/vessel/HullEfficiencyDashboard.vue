@@ -16,7 +16,7 @@ const { data: maintData, state: maintState } = useAsyncData(() => props.imo, fet
 const chart = useChartTheme()
 
 // Tab 切換
-const activeTab = ref<'attribution' | 'maintenance' | 'prediction'>('attribution')
+const activeTab = ref<'attribution' | 'maintenance'>('attribution')
 
 // 維修成本編輯
 const costEditorOpen = ref(false)
@@ -89,6 +89,83 @@ function calculateRegressionLine(data: Array<[number, number | null]>) {
     [maxX, intercept + slope * maxX],
   ]
 }
+
+// 船殼 vs 螺旋槳貢獻百分比
+const hullPct = computed(() => slData.value?.summary.hull_pct ?? 50)
+const propPct = computed(() => slData.value?.summary.prop_pct ?? 50)
+
+// Attribution 堆疊圖
+const attributionOption = computed(() => {
+  if (!slData.value) return {}
+  const c = chart.value
+  const smooth = slData.value.smooth
+
+  // 從 smooth 陣列提取船殼和螺旋槳貢獻 (indices 2 & 3)
+  const hullData = smooth.filter(s => s[1] !== null && s[1]! > 0).map(s => [s[0], s[2]])
+  const propData = smooth.filter(s => s[1] !== null && s[1]! > 0).map(s => [s[0], s[3]])
+
+  return {
+    animation: false,
+    grid: { left: 60, right: 20, top: 16, bottom: 50 },
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: c.marineNavy,
+      textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
+      formatter: (params: any[]) => {
+        const day = params[0]?.axisValue
+        const hull = params.find((p: any) => p.seriesName === '船殼')?.value?.[1] ?? 0
+        const prop = params.find((p: any) => p.seriesName === '螺旋槳')?.value?.[1] ?? 0
+        return `Day ${day}<br/>船殼：${(hull as number)?.toFixed(3)} %<br/>螺旋槳：${(prop as number)?.toFixed(3)} %<br/>合計：${((hull as number) + (prop as number)).toFixed(2)} %`
+      },
+    },
+    xAxis: {
+      type: 'value',
+      min: slData.value.day_min,
+      max: slData.value.day_max,
+      name: '相對天數',
+      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 9 },
+      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate },
+      axisLine: { lineStyle: { color: c.axisLine } },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      name: 'Speed Loss 貢獻 %',
+      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 9 },
+      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, formatter: '{value}%' },
+      splitLine: { lineStyle: { color: c.splitLine } },
+    },
+    series: [
+      {
+        name: '船殼',
+        type: 'line',
+        stack: 'attribution',
+        areaStyle: { color: '#E07B39', opacity: 0.65 },
+        lineStyle: { width: 0 },
+        itemStyle: { color: '#E07B39' },
+        symbol: 'none',
+        data: hullData,
+        connectNulls: false,
+      },
+      {
+        name: '螺旋槳',
+        type: 'line',
+        stack: 'attribution',
+        areaStyle: { color: '#4A9B8E', opacity: 0.65 },
+        lineStyle: { width: 0 },
+        itemStyle: { color: '#4A9B8E' },
+        symbol: 'none',
+        data: propData,
+        connectNulls: false,
+      },
+    ],
+    legend: {
+      data: ['船殼', '螺旋槳'],
+      textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate },
+      bottom: 8,
+    },
+  }
+})
 
 // Speed Loss 趨勢圖
 const trendOption = computed(() => {
@@ -205,27 +282,46 @@ const trendOption = computed(() => {
         <div class="panel p-4 flex flex-col">
           <div class="flex gap-1 mb-3 border-b border-[var(--color-ink-slate)]/20">
             <button
-              v-for="tab in ['attribution', 'maintenance', 'prediction']"
+              v-for="tab in ['attribution', 'maintenance']"
               :key="tab"
               type="button"
               class="px-3 py-2 text-xs font-display tracking-wide transition-colors"
               :class="activeTab === tab ? 'text-[var(--color-brass-amber)] border-b-2 border-[var(--color-brass-amber)]' : 'text-[var(--color-ink-slate)]/60 hover:text-[var(--color-ink-slate)]'"
               @click="activeTab = tab as any"
             >
-              {{ tab === 'attribution' ? '污損歸因' : tab === 'maintenance' ? '維修效能' : '預測效果' }}
+              {{ tab === 'attribution' ? '污損歸因' : '維修效能' }}
             </button>
           </div>
 
           <!-- Tab 1: 污損歸因 -->
-          <div v-if="activeTab === 'attribution'" class="flex-1 overflow-y-auto">
-            <p class="text-xs text-[var(--color-ink-slate)]/70 mb-2">船殼 vs 螺旋槳污損貢獻</p>
-            <div class="text-sm font-data space-y-1">
-              <p v-if="slData.summary" class="text-[var(--color-fathom-teal)]">
-                船殼污損: <strong>{{ slData.summary.hull_contribution_pct?.toFixed(1) ?? '—' }}%</strong>
-              </p>
-              <p v-if="slData.summary" class="text-[var(--color-brass-amber)]">
-                螺旋槳污損: <strong>{{ slData.summary.propeller_contribution_pct?.toFixed(1) ?? '—' }}%</strong>
-              </p>
+          <div v-if="activeTab === 'attribution'" class="flex-1 overflow-y-auto space-y-3">
+            <!-- 占比卡片 -->
+            <div class="grid grid-cols-2 gap-2">
+              <div class="panel p-3 border-l-4" style="border-left-color:#E07B39">
+                <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">全期船殼貢獻</p>
+                <p class="font-data text-2xl" style="color:#E07B39">{{ hullPct.toFixed(1) }}<span class="text-sm ml-0.5">%</span></p>
+              </div>
+              <div class="panel p-3 border-l-4" style="border-left-color:#4A9B8E">
+                <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">全期螺旋槳貢獻</p>
+                <p class="font-data text-2xl" style="color:#4A9B8E">{{ propPct.toFixed(1) }}<span class="text-sm ml-0.5">%</span></p>
+              </div>
+            </div>
+
+            <!-- 堆疊圖 -->
+            <div class="panel p-2">
+              <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">時間序列：船殼（橙）vs 螺旋槳（綠）</p>
+              <div class="h-[180px]">
+                <VChart :option="attributionOption" autoresize class="h-full w-full" />
+              </div>
+            </div>
+
+            <!-- 方法論摘要 -->
+            <div class="text-[9px] text-[var(--color-ink-slate)]/50 bg-[var(--color-ink-slate)]/[0.02] p-2 rounded border border-[var(--color-ink-slate)]/10">
+              <p class="font-display font-semibold mb-1">啟發式估計</p>
+              <ul class="list-disc list-inside space-y-0.5">
+                <li>船殼：FOC 對週期基準偏離 %</li>
+                <li>螺旋槳：SLIP 超出 p5 基準</li>
+              </ul>
             </div>
           </div>
 
@@ -242,12 +338,6 @@ const trendOption = computed(() => {
             </div>
           </div>
 
-          <!-- Tab 3: 預測效果 -->
-          <div v-if="activeTab === 'prediction'" class="flex-1 flex flex-col items-center justify-center text-center">
-            <p class="text-sm text-[var(--color-brass-amber)] font-bold">預測模型集成</p>
-            <p class="text-xs text-[var(--color-ink-slate)]/60 mt-1">30/90 天油耗預測</p>
-            <p class="text-xs text-[var(--color-ink-slate)]/50 mt-2">(即將上線)</p>
-          </div>
         </div>
       </div>
 

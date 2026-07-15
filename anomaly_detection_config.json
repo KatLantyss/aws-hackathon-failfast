@@ -1,0 +1,88 @@
+{
+  "version": "2.0",
+  "description": "多維異常檢測規則 - 包含維護類型特定閾值 + UWI純檢查識別",
+  "maintenance_types": {
+    "DD": {
+      "name": "進塢",
+      "has_physical_intervention": true,
+      "expected_improvement_pct": "5-20%",
+      "anomaly_threshold": {
+        "min": -20,
+        "max": -3,
+        "reason": "進塢應帶來最大改善，但新塗層初期可能磨擦更大"
+      }
+    },
+    "PP": {
+      "name": "螺旋槳拋光",
+      "has_physical_intervention": true,
+      "expected_improvement_pct": "3-10%",
+      "anomaly_threshold": {
+        "min": -10,
+        "max": -1.5,
+        "reason": "單項維修，效果有限"
+      }
+    },
+    "UWC": {
+      "name": "船殼清洗",
+      "has_physical_intervention": true,
+      "expected_improvement_pct": "3-10%",
+      "anomaly_threshold": {
+        "min": -10,
+        "max": -1.5,
+        "reason": "單項維修，效果有限"
+      }
+    },
+    "UWC+PP": {
+      "name": "清洗+拋光",
+      "has_physical_intervention": true,
+      "expected_improvement_pct": "8-15%",
+      "anomaly_threshold": {
+        "min": -15,
+        "max": -2.5,
+        "reason": "複合維修應有明顯效果"
+      }
+    },
+    "UWI+PP": {
+      "name": "檢查+拋光",
+      "has_physical_intervention": true,
+      "expected_improvement_pct": "8-15%",
+      "anomaly_threshold": {
+        "min": -15,
+        "max": -2.5,
+        "reason": "複合維修應有明顯效果（檢查+拋光）"
+      }
+    },
+    "UWI": {
+      "name": "純水下檢查",
+      "has_physical_intervention": false,
+      "expected_improvement_pct": "0% (無應改善)",
+      "anomaly_threshold": {
+        "min": -10,
+        "max": 1,
+        "reason": "純檢查無物理介入，任何改善 > 1% 都是異常（說明檢查報告或數據不符）"
+      },
+      "special_handling": "is_pure_uwi_only = 'UWI' in type AND NOT any(x in type for x in ['DD','UWC','PP'])"
+    }
+  },
+  "multi_dimensional_factors": {
+    "wind_scale": {
+      "name": "海況",
+      "anomaly_threshold": "變化 > 1.5 級",
+      "rationale": "海況好時 SL 自然降低，與維修無關"
+    },
+    "cargo_variation": {
+      "name": "貨物變化",
+      "anomaly_threshold": "> 20% 變化",
+      "rationale": "吃水變化 > 2m 會影響阻力，掩蓋真實效果"
+    },
+    "load_variation": {
+      "name": "主機負載",
+      "anomaly_threshold": "> 15% 變化",
+      "rationale": "低轉速時清洗效果可能被掩蓋"
+    }
+  },
+  "anomaly_severity_scoring": {
+    "CRITICAL": "多維因素 ≥ 2 個",
+    "WARNING": "單維因素（Speed Loss 異常 + 環境變化之一）"
+  }
+}
