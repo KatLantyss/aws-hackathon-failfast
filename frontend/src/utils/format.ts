@@ -63,7 +63,7 @@ export const STATUS_COLOR: Record<string, string> = {
 
 export const MAINTENANCE_STATUS_LABEL: Record<string, string> = {
   normal: '正常',
-  needs_request: '需申請維修',
+  needs_request: '待維修中',
   requested: '已申請維修',
   in_progress: '維修中',
 }

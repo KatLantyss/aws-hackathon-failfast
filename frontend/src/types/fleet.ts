@@ -32,11 +32,11 @@ export interface VesselSummary {
   currentPort: string | null
   destinationPort: string | null
   position: VesselPosition
-  // slip / speed loss
+  // speed loss
   speedLossPct: number
-  avgSlipPct: number | null
-  slipTrend: number | null         // + = degrading, - = improving
-  validSlipRecords: number | null
+  avgSpeedLossPct: number | null
+  speedLossTrend: number | null    // + = degrading, - = improving
+  validSpeedLossRecords: number | null
   foulingGrade: FoulingGrade
   // performance averages
   avgSpeedKn: number | null
@@ -65,9 +65,12 @@ export interface VesselSummary {
   daysSinceHullClean: number
   daysSinceMaintenance: number | null
   daysSincePropPolish: number | null
+  daysSinceDd: number | null
+  ddDue: boolean
   totalMaintEvents: number | null
   lastEventType: string | null
   lastHullCleanType: string | null
+  recommendedAction: 'UWC' | 'PP' | 'UWC+PP' | null
   maintenanceUrgency: Urgency
   maintenanceStatus: MaintenanceStatus
   // cost

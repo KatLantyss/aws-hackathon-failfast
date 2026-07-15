@@ -877,6 +877,27 @@ PROPELLER_CONDITION_CODE = {'Poor': 0, 'Fair': 1, 'Good': 2, 'Unknown': -1}
 # ROI 估算只把「可維修」根因算進省下的油耗，天候造成的異常天數只統計不計入 $。
 FUEL_ANOMALY_MAINTAINABLE_CAUSES = {'船殼汙損', '螺旋槳汙損'}
 
+# 觀察到的 DD（Dry Dock）週期：10 艘訓練船的 DD 事件都落在 event_day 769–985
+# （平均 ~877），且每一筆 DD 紀錄的 propeller_condition/hull_fouling_type/
+# hull_coating_condition/cavitation_found 全部是空的——代表 DD 在這份資料裡是
+# 船級社定期特檢週期，不是被觀測到的船況觸發的。跟 PP/UWC 不同，沒有任何船況
+# 訊號可以拿來從油耗異常歸因推論「該不該排 DD」，只能用固定週期提醒。
+FLEET_DD_INTERVAL_DAYS = 877
+
+
+def _recommend_maintenance_action(hull_confident_days, propeller_confident_days):
+    """PP/UWC/UWC+PP 直接對應到已經判定出的根因——船殼汙損就該 UWC、螺旋槳
+    汙損就該 PP，這是物理上固定的映射，不是另外學一個分類器。真正不確定、
+    需要模型判斷的是「根因是什麼」（cause_model 的 SHAP 分解），這裡只是把
+    結果轉成動作。DD 不適用這套推論，見 FLEET_DD_INTERVAL_DAYS 說明。"""
+    if hull_confident_days and propeller_confident_days:
+        return 'UWC+PP'
+    if hull_confident_days:
+        return 'UWC'
+    if propeller_confident_days:
+        return 'PP'
+    return None
+
 
 def _days_since_maint_type(maint_rows, noon_day, type_set):
     """Days since the most recent maintenance event whose type is in
@@ -1010,6 +1031,8 @@ def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
     """
     maintainable_days = 0
     maintainable_confident_days = 0
+    hull_confident_days = 0
+    propeller_confident_days = 0
     weather_days = 0
     weather_confident_days = 0
     excess_mt_total = 0.0
@@ -1021,6 +1044,10 @@ def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
             maintainable_days += 1
             if agrees:
                 maintainable_confident_days += 1
+                if cause == '船殼汙損':
+                    hull_confident_days += 1
+                elif cause == '螺旋槳汙損':
+                    propeller_confident_days += 1
                 if it.get('direction') == 'over':
                     actual = safe_float(it.get('daily_foc_actual'), 0.0)
                     expected = safe_float(it.get('daily_foc_expected'), 0.0)
@@ -1040,6 +1067,7 @@ def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
             'weather_days': weather_days,
             'weather_confident_days': weather_confident_days,
         },
+        'recommended_action': _recommend_maintenance_action(hull_confident_days, propeller_confident_days),
         'roi': {
             'avg_excess_fuel_mt_per_day': round(avg_excess_mt_per_day, 3),
             'annual_excess_fuel_mt': round(avg_excess_mt_per_day * SEA_DAYS_PER_YEAR, 1),
@@ -1494,8 +1522,8 @@ def get_maintenance_recommendation(vessel_id, event):
     slips = recent_numeric(recent, 'ME_SLIP')
     avg_slip = round(mean(slips), 2) if slips else None
 
-    # Prior 90-day window, same recent-vs-prior methodology as slip_trend in
-    # build_fleet_summary.py, to get a real degradation rate (not a guess).
+    # Prior 90-day window, same recent-vs-prior methodology as speed_loss_trend
+    # in build_fleet_summary.py, to get a real degradation rate (not a guess).
     prior = rows_sorted[-180:-90] if len(rows_sorted) > 90 else []
     prior_slips = recent_numeric(prior, 'ME_SLIP')
     avg_prior_slip = round(mean(prior_slips), 2) if prior_slips else None
@@ -1542,6 +1570,13 @@ def get_maintenance_recommendation(vessel_id, event):
     latest_day = safe_float(recent[-1].get('NOON_UTC'), 0) if recent else 0
     days_since = latest_day - last_day
 
+    # DD 用最近一次「DD 事件」本身算,不是最近一次任意類型維護——DD 走固定
+    # 週期(見 FLEET_DD_INTERVAL_DAYS),跟 PP/UWC 的觸發條件不是同一回事。
+    dd_events     = [m for m in all_maint if 'DD' in str(m.get('event_type', ''))]
+    last_dd_day   = safe_float(dd_events[-1].get('event_day'), 0) if dd_events else 0
+    days_since_dd = latest_day - last_dd_day
+    dd_due        = days_since_dd >= FLEET_DD_INTERVAL_DAYS
+
     # Simple rule: recommend if slip > 10% or days since last > 365
     urgent = (avg_slip and avg_slip > 10) or days_since > 365
 
@@ -1554,11 +1589,16 @@ def get_maintenance_recommendation(vessel_id, event):
         'degradation_rate_pct_per_day':  degradation_rate_pct_per_day,
         'fuel_price_usd_per_mt':         FUEL_PRICE,
         'recommendation':                'URGENT' if urgent else 'ROUTINE',
-        'recommended_type':              'DD' if days_since > 730 else 'UWC',
+        'recommended_type':              'DD' if dd_due else 'UWC',
         'reason':                        (
             'High ME slip indicates hull/propeller fouling' if avg_slip and avg_slip > 10
             else f'Scheduled maintenance due ({round(days_since)} days since last event)'
         ),
+        'drydock_reminder': {
+            'days_since_last_dd':         round(days_since_dd),
+            'fleet_avg_dd_interval_days': FLEET_DD_INTERVAL_DAYS,
+            'due':                        dd_due,
+        },
         'last_maintenance': {
             'event_type': last_m.get('event_type') if last_m else None,
             'event_day':  last_day,
@@ -1580,13 +1620,14 @@ def get_fleet_summary(event):
       training_vessels: int,
       prediction_vessels: int,
       pending_maintenance: int,
-      avg_fleet_slip_pct: float,
+      avg_fleet_speed_loss_pct: float,
       total_excess_fuel_cost_usd_per_day: float,
-      worst_vessel: { vessel_id, avg_slip_pct, urgency },
+      worst_vessel: { vessel_id, avg_speed_loss_pct, urgency },
       per_vessel: [
-        { vessel_id, vessel_type, ship_class, avg_slip_pct,
-          recent_90d_slip_pct, slip_trend, avg_consumption_mt,
-          urgency, days_since_maintenance, excess_fuel_cost_usd_per_day,
+        { vessel_id, vessel_type, ship_class, avg_speed_loss_pct,
+          latest_speed_loss_pct, speed_loss_trend, avg_consumption_mt,
+          urgency, days_since_maintenance, days_since_dd, dd_due,
+          recommended_action, excess_fuel_cost_usd_per_day,
           total_records, total_voyages, last_updated }
       ]
     }
@@ -1625,17 +1666,21 @@ def get_fleet_summary(event):
             v = item.get(key)
             return str(v) if v is not None else default
 
+        def _bool(item, key, default=False):
+            v = item.get(key)
+            return bool(v) if v is not None else default
+
         for item in raw_items:
             per_vessel.append({
                 # identification
                 'vessel_id':    _s(item, 'vessel_id'),
                 'type':         _s(item, 'vessel_type', 'training'),
                 'ship_class':   _s(item, 'ship_class'),
-                # slip
-                'avg_slip_pct':        _f(item, 'avg_slip_pct'),
-                'recent_90d_slip_pct': _f(item, 'recent_90d_slip_pct'),
-                'slip_trend':          _f(item, 'slip_trend'),
-                'valid_slip_records':  _i(item, 'valid_slip_records'),
+                # speed loss
+                'avg_speed_loss_pct':       _f(item, 'avg_speed_loss_pct'),
+                'latest_speed_loss_pct':    _f(item, 'latest_speed_loss_pct'),
+                'speed_loss_trend':         _f(item, 'speed_loss_trend'),
+                'valid_speed_loss_records': _i(item, 'valid_speed_loss_records'),
                 # performance
                 'avg_speed_kn':       _f(item, 'avg_speed_kn'),
                 'avg_stw_kn':         _f(item, 'avg_stw_kn'),
@@ -1671,6 +1716,9 @@ def get_fleet_summary(event):
                 'last_hull_clean_day':    _i(item, 'last_hull_clean_day'),
                 'last_prop_polish_day':   _i(item, 'last_prop_polish_day'),
                 'days_since_prop_polish': _i(item, 'days_since_prop_polish'),
+                'days_since_dd':          _i(item, 'days_since_dd'),
+                'dd_due':                 _bool(item, 'dd_due'),
+                'recommended_action':     _s(item, 'recommended_action') or None,
                 # cost
                 'excess_fuel_cost_usd_per_day': float(item['excess_fuel_cost_usd_per_day']) if item.get('excess_fuel_cost_usd_per_day') is not None else 0.0,
                 # urgency
@@ -1703,18 +1751,26 @@ def get_fleet_summary(event):
         def _vessel_summary_fallback(vid: str) -> dict:
             rows  = query_vessel(vid)
             maint = query_maintenance(vid)
-            slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP'))
-                         for r in rows
-                         if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                         and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
-            avg_slip   = round(mean(slip_list), 2) if slip_list else None
-            slip_sorted = sorted(
-                [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+            # Same source + semantics as build_fleet_summary.py's compute_summary:
+            # precomputed SPEED_LOSS column, avg = last-90 mean, latest = most
+            # recent valid reading, trend = latest vs. nearest reading >=90 days prior.
+            speed_loss_pts = sorted(
+                [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('SPEED_LOSS')))
                  for r in rows
-                 if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                 and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+                 if safe_float(r.get('SPEED_LOSS')) is not None],
                 key=lambda x: x[0])
-            recent_90d = round(mean([v for _, v in slip_sorted[-90:]]), 2) if len(slip_sorted) >= 10 else avg_slip
+            all_speed_losses = [s for _, s in speed_loss_pts]
+            avg_speed_loss   = round(mean([s for _, s in speed_loss_pts[-90:]]), 2) if speed_loss_pts else None
+            if speed_loss_pts:
+                latest_day, latest_speed_loss = speed_loss_pts[-1]
+                prior_speed_loss = next(
+                    (s for d, s in reversed(speed_loss_pts[:-1]) if d <= latest_day - 90),
+                    None,
+                )
+                speed_loss_trend = round(latest_speed_loss - prior_speed_loss, 2) if prior_speed_loss is not None else None
+            else:
+                latest_speed_loss = None
+                speed_loss_trend = None
             sorted_maint = sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0))
             last_day   = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
             latest_day = safe_float(max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0))
@@ -1723,14 +1779,14 @@ def get_fleet_summary(event):
             hull_clean_events = [m for m in sorted_maint if str(m.get('event_type', '')).strip() in HULL_CLEAN_TYPES]
             last_hull_day = safe_float(hull_clean_events[-1].get('event_day'), 0) if hull_clean_events else 0
             days_since_hull = round(latest_day - last_hull_day) if (rows and hull_clean_events) else None
-            slip_val   = recent_90d or avg_slip or 0
-            urgency    = ('HIGH'   if (slip_val >= 10 or (days_since and days_since > 365)) else
-                          'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
+            speed_loss_trend_val = speed_loss_trend or 0
+            urgency    = ('HIGH'   if speed_loss_trend_val >= 20 else
+                          'MEDIUM' if speed_loss_trend_val >= 10 else 'LOW')
             cons_list  = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
             avg_consumption = round(mean(cons_list), 2) if cons_list else None
             # Model-grounded excess (see _vessel_excess_fuel_mt_per_day) — not
-            # the old avg_consumption * (slip%/100) * 1.8 heuristic, whose 1.8
-            # multiplier has no documented derivation anywhere in this repo.
+            # the old avg_consumption * (speed-loss%/100) * 1.8 heuristic, whose
+            # 1.8 multiplier has no documented derivation anywhere in this repo.
             excess_mt_per_day = _vessel_excess_fuel_mt_per_day(vid, rows=rows, maint_rows=maint)
             excess_per_day = (
                 round(excess_mt_per_day * FUEL_PRICE, 2)
@@ -1740,9 +1796,10 @@ def get_fleet_summary(event):
                 'vessel_id':               vid,
                 'type':                    'training' if vid in TRAIN_VESSELS else 'prediction',
                 'ship_class':              'W1' if vid in W1_SHIPS_SET else 'W2',
-                'avg_slip_pct':            avg_slip,
-                'recent_90d_slip_pct':     recent_90d,
-                'slip_trend':              None,
+                'avg_speed_loss_pct':       avg_speed_loss,
+                'latest_speed_loss_pct':    latest_speed_loss,
+                'speed_loss_trend':         speed_loss_trend,
+                'valid_speed_loss_records': len(all_speed_losses),
                 'avg_consumption_mt':      avg_consumption,
                 'urgency':                 urgency,
                 'days_since_maintenance':  days_since,
@@ -1766,27 +1823,27 @@ def get_fleet_summary(event):
                 except Exception:
                     pass
 
-    # Sort: training first, then prediction; within group by avg_slip desc
-    per_vessel.sort(key=lambda v: (0 if v['type'] == 'training' else 1, -(v['avg_slip_pct'] or 0)))
+    # Sort: training first, then prediction; within group by avg_speed_loss desc
+    per_vessel.sort(key=lambda v: (0 if v['type'] == 'training' else 1, -(v['avg_speed_loss_pct'] or 0)))
 
-    # Fleet-level aggregates (training vessels only for slip average)
-    training  = [v for v in per_vessel if v['type'] == 'training']
-    slip_vals = [v['avg_slip_pct'] for v in training if v['avg_slip_pct'] is not None]
+    # Fleet-level aggregates (training vessels only for speed-loss average)
+    training        = [v for v in per_vessel if v['type'] == 'training']
+    speed_loss_vals = [v['avg_speed_loss_pct'] for v in training if v['avg_speed_loss_pct'] is not None]
     pending   = [v for v in per_vessel if v['urgency'] != 'LOW']
     total_excess = sum(v['excess_fuel_cost_usd_per_day'] or 0 for v in per_vessel)
-    worst = max(training, key=lambda v: v['avg_slip_pct'] or 0) if training else None
+    worst = max(training, key=lambda v: v['avg_speed_loss_pct'] or 0) if training else None
 
     result = resp(200, {
         'total_vessels':                  len(ALL),
         'training_vessels':               len(TRAIN_VESSELS),
         'prediction_vessels':             len(PRED_VESSELS),
         'pending_maintenance':            len(pending),
-        'avg_fleet_slip_pct':             round(mean(slip_vals), 2) if slip_vals else None,
+        'avg_fleet_speed_loss_pct':       round(mean(speed_loss_vals), 2) if speed_loss_vals else None,
         'total_excess_fuel_cost_usd_per_day': round(total_excess, 2),
         'worst_vessel': {
-            'vessel_id':    worst['vessel_id'],
-            'avg_slip_pct': worst['avg_slip_pct'],
-            'urgency':      worst['urgency'],
+            'vessel_id':         worst['vessel_id'],
+            'avg_speed_loss_pct': worst['avg_speed_loss_pct'],
+            'urgency':           worst['urgency'],
         } if worst else None,
         'per_vessel': per_vessel,
     })
@@ -1795,37 +1852,48 @@ def get_fleet_summary(event):
 
 
 def _rank_one_vessel(vid: str) -> dict:
-    """Compute ranking stats for a single vessel (runs in thread pool)."""
-    rows = query_vessel(vid)
+    """Compute ranking stats for a single vessel (runs in thread pool).
 
-    slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP')) for r in rows
-                 if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                 and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
+    Same SPEED_LOSS source + semantics as build_fleet_summary.py's
+    compute_summary and get_fleet_summary's _vessel_summary_fallback: avg =
+    last-90 mean, latest = most recent valid reading, trend = latest vs.
+    nearest reading >=90 days prior.
+    """
+    rows = query_vessel(vid)
     cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
 
-    slip_sorted = sorted(
-        [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+    speed_loss_pts = sorted(
+        [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('SPEED_LOSS')))
          for r in rows
-         if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-         and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+         if safe_float(r.get('SPEED_LOSS')) is not None],
         key=lambda x: x[0]
     )
-    recent_slip = [v for _, v in slip_sorted[-90:]] if len(slip_sorted) >= 10 else []
-    trend = round(mean(recent_slip) - mean(slip_list), 2) if recent_slip and slip_list else None
+    all_speed_losses = [s for _, s in speed_loss_pts]
+    avg_speed_loss = round(mean([s for _, s in speed_loss_pts[-90:]]), 2) if speed_loss_pts else None
+    if speed_loss_pts:
+        latest_day, latest_speed_loss = speed_loss_pts[-1]
+        prior_speed_loss = next(
+            (s for d, s in reversed(speed_loss_pts[:-1]) if d <= latest_day - 90),
+            None,
+        )
+        speed_loss_trend = round(latest_speed_loss - prior_speed_loss, 2) if prior_speed_loss is not None else None
+    else:
+        latest_speed_loss = None
+        speed_loss_trend = None
 
     return {
-        'vessel_id':           vid,
-        'avg_slip_pct':        round(mean(slip_list), 2) if slip_list else None,
-        'recent_90d_slip_pct': round(mean(recent_slip), 2) if recent_slip else None,
-        'slip_trend':          trend,
-        'avg_consumption_mt':  round(mean(cons_list), 2) if cons_list else None,
-        'valid_slip_records':  len(slip_list),
-        'total_records':       len(rows),
+        'vessel_id':                vid,
+        'avg_speed_loss_pct':       avg_speed_loss,
+        'latest_speed_loss_pct':    latest_speed_loss,
+        'speed_loss_trend':         speed_loss_trend,
+        'avg_consumption_mt':       round(mean(cons_list), 2) if cons_list else None,
+        'valid_speed_loss_records': len(all_speed_losses),
+        'total_records':            len(rows),
     }
 
 
 def get_fleet_ranking(event):
-    """Rank all training vessels by avg FULL_SPD_STW_SLIP (lower = better performance)."""
+    """Rank all training vessels by avg_speed_loss_pct (lower = better performance)."""
     TRAIN_VESSELS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12']
 
     # Return cached ranking if still fresh
@@ -1844,8 +1912,8 @@ def get_fleet_ranking(event):
             except Exception:
                 pass  # skip failed vessel, don't crash the whole ranking
 
-    # 排名：avg_slip_pct 越低越好
-    rankings.sort(key=lambda x: x['avg_slip_pct'] if x['avg_slip_pct'] is not None else 99)
+    # 排名：avg_speed_loss_pct 越低越好
+    rankings.sort(key=lambda x: x['avg_speed_loss_pct'] if x['avg_speed_loss_pct'] is not None else 99)
     for i, r in enumerate(rankings):
         r['rank'] = i + 1
 

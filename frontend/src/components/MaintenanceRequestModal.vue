@@ -60,9 +60,9 @@ function buildSummaryText(): string {
     `【維護紀錄】最後養護：${v.lastEventType ?? '無記錄'}；累計 ${v.totalMaintEvents ?? 0} 次事件；距上次船殼清洗 ${v.daysSinceHullClean} 天。`,
   )
 
-  if (v.avgSlipPct != null) {
-    const trendText = v.slipTrend == null ? '' : `（趨勢：${v.slipTrend > 0 ? '惡化' : '改善'} ${Math.abs(v.slipTrend).toFixed(2)}%）`
-    lines.push(`【速度損失】全期平均 Slip ${v.avgSlipPct.toFixed(2)}%，近90天 ${v.speedLossPct.toFixed(2)}%${trendText}。`)
+  if (v.avgSpeedLossPct != null) {
+    const trendText = v.speedLossTrend == null ? '' : `（趨勢：${v.speedLossTrend > 0 ? '惡化' : '改善'} ${Math.abs(v.speedLossTrend).toFixed(2)}%）`
+    lines.push(`【速度損失】近90天平均 ${v.avgSpeedLossPct.toFixed(2)}%，最新 ${v.speedLossPct.toFixed(2)}%${trendText}。`)
   }
 
   if (topAttribution.value) {
@@ -155,7 +155,7 @@ const dsInfo: DataSourceInfo = {
     '五張卡片彙整同船其他頁籤已在用的真實/混合資料；下方文字摘要是前端模板字串代入這些欄位組成（同「維修效能分析」頁 COR-08「AI 分析摘要」的手法）。送出本身仍是純前端 stub，未呼叫任何寫入 API，重新整理頁面即會重置。',
   fields: [
     { ui: '維護紀錄卡', source: 'vessel.lastEventType / totalMaintEvents / daysSinceHullClean（real，來自 maintenance-events / fleet/summary）' },
-    { ui: '速度損失卡', source: 'vessel.avgSlipPct / speedLossPct / slipTrend（real）' },
+    { ui: '速度損失卡', source: 'vessel.avgSpeedLossPct / speedLossPct / speedLossTrend（real）' },
     { ui: '速損歸因卡', source: 'speed-loss-attribution 回傳 summary，取平均改善最高的分類（real）' },
     { ui: '油耗預測卡', source: 'predict-fuel-consumption 回傳（real；若由 Noon Report 帶入既有診斷結果則不重打）' },
     { ui: '維修效能分析卡', source: 'maintenance-recommendation 等混合計算的 optimalTiming（hybrid，同維修效能分析頁 COR-03）' },
@@ -210,10 +210,10 @@ async function submit() {
             <!-- 速度損失 -->
             <div class="panel p-3 border-l-4" :style="{ borderLeftColor: speedLossColor(vessel.speedLossPct) }">
               <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-1.5">速度損失</p>
-              <p class="font-data text-sm" :style="{ color: speedLossColor(vessel.speedLossPct) }">近90天 {{ vessel.speedLossPct.toFixed(2) }}%</p>
-              <p v-if="vessel.avgSlipPct != null" class="text-xs text-[var(--color-ink-slate)]/60 mt-1">全期平均 {{ vessel.avgSlipPct.toFixed(2) }}%</p>
-              <p v-if="vessel.slipTrend != null" class="text-xs text-[var(--color-ink-slate)]/60">
-                趨勢：{{ vessel.slipTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.slipTrend).toFixed(2) }}%
+              <p class="font-data text-sm" :style="{ color: speedLossColor(vessel.speedLossPct) }">最新 {{ vessel.speedLossPct.toFixed(2) }}%</p>
+              <p v-if="vessel.avgSpeedLossPct != null" class="text-xs text-[var(--color-ink-slate)]/60 mt-1">近90天平均 {{ vessel.avgSpeedLossPct.toFixed(2) }}%</p>
+              <p v-if="vessel.speedLossTrend != null" class="text-xs text-[var(--color-ink-slate)]/60">
+                趨勢：{{ vessel.speedLossTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.speedLossTrend).toFixed(2) }}%
               </p>
             </div>
 

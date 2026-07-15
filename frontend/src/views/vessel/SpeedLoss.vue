@@ -30,10 +30,10 @@ const dsChart: DataSourceInfo = {
 const dsStats: DataSourceInfo = {
   status: 'hybrid',
   endpoint: 'GET /api/v1/vessels/{vessel_id}/speed-loss + fleet/summary',
-  description: '篩選區間平均與污損增長速率是前端對目前篩選後的資料點現場計算；全期/近90天數值與超額成本則是 fleet/summary 的後端原始欄位。',
+  description: '篩選區間平均與污損增長速率是前端對目前篩選後的資料點現場計算；近90天平均/最新數值與超額成本則是 fleet/summary 的後端原始欄位。',
   fields: [
     { ui: '篩選區間平均 Speed Loss', source: '前端對 filteredReports 取平均', note: '來源資料點是 real，但平均值本身是前端算的' },
-    { ui: '全期 avg slip / 近90天', source: 'vessel.avgSlipPct / vessel.speedLossPct（fleet/summary）' },
+    { ui: '近90天平均 / 最新', source: 'vessel.avgSpeedLossPct / vessel.speedLossPct（fleet/summary）' },
     { ui: '超額燃油成本（USD/天）', source: 'vessel.excessFuelCostUsdMtd × 篩選筆數', note: '前端相乘，非後端提供的「區間成本」' },
     { ui: '污損增長速率（%/月）', source: '前端回歸 slope × 30', note: '純前端計算' },
   ],
@@ -367,10 +367,10 @@ const chartOption = computed(() => {
               <dd class="font-data text-xl">{{ stats.avgLoss.toFixed(2) }}%</dd>
             </div>
             <div>
-              <dt class="text-xs text-[var(--color-ink-slate)]/60">全期 avg slip（DynamoDB）</dt>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">近90天平均（DynamoDB）</dt>
               <dd class="font-data text-base">
-                {{ vessel.avgSlipPct != null ? vessel.avgSlipPct.toFixed(2) + '%' : '—' }}
-                <span class="text-xs text-[var(--color-ink-slate)]/50 ml-1">/ 近90天 {{ vessel.speedLossPct.toFixed(2) }}%</span>
+                {{ vessel.avgSpeedLossPct != null ? vessel.avgSpeedLossPct.toFixed(2) + '%' : '—' }}
+                <span class="text-xs text-[var(--color-ink-slate)]/50 ml-1">/ 最新 {{ vessel.speedLossPct.toFixed(2) }}%</span>
               </dd>
             </div>
             <div>

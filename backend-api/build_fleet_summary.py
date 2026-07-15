@@ -13,13 +13,16 @@ Table schema (PK = vessel_id):
   Identification
     vessel_id, vessel_type, ship_class
 
-  Slip / Speed Loss  (FULL_SPD_STW_SLIP, valid 0–30%)
-    avg_slip_pct           mean over all valid records
-    recent_90d_slip_pct    mean of last 90 valid records
-    slip_trend             recent_90d - avg  (+ = degrading)
-    valid_slip_records     count of valid slip records
+  Slip / Speed Loss  (precomputed SPEED_LOSS column from vt_fd_speed_loss.csv;
+                       sparse — only populated on qualifying full-speed days)
+    avg_speed_loss_pct        mean of last 90 valid SPEED_LOSS records
+    latest_speed_loss_pct     latest valid SPEED_LOSS reading — this
+                               vessel's "current" speed loss
+    speed_loss_trend          latest reading - nearest valid reading >=90
+                               days before it  (+ = degrading)
+    valid_speed_loss_records  count of valid speed-loss records (all-time)
 
-  Performance indicators
+  Performance indicators (mean over last 90 noon-report rows)
     avg_speed_kn           mean AVG_SPEED (SOG)
     avg_stw_kn             mean SPEED_THROUGH_WATER
     avg_rpm                mean ME_AVG_RPM
@@ -28,7 +31,7 @@ Table schema (PK = vessel_id):
     avg_horse_power        mean HORSE_POWER (kW) — may be null
     avg_me_slip_pct        mean ME_SLIP (%) — may be null
 
-  Environmental conditions (average over all records)
+  Environmental conditions (mean over last 90 noon-report rows)
     avg_wind_scale         mean WIND_SCALE (Beaufort)
     avg_sea_height_m       mean SEA_HEIGHT (m)
     avg_sea_water_temp_c   mean SEA_WATER_TEMP (°C)
@@ -53,12 +56,22 @@ Table schema (PK = vessel_id):
     last_hull_clean_type   event_type of last hull-cleaning event
     last_propeller_polish_day latest PP/UWC+PP/UWI+PP day
     days_since_prop_polish latest noon - last propeller polish
+    days_since_dd          latest noon - last DD event specifically
+    dd_due                 days_since_dd >= FLEET_DD_INTERVAL_DAYS (fleet-observed cycle)
+    recommended_action     UWC / PP / UWC+PP / None — read from the precomputed
+                            fuel-anomaly-cause table's confident hull/propeller
+                            attribution (same mapping as handler.py's
+                            _recommend_maintenance_action)
 
   Cost
-    excess_fuel_cost_usd_per_day  estimated daily excess cost from slip
+    excess_fuel_cost_usd_per_day  estimated daily excess cost, priced with the
+                                  same live CPC diesel price + USD/TWD rate as
+                                  handler.py's fuel-anomaly-cause ROI
 
   Urgency
-    urgency                LOW / MEDIUM / HIGH
+    urgency                LOW / MEDIUM / HIGH — HIGH also triggers on dd_due
+                            or a non-null recommended_action, not just the
+                            slip%/days-since-maintenance rule
 
   Position (static — no AIS in competition data)
     lat, lon, speed_kt
@@ -70,8 +83,11 @@ Table schema (PK = vessel_id):
 import argparse
 import csv
 import json
+import math
 import os
+import ssl
 import statistics
+import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -79,23 +95,129 @@ from pathlib import Path
 import boto3
 import numpy as np
 import pandas as pd
+from boto3.dynamodb.conditions import Key
 from sklearn.ensemble import RandomForestRegressor
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).resolve().parent.parent
-VT_FD_CSV = BASE_DIR / 'backend' / 'hackathon-data' / 'vt_fd.csv'
+VT_FD_CSV = BASE_DIR / 'backend' / 'hackathon-data' / 'vt_fd_speed_loss.csv'
 MAINT_CSV = BASE_DIR / 'backend' / 'hackathon-data' / 'maintenance.csv'
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 TABLE_NAME = os.environ.get('FLEET_SUMMARY_TABLE', 'ship-analysis-dev-fleet-summary')
 REGION     = os.environ.get('AWS_DEFAULT_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+FUEL_ANOMALY_TABLE = os.environ.get('FUEL_ANOMALY_TABLE', 'ship-analysis-dev-fuel-anomaly-cause')
 
 TRAIN_VESSELS = {'S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12'}
 PRED_VESSELS  = {'S21','S22','S23'}
 W1_SHIPS      = {'S1','S2','S3','S4','S5','S6','S7','S8','S21'}
 W2_SHIPS      = {'S9','S10','S11','S12','S22','S23'}
 
-FUEL_PRICE_USD_MT  = 620   # USD per MT
+# Live energy pricing (same source + method as handler.py's
+# _calculate_energy_pricing/get_fuel_anomaly_cause ROI, duplicated here rather
+# than imported — this script is a standalone batch job, same convention as
+# precompute_fuel_anomaly.py) — replaces the old fixed $620/MT guess so the
+# $ figure here is comparable to the Fuel Attribution page's ROI instead of
+# using a different, undocumented price.
+LCV_VLSFO = 40.2  # MJ/kg, VLSFO-equivalent basis (matches handler.py)
+DIESEL_LCV_MJ_PER_KG = 42.7
+DIESEL_DENSITY_KG_PER_L = 0.84
+CPC_PRICE_URL = 'https://www.cpc.com.tw/GetOilPriceJson.aspx?type=TodayOilPriceString'
+USD_TWD_EXCHANGE_RATE_URL = 'https://open.er-api.com/v6/latest/USD'
+
+# Same fleet-observed DD cycle as handler.py's FLEET_DD_INTERVAL_DAYS
+# (duplicated, not imported — see note above): 10 training-vessel DD events
+# cluster at day 769-985 (mean ~877), and every DD row's condition fields are
+# blank, so it reads as a statutory survey cycle rather than a
+# condition-triggered event. Used below to fold a real "DD overdue" signal
+# into urgency, instead of it depending only on the old hand-picked
+# slip%/days-since-any-maintenance thresholds.
+FLEET_DD_INTERVAL_DAYS = 877
+
+
+def _get_cpc_diesel_price():
+    fallback_price = 28.8
+    try:
+        request = urllib.request.Request(CPC_PRICE_URL, headers={'User-Agent': 'ship-analysis-roi/1.0'})
+        ssl_context = ssl.create_default_context()
+        ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        with urllib.request.urlopen(request, timeout=3, context=ssl_context) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+        price = float(payload.get('sPrice5'))
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError('CPC response did not contain a valid diesel price')
+        return price
+    except Exception:
+        print(f"  WARNING: CPC diesel price fetch failed — using fallback {fallback_price} TWD/L")
+        return fallback_price
+
+
+def _get_usd_twd_exchange_rate():
+    fallback_rate = 32.0
+    try:
+        request = urllib.request.Request(USD_TWD_EXCHANGE_RATE_URL, headers={'User-Agent': 'ship-analysis-roi/1.0'})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+        rate = float((payload.get('rates') or {}).get('TWD'))
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError('exchange-rate response did not contain a valid TWD rate')
+        return rate
+    except Exception:
+        print(f"  WARNING: USD/TWD exchange-rate fetch failed — using fallback {fallback_rate}")
+        return fallback_rate
+
+
+def _excess_fuel_usd_per_day(excess_mt_per_day, twd_per_litre, twd_per_usd):
+    """Same mass→energy→currency conversion as handler.py's
+    _calculate_energy_pricing, collapsed to just the $/day figure since this
+    table only stores the single number, not the full pricing breakdown."""
+    energy_gj_per_day = excess_mt_per_day * LCV_VLSFO
+    diesel_equivalent_l_per_day = energy_gj_per_day * 1000 / DIESEL_LCV_MJ_PER_KG / DIESEL_DENSITY_KG_PER_L
+    return diesel_equivalent_l_per_day * twd_per_litre / twd_per_usd
+
+
+def _recommend_maintenance_action(hull_confident_days, propeller_confident_days):
+    """Same mapping as handler.py's _recommend_maintenance_action (duplicated,
+    not imported — see note above): hull cause -> UWC, propeller cause -> PP,
+    both -> UWC+PP, neither -> None."""
+    if hull_confident_days and propeller_confident_days:
+        return 'UWC+PP'
+    if hull_confident_days:
+        return 'UWC'
+    if propeller_confident_days:
+        return 'PP'
+    return None
+
+
+def fetch_recommended_action(vessel_id: str, latest_noon: float, window_days: float = 90) -> str | None:
+    """Reads the precomputed fuel-anomaly-cause table (populated separately by
+    precompute_fuel_anomaly.py — this script does not retrain that SHAP model
+    itself, just aggregates its stored per-day classifications) and maps
+    confident hull/propeller anomaly days to a maintenance action, same
+    aggregation as handler.py's _fuel_anomaly_roi.
+
+    Restricted to the last `window_days` of noon_day (same recency window as
+    avg_speed_loss_pct elsewhere in this file) — anomaly days are sparse and
+    spread across each vessel's whole multi-year history (~20-40 total over
+    4-5 years), so counting *any* confident day ever means nearly every
+    vessel gets a non-null action, which saturates urgency to HIGH fleet-wide
+    and defeats its purpose. Recency keeps this a "currently ongoing" signal.
+
+    Returns None (no signal, not "no action needed") if the table is
+    empty/unreachable for this vessel — urgency then falls back to the other
+    signals untouched."""
+    try:
+        dynamodb = boto3.resource('dynamodb', region_name=REGION)
+        table = dynamodb.Table(FUEL_ANOMALY_TABLE)
+        response = table.query(KeyConditionExpression=Key('vessel_id').eq(vessel_id))
+        items = response.get('Items', [])
+    except Exception:
+        return None
+    cutoff = latest_noon - window_days
+    recent = [it for it in items if float(it.get('noon_day', -1)) >= cutoff]
+    hull_confident = sum(1 for it in recent if it.get('primary_cause') == '船殼汙損' and it.get('cause_model_agrees'))
+    prop_confident  = sum(1 for it in recent if it.get('primary_cause') == '螺旋槳汙損' and it.get('cause_model_agrees'))
+    return _recommend_maintenance_action(hull_confident, prop_confident)
 
 # Event type classification (from README)
 HULL_CLEAN_TYPES  = {'DD', 'UWC', 'UWC+PP'}           # hull physically cleaned
@@ -256,7 +378,9 @@ def load_maintenance_data() -> dict[str, list[dict]]:
 # ── Core computation ──────────────────────────────────────────────────────────
 
 def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
-                     excess_model: RandomForestRegressor | None = None) -> dict:
+                     excess_model: RandomForestRegressor | None = None,
+                     twd_per_litre: float = 28.8, twd_per_usd: float = 32.0,
+                     recommended_action: str | None = None) -> dict:
     """Compute all summary stats for one vessel from raw CSV rows."""
 
     # ── Sort rows by NOON_UTC ──────────────────────────────────────────────
@@ -264,44 +388,56 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
     latest_noon = safe_float(rows_sorted[-1].get('NOON_UTC'), 0) if rows_sorted else 0
     earliest_noon = safe_float(rows_sorted[0].get('NOON_UTC'), 0) if rows_sorted else 0
 
-    # ── Slip stats (FULL_SPD_STW_SLIP, valid 0–30%) ────────────────────────
-    slip_pts = [
-        (safe_float(r.get('NOON_UTC')), safe_float(r.get('FULL_SPD_STW_SLIP')))
+    # ── Speed-loss stats (precomputed SPEED_LOSS, sparse — only qualifying days) ──
+    speed_loss_pts = [
+        (safe_float(r.get('NOON_UTC')), safe_float(r.get('SPEED_LOSS')))
         for r in rows_sorted
     ]
-    slip_pts = [(d, s) for d, s in slip_pts if d is not None and s is not None and 0 <= s <= 30]
+    speed_loss_pts = [(d, s) for d, s in speed_loss_pts if d is not None and s is not None]
 
-    all_slips    = [s for _, s in slip_pts]
-    recent_slips = [s for _, s in slip_pts[-90:]]
+    all_speed_losses          = [s for _, s in speed_loss_pts]
+    avg_speed_loss            = mean_or_none([s for _, s in speed_loss_pts[-90:]])
+    valid_speed_loss_records  = len(all_speed_losses)
 
-    avg_slip           = mean_or_none(all_slips)
-    recent_90d_slip    = mean_or_none(recent_slips) if recent_slips else avg_slip
-    slip_trend         = round((recent_90d_slip or 0) - (avg_slip or 0), 4) if avg_slip is not None else None
-    valid_slip_records = len(all_slips)
+    if speed_loss_pts:
+        latest_day, latest_speed_loss = speed_loss_pts[-1]
+        prior_speed_loss = next(
+            (s for d, s in reversed(speed_loss_pts[:-1]) if d <= latest_day - 90),
+            None,
+        )
+        speed_loss_trend = round(latest_speed_loss - prior_speed_loss, 4) if prior_speed_loss is not None else None
+    else:
+        latest_speed_loss = None
+        speed_loss_trend = None
+
+    # Last 90 noon-report rows — same recency window as avg_speed_loss_pct
+    # above, so every "avg_*" field in this summary reflects the vessel's
+    # current condition, not its whole multi-year history.
+    recent_rows = rows_sorted[-90:]
 
     # ── Speed / RPM ────────────────────────────────────────────────────────
-    avg_speed_kn = mean_or_none([safe_float(r.get('AVG_SPEED')) for r in rows_sorted])
-    avg_stw_kn   = mean_or_none([safe_float(r.get('SPEED_THROUGH_WATER')) for r in rows_sorted])
-    avg_rpm      = mean_or_none([safe_float(r.get('ME_AVG_RPM')) for r in rows_sorted])
+    avg_speed_kn = mean_or_none([safe_float(r.get('AVG_SPEED')) for r in recent_rows])
+    avg_stw_kn   = mean_or_none([safe_float(r.get('SPEED_THROUGH_WATER')) for r in recent_rows])
+    avg_rpm      = mean_or_none([safe_float(r.get('ME_AVG_RPM')) for r in recent_rows])
 
     # ── Fuel / Engine performance ──────────────────────────────────────────
-    avg_consumption  = mean_or_none([safe_float(r.get('ME_CONSUMPTION')) for r in rows_sorted])
-    avg_sfoc         = mean_or_none([safe_float(r.get('SFOC')) for r in rows_sorted])
-    avg_horse_power  = mean_or_none([safe_float(r.get('HORSE_POWER')) for r in rows_sorted])
-    avg_me_slip_pct  = mean_or_none([safe_float(r.get('ME_SLIP')) for r in rows_sorted])
-    avg_load_pct     = mean_or_none([safe_float(r.get('LOAD_PCT')) for r in rows_sorted])
+    avg_consumption  = mean_or_none([safe_float(r.get('ME_CONSUMPTION')) for r in recent_rows])
+    avg_sfoc         = mean_or_none([safe_float(r.get('SFOC')) for r in recent_rows])
+    avg_horse_power  = mean_or_none([safe_float(r.get('HORSE_POWER')) for r in recent_rows])
+    avg_me_slip_pct  = mean_or_none([safe_float(r.get('ME_SLIP')) for r in recent_rows])
+    avg_load_pct     = mean_or_none([safe_float(r.get('LOAD_PCT')) for r in recent_rows])
 
     # ── Environment ────────────────────────────────────────────────────────
-    avg_wind_scale    = mean_or_none([safe_float(r.get('WIND_SCALE')) for r in rows_sorted])
-    avg_sea_height    = mean_or_none([safe_float(r.get('SEA_HEIGHT')) for r in rows_sorted])
-    avg_sea_water_temp= mean_or_none([safe_float(r.get('SEA_WATER_TEMP')) for r in rows_sorted])
+    avg_wind_scale    = mean_or_none([safe_float(r.get('WIND_SCALE')) for r in recent_rows])
+    avg_sea_height    = mean_or_none([safe_float(r.get('SEA_HEIGHT')) for r in recent_rows])
+    avg_sea_water_temp= mean_or_none([safe_float(r.get('SEA_WATER_TEMP')) for r in recent_rows])
 
     # ── Loading condition ──────────────────────────────────────────────────
-    avg_fore_draft    = mean_or_none([safe_float(r.get('FORE_DRAFT')) for r in rows_sorted])
-    avg_aft_draft     = mean_or_none([safe_float(r.get('AFTER_DRAFT')) for r in rows_sorted])
-    avg_mid_draft     = mean_or_none([safe_float(r.get('MID_DRAFT')) for r in rows_sorted])
-    avg_cargo         = mean_or_none([safe_float(r.get('CARGO_ON_BOARD')) for r in rows_sorted])
-    avg_displacement  = mean_or_none([safe_float(r.get('DISPLACEMENT')) for r in rows_sorted])
+    avg_fore_draft    = mean_or_none([safe_float(r.get('FORE_DRAFT')) for r in recent_rows])
+    avg_aft_draft     = mean_or_none([safe_float(r.get('AFTER_DRAFT')) for r in recent_rows])
+    avg_mid_draft     = mean_or_none([safe_float(r.get('MID_DRAFT')) for r in recent_rows])
+    avg_cargo         = mean_or_none([safe_float(r.get('CARGO_ON_BOARD')) for r in recent_rows])
+    avg_displacement  = mean_or_none([safe_float(r.get('DISPLACEMENT')) for r in recent_rows])
 
     # ── Voyage coverage ────────────────────────────────────────────────────
     voyages = {r.get('VOYAGE', '').strip() for r in rows_sorted if r.get('VOYAGE', '').strip()}
@@ -326,11 +462,22 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
     last_prop_polish_day  = safe_float(last_prop.get('event_day')) if last_prop else None
     days_since_prop_polish = round(latest_noon - last_prop_polish_day) if (rows_sorted and last_prop_polish_day is not None) else None
 
+    # DD specifically (not "any maintenance") — same distinction as
+    # handler.py's get_maintenance_recommendation drydock_reminder.
+    last_dd = last_event_of_type(sorted_maint, {'DD'})
+    last_dd_day   = safe_float(last_dd.get('event_day')) if last_dd else None
+    days_since_dd = round(latest_noon - last_dd_day) if (rows_sorted and last_dd_day is not None) else None
+    dd_due = days_since_dd is not None and days_since_dd >= FLEET_DD_INTERVAL_DAYS
+
     # ── Urgency ────────────────────────────────────────────────────────────
-    slip_val = recent_90d_slip or avg_slip or 0
-    if slip_val >= 10 or (days_since_maintenance is not None and days_since_maintenance > 365):
+    # Driven purely by speed_loss_trend (degradation over the last ~90 days),
+    # not the absolute level and not dd_due/recommended_action/days-since-
+    # maintenance — those remain as separate fields in the response, just no
+    # longer fold into this classification.
+    speed_loss_trend_val = speed_loss_trend or 0
+    if speed_loss_trend_val >= 20:
         urgency = 'HIGH'
-    elif slip_val >= 6 or (days_since_maintenance is not None and days_since_maintenance > 270):
+    elif speed_loss_trend_val >= 10:
         urgency = 'MEDIUM'
     else:
         urgency = 'LOW'
@@ -339,10 +486,12 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
     # Model-grounded: average (actual - baseline-model-expected) daily FOC
     # over this vessel's last 90 calm-condition days. See
     # vessel_excess_fuel_mt_per_day() docstring for why this replaced the old
-    # avg_consumption * (slip%/100) * 1.8 heuristic.
+    # avg_consumption * (slip%/100) * 1.8 heuristic. Priced the same way as
+    # handler.py's fuel-anomaly-cause ROI (live CPC diesel price + USD/TWD
+    # rate, not a fixed $/MT), so this KPI and that page's $ figures agree.
     excess_mt_per_day = vessel_excess_fuel_mt_per_day(excess_model, rows)
     excess_fuel_cost_usd_per_day = (
-        round(excess_mt_per_day * FUEL_PRICE_USD_MT, 2)
+        round(_excess_fuel_usd_per_day(excess_mt_per_day, twd_per_litre, twd_per_usd), 2)
         if excess_mt_per_day is not None else None
     )
 
@@ -358,11 +507,11 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
         'vessel_type':  'training' if vessel_id in TRAIN_VESSELS else 'prediction',
         'ship_class':   'W1' if vessel_id in W1_SHIPS else 'W2',
 
-        # ── slip / speed loss ─────────────────────────────────────────────
-        'avg_slip_pct':        avg_slip,
-        'recent_90d_slip_pct': recent_90d_slip,
-        'slip_trend':          slip_trend,
-        'valid_slip_records':  valid_slip_records,
+        # ── speed loss ────────────────────────────────────────────────────
+        'avg_speed_loss_pct':       avg_speed_loss,
+        'latest_speed_loss_pct':    latest_speed_loss,
+        'speed_loss_trend':         speed_loss_trend,
+        'valid_speed_loss_records': valid_speed_loss_records,
 
         # ── performance ───────────────────────────────────────────────────
         'avg_speed_kn':       avg_speed_kn,
@@ -403,6 +552,9 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
         'last_hull_clean_day':      int(last_hull_clean_day) if last_hull_clean_day is not None else None,
         'last_prop_polish_day':     int(last_prop_polish_day) if last_prop_polish_day is not None else None,
         'days_since_prop_polish':   days_since_prop_polish,
+        'days_since_dd':            days_since_dd,
+        'dd_due':                   dd_due,
+        'recommended_action':       recommended_action,
 
         # ── cost ──────────────────────────────────────────────────────────
         'excess_fuel_cost_usd_per_day': excess_fuel_cost_usd_per_day,
@@ -429,9 +581,12 @@ def to_dynamo_item(summary: dict) -> dict:
     for k, v in summary.items():
         if v is None:
             continue
-        if isinstance(v, float):
-            item[k] = Decimal(str(v))
-        elif isinstance(v, int):
+        # bool is an int subclass in Python — must check before the int
+        # branch, or True/False get stringified to "True"/"False" and fail
+        # Decimal() conversion.
+        if isinstance(v, bool):
+            item[k] = v
+        elif isinstance(v, (float, int)):
             item[k] = Decimal(str(v))
         else:
             item[k] = v
@@ -482,21 +637,33 @@ def main():
     print("Training fleet-wide excess-fuel baseline model (calm-condition, training vessels only) ...")
     excess_model = build_baseline_model(vessel_data)
 
+    print("Fetching live diesel price + USD/TWD rate (same source as handler.py ROI) ...")
+    twd_per_litre = _get_cpc_diesel_price()
+    twd_per_usd   = _get_usd_twd_exchange_rate()
+    print(f"  {twd_per_litre} TWD/L, {twd_per_usd} TWD/USD")
+
     all_vessels = sorted(TRAIN_VESSELS | PRED_VESSELS)
     summaries   = []
 
     print(f"Computing summaries for {len(all_vessels)} vessels ...")
     for vid in all_vessels:
-        rows       = vessel_data.get(vid, [])
-        maint_rows = maint_data.get(vid, [])
-        summary    = compute_summary(vid, rows, maint_rows, excess_model=excess_model)
+        rows               = vessel_data.get(vid, [])
+        maint_rows         = maint_data.get(vid, [])
+        latest_noon        = max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0)
+        recommended_action = fetch_recommended_action(vid, latest_noon)
+        summary    = compute_summary(
+            vid, rows, maint_rows, excess_model=excess_model,
+            twd_per_litre=twd_per_litre, twd_per_usd=twd_per_usd,
+            recommended_action=recommended_action,
+        )
         summaries.append(summary)
         print(
             f"  {vid:4s}  records={summary['total_records']:4d}"
-            f"  slip={str(summary['avg_slip_pct'] or '—'):6s}"
-            f"  recent90d={str(summary['recent_90d_slip_pct'] or '—'):6s}"
+            f"  speed_loss={str(summary['avg_speed_loss_pct'] or '—'):6s}"
+            f"  latest={str(summary['latest_speed_loss_pct'] or '—'):6s}"
             f"  maint={summary['days_since_maintenance']}d"
             f"  hull_clean={summary['days_since_hull_clean']}d"
+            f"  action={str(summary['recommended_action'] or '—'):7s}"
             f"  urgency={summary['urgency']}"
         )
 

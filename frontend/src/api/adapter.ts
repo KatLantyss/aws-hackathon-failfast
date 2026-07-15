@@ -46,6 +46,12 @@ const W1_SHIPS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S21']
 const W2_SHIPS = ['S9', 'S10', 'S11', 'S12', 'S22', 'S23']
 const ALL_SHIPS = [...W1_SHIPS, ...W2_SHIPS]
 
+// Matches backend-api/build_fleet_summary.py's FLEET_DD_INTERVAL_DAYS — the
+// fleet-observed DD cycle (~877 days), used to project the next DD date from
+// the last DD-specific event instead of the old last_hull_clean_day + 900
+// guess, which conflated DD with plain UWC and had no documented basis.
+const FLEET_DD_INTERVAL_DAYS = 877
+
 
 // Maintenance event type mapping.
 // UWI (pure underwater inspection) does no cleaning or polishing — mirrors
@@ -531,8 +537,8 @@ function buildVesselSummary(
   lastMaintDay?: number,
   totalRecords?: number,
 ): VesselSummary {
-  const speedLossPct = rank?.recent_90d_slip_pct ?? rank?.avg_slip_pct ?? 0
-  const rate = rank ? rank.slip_trend / 90 : 0 // slip_trend is 90-day diff
+  const speedLossPct = rank?.latest_speed_loss_pct ?? rank?.avg_speed_loss_pct ?? 0
+  const rate = rank ? rank.speed_loss_trend / 90 : 0 // speed_loss_trend is 90-day diff
 
   const urgency: Urgency = speedLossPct >= 14 ? 'HIGH' : speedLossPct >= 10 ? 'MEDIUM' : 'LOW'
   const foulingGrade: FoulingGrade = speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
@@ -555,15 +561,15 @@ function buildVesselSummary(
     builtYear: 0,
     flag: '',
     mainEngineModel: '',
-    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線（跨太平洋）',
+    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線',
     status: 'underway',
     currentPort: null,
     destinationPort: null,
     position: { lat: 0, lon: 0, headingDeg: 0, speedKt: 0, courseTrueDeg: 0 },
     speedLossPct: Number(speedLossPct.toFixed(2)),
-    avgSlipPct: null,
-    slipTrend: null,
-    validSlipRecords: null,
+    avgSpeedLossPct: null,
+    speedLossTrend: null,
+    validSpeedLossRecords: null,
     foulingGrade,
     avgSpeedKn: null,
     avgStwKn: null,
@@ -587,9 +593,12 @@ function buildVesselSummary(
     daysSinceHullClean: daysSinceClean,
     daysSinceMaintenance: daysSinceClean,
     daysSincePropPolish: null,
+    daysSinceDd: null,
+    ddDue: false,
     totalMaintEvents: null,
     lastEventType: null,
     lastHullCleanType: null,
+    recommendedAction: null,
     maintenanceUrgency: urgency,
     maintenanceStatus: urgency === 'HIGH' ? 'needs_request' : 'normal',
     degradationRatePctPerDay: Number(rate.toFixed(4)),
@@ -604,8 +613,8 @@ function buildVesselSummary(
 /** Build VesselSummary directly from the /fleet/summary per_vessel entry — no extra API calls needed. */
 function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary {
   const shipId = v.vessel_id
-  const speedLossPct = v.recent_90d_slip_pct ?? v.avg_slip_pct ?? 0
-  const rate = v.slip_trend != null ? v.slip_trend / 90 : 0
+  const speedLossPct = v.latest_speed_loss_pct ?? v.avg_speed_loss_pct ?? 0
+  const rate = v.speed_loss_trend != null ? v.speed_loss_trend / 90 : 0
 
   const urgency: Urgency = v.urgency as Urgency
   const foulingGrade: FoulingGrade =
@@ -617,8 +626,10 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
   const maintenanceStatus: import('@/types/fleet').MaintenanceStatus =
     urgency === 'HIGH' ? 'needs_request' : 'normal'
 
-  const lastHullCleanDay = v.last_hull_clean_day ?? null
-  const nextDrydockDueDay = v.last_hull_clean_day != null ? v.last_hull_clean_day + 900 : null
+  // DD-specific last day, derived from days_since_dd (not last_hull_clean_day,
+  // which also matches plain UWC) — null when this vessel has no DD event yet.
+  const lastDdDay = v.days_since_dd != null && v.day_range_max != null ? v.day_range_max - v.days_since_dd : null
+  const nextDrydockDueDay = lastDdDay != null ? lastDdDay + FLEET_DD_INTERVAL_DAYS : null
   const windowStartDay = v.day_range_max != null ? v.day_range_max + 30 : 0
   const windowEndDay   = v.day_range_max != null ? v.day_range_max + 60 : 0
 
@@ -631,7 +642,7 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     builtYear: 0,
     flag: '',
     mainEngineModel: '',
-    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線（跨太平洋）',
+    tradeRoute: W1_SHIPS.includes(shipId) ? 'W1 航線（亞歐）' : 'W2 航線',
     status: 'underway',
     currentPort: null,
     destinationPort: null,
@@ -642,11 +653,11 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
       speedKt: v.speed_kt,
       courseTrueDeg: v.heading_deg,
     },
-    // slip
+    // speed loss
     speedLossPct: Number(speedLossPct.toFixed(2)),
-    avgSlipPct: v.avg_slip_pct,
-    slipTrend: v.slip_trend,
-    validSlipRecords: v.valid_slip_records,
+    avgSpeedLossPct: v.avg_speed_loss_pct,
+    speedLossTrend: v.speed_loss_trend,
+    validSpeedLossRecords: v.valid_speed_loss_records,
     foulingGrade,
     // performance
     avgSpeedKn: v.avg_speed_kn,
@@ -670,14 +681,17 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
     dataDayMax: v.day_range_max,
     dataSpanDays: v.data_span_days,
     // maintenance
-    lastDrydockDay: lastHullCleanDay,
+    lastDrydockDay: lastDdDay,
     nextDrydockDueDay,
     daysSinceHullClean,
     daysSinceMaintenance: v.days_since_maintenance,
     daysSincePropPolish: v.days_since_prop_polish,
+    daysSinceDd: v.days_since_dd,
+    ddDue: v.dd_due,
     totalMaintEvents: v.total_maint_events,
     lastEventType: v.last_event_type,
     lastHullCleanType: v.last_hull_clean_type,
+    recommendedAction: v.recommended_action,
     maintenanceUrgency: urgency,
     maintenanceStatus,
     // cost

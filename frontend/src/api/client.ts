@@ -135,11 +135,11 @@ export interface ApiMaintenanceEventsResponse {
 
 export interface ApiFleetRankingEntry {
   vessel_id: string
-  avg_slip_pct: number
-  recent_90d_slip_pct: number
-  slip_trend: number
+  avg_speed_loss_pct: number
+  latest_speed_loss_pct: number
+  speed_loss_trend: number
   avg_consumption_mt: number
-  valid_slip_records: number
+  valid_speed_loss_records: number
   total_records: number
   rank: number
 }
@@ -208,11 +208,11 @@ export interface ApiFleetSummaryVessel {
   vessel_id: string
   type: 'training' | 'prediction'
   ship_class: string
-  // slip / speed loss
-  avg_slip_pct: number | null
-  recent_90d_slip_pct: number | null
-  slip_trend: number | null
-  valid_slip_records: number | null
+  // speed loss
+  avg_speed_loss_pct: number | null
+  latest_speed_loss_pct: number | null
+  speed_loss_trend: number | null
+  valid_speed_loss_records: number | null
   // performance
   avg_speed_kn: number | null
   avg_stw_kn: number | null
@@ -248,6 +248,9 @@ export interface ApiFleetSummaryVessel {
   last_hull_clean_day: number | null
   last_prop_polish_day: number | null
   days_since_prop_polish: number | null
+  days_since_dd: number | null
+  dd_due: boolean
+  recommended_action: 'UWC' | 'PP' | 'UWC+PP' | null
   // cost
   excess_fuel_cost_usd_per_day: number
   // urgency
@@ -267,11 +270,11 @@ export interface ApiFleetSummary {
   training_vessels: number
   prediction_vessels: number
   pending_maintenance: number
-  avg_fleet_slip_pct: number | null
+  avg_fleet_speed_loss_pct: number | null
   total_excess_fuel_cost_usd_per_day: number
   worst_vessel: {
     vessel_id: string
-    avg_slip_pct: number
+    avg_speed_loss_pct: number
     urgency: VesselUrgency
   } | null
   per_vessel: ApiFleetSummaryVessel[]
