@@ -873,6 +873,10 @@ FUEL_ANOMALY_CAUSE_GROUPS = {
 FUEL_ANOMALY_THRESHOLD_PCT = 15
 PROPELLER_CONDITION_CODE = {'Poor': 0, 'Fair': 1, 'Good': 2, 'Unknown': -1}
 
+# 船殼/螺旋槳汙損可以靠排程維護（清船殼、拋光螺旋槳）處理，天候不行——
+# ROI 估算只把「可維修」根因算進省下的油耗，天候造成的異常天數只統計不計入 $。
+FUEL_ANOMALY_MAINTAINABLE_CAUSES = {'船殼汙損', '螺旋槳汙損'}
+
 
 def _days_since_maint_type(maint_rows, noon_day, type_set):
     """Days since the most recent maintenance event whose type is in
@@ -986,6 +990,66 @@ def _fleet_fuel_anomaly_models():
     return result
 
 
+def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
+    """Split anomaly days into 可維修 (hull/propeller — actionable via a
+    cleaning/drydock schedule) vs 天候 (not actionable), and estimate the $
+    upside of fixing the maintainable share.
+
+    Only confident (`cause_model_agrees`), over-consuming (`direction=='over'`)
+    maintainable-cause days count toward the $ estimate — weather-driven or
+    unconfident days aren't something a maintenance schedule can fix, and
+    'under' days aren't excess consumption to begin with. The per-day excess
+    is spread across `total_days_analyzed` (not just the anomaly days) to get
+    an average daily waste rate representative of the whole observed period,
+    then annualized and priced the same way as predict_fuel()'s counterfactual
+    (`_calculate_energy_pricing`), so the $ figure is comparable across
+    endpoints.
+
+    `anomaly_items` — list of dicts with normalized keys: primary_cause,
+    direction, cause_model_agrees, daily_foc_actual, daily_foc_expected.
+    """
+    maintainable_days = 0
+    maintainable_confident_days = 0
+    weather_days = 0
+    weather_confident_days = 0
+    excess_mt_total = 0.0
+
+    for it in anomaly_items:
+        cause = it.get('primary_cause')
+        agrees = bool(it.get('cause_model_agrees'))
+        if cause in FUEL_ANOMALY_MAINTAINABLE_CAUSES:
+            maintainable_days += 1
+            if agrees:
+                maintainable_confident_days += 1
+                if it.get('direction') == 'over':
+                    actual = safe_float(it.get('daily_foc_actual'), 0.0)
+                    expected = safe_float(it.get('daily_foc_expected'), 0.0)
+                    excess_mt_total += max(0.0, actual - expected)
+        elif cause == '天候':
+            weather_days += 1
+            if agrees:
+                weather_confident_days += 1
+
+    avg_excess_mt_per_day = (excess_mt_total / total_days_analyzed) if total_days_analyzed else 0.0
+    pricing = _calculate_energy_pricing(avg_excess_mt_per_day, 'VLSFO_equivalent', LCV_VLSFO)
+
+    return {
+        'maintainable_vs_weather': {
+            'maintainable_days': maintainable_days,
+            'maintainable_confident_days': maintainable_confident_days,
+            'weather_days': weather_days,
+            'weather_confident_days': weather_confident_days,
+        },
+        'roi': {
+            'avg_excess_fuel_mt_per_day': round(avg_excess_mt_per_day, 3),
+            'annual_excess_fuel_mt': round(avg_excess_mt_per_day * SEA_DAYS_PER_YEAR, 1),
+            'annual_saving_usd_if_fixed': pricing['annual_saving_usd'],
+            'basis': 'confident, over-consuming, maintainable-cause (hull/propeller) days only; weather excluded',
+            'energy_pricing': pricing,
+        },
+    }
+
+
 def _fuel_anomaly_from_precomputed(vessel_id, limit):
     """Try the precomputed table first (populated by
     precompute_fuel_anomaly.py directly from CSV — deliberately bypasses
@@ -1018,6 +1082,9 @@ def _fuel_anomaly_from_precomputed(vessel_id, limit):
             if it.get('cause_model_agrees'):
                 confident_cause_breakdown[cause] = confident_cause_breakdown.get(cause, 0) + 1
 
+    total_days_analyzed = int(safe_float(meta.get('total_days_analyzed'), 0)) if meta else 0
+    roi = _fuel_anomaly_roi(items, total_days_analyzed)
+
     anomalies_out = [{
         'noon_day': safe_float(it.get('noon_day')),
         'daily_foc_actual': safe_float(it.get('daily_foc_actual')),
@@ -1037,10 +1104,11 @@ def _fuel_anomaly_from_precomputed(vessel_id, limit):
         'baseline_model_r2': safe_float(meta.get('baseline_model_r2')) if meta else None,
         'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
         'summary': {
-            'total_days_analyzed': int(safe_float(meta.get('total_days_analyzed'), 0)) if meta else None,
+            'total_days_analyzed': total_days_analyzed,
             'anomaly_days': len(items),
             'cause_breakdown': cause_breakdown,
             'confident_cause_breakdown': confident_cause_breakdown,
+            **roi,
         },
         'anomalies': anomalies_out,
     })
@@ -1087,7 +1155,10 @@ def get_fuel_anomaly_cause(vessel_id, event):
         return resp(200, {
             'vessel_id': vessel_id, 'method': 'residual_shap_classification',
             'baseline_model_r2': models['r2'], 'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
-            'summary': {'total_days_analyzed': 0, 'anomaly_days': 0, 'cause_breakdown': {}},
+            'summary': {
+                'total_days_analyzed': 0, 'anomaly_days': 0, 'cause_breakdown': {},
+                'confident_cause_breakdown': {}, **_fuel_anomaly_roi([], 0),
+            },
             'anomalies': [],
         })
 
@@ -1129,6 +1200,17 @@ def get_fuel_anomaly_cause(vessel_id, event):
         cause_breakdown = anomalies_df['primary_cause'].value_counts().to_dict()
         confident_cause_breakdown = anomalies_df.loc[anomalies_df['cause_model_agrees'], 'primary_cause'].value_counts().to_dict()
 
+    # ROI 要用「全部異常天」算，不能被下面的 limit 截斷影響（截斷只是給
+    # anomalies[] 顯示用的，summary/ROI 要反映完整分析區間）。
+    roi_items = [{
+        'primary_cause': r.get('primary_cause'),
+        'direction': r['direction'],
+        'cause_model_agrees': bool(r.get('cause_model_agrees', False)),
+        'daily_foc_actual': r['daily_foc'],
+        'daily_foc_expected': r.get('predicted_foc'),
+    } for _, r in anomalies_df.iterrows()]
+    roi = _fuel_anomaly_roi(roi_items, len(df))
+
     anomalies_df = anomalies_df.sort_values('noon_day', ascending=False).head(limit)
 
     anomalies_out = []
@@ -1156,6 +1238,7 @@ def get_fuel_anomaly_cause(vessel_id, event):
             'anomaly_days': len(df[df['direction'] != 'normal']),
             'cause_breakdown': cause_breakdown,
             'confident_cause_breakdown': confident_cause_breakdown,
+            **roi,
         },
         'anomalies': anomalies_out,
     })

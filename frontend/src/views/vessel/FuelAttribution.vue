@@ -7,8 +7,10 @@ import { getFuelAnomalyCause, type FuelAnomalyCause } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
+import KpiCard from '@/components/KpiCard.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
 import { useChartTheme } from '@/composables/useChartTheme'
+import { formatUsd } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, getFuelAnomalyCause)
@@ -24,6 +26,19 @@ const dsSummary: DataSourceInfo = {
   fields: [
     { ui: '各成因天數', source: 'summary.cause_breakdown / summary.confident_cause_breakdown' },
     { ui: '基準模型 R²', source: 'baseline_model_r2' },
+  ],
+}
+const dsRoi: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'GET /api/v1/vessels/{vessel_id}/fuel-anomaly-cause',
+  description:
+    '把異常天拆成「可維修」（船殼/螺旋槳汙損，能靠排程清潔/拋光處理）跟「天候」（不可控，' +
+    '排除在 ROI 之外）。年化 $ 效益只計入可信、燒太多、可維修根因的天數：把這些天的實際-預期油耗' +
+    '缺口平均攤到全部分析天數，年化後用中油柴油牌價＋公開匯率換算成 USD，方法與油耗預測頁的' +
+    '「清潔後省下」估算一致。',
+  fields: [
+    { ui: '可維修 / 天候天數', source: 'summary.maintainable_vs_weather' },
+    { ui: '年化可維修節省 (USD)', source: 'summary.roi.annual_saving_usd_if_fixed' },
   ],
 }
 const dsBar: DataSourceInfo = {
@@ -138,10 +153,52 @@ const anomalyBarOption = computed(() => {
         <p v-else class="text-sm text-[var(--color-ink-slate)]/60">近期沒有偵測到油耗異常。</p>
       </div>
 
+      <!-- Maintainable vs weather split + ROI -->
+      <div class="panel p-4">
+        <DataSourceTag :info="dsRoi" />
+        <PanelTag code="FUEL-A2" class="mb-3" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">
+          可維修根因（船殼/螺旋槳）vs 天候，只有前者能靠排程維護處理
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <KpiCard
+            code="FUEL-A2a"
+            label="可維修天數（船殼＋螺旋槳）"
+            :value="data.summary.maintainable_vs_weather.maintainable_days"
+            :sublabel="`其中 ${data.summary.maintainable_vs_weather.maintainable_confident_days} 天可信`"
+            tone="amber"
+          />
+          <KpiCard
+            code="FUEL-A2b"
+            label="天候天數（不可控）"
+            :value="data.summary.maintainable_vs_weather.weather_days"
+            :sublabel="`其中 ${data.summary.maintainable_vs_weather.weather_confident_days} 天可信`"
+          />
+          <KpiCard
+            code="FUEL-A2c"
+            label="年化可維修節省（USD，估計）"
+            :value="data.summary.roi.annual_saving_usd_if_fixed"
+            :formatter="formatUsd"
+            tone="red"
+          />
+        </div>
+        <p class="mt-3 text-xs text-[var(--color-ink-slate)]/70">
+          依可信、燒太多、可維修根因的異常天平均，估計每日多燒
+          <strong class="font-data">{{ data.summary.roi.avg_excess_fuel_mt_per_day.toFixed(3) }} MT</strong>
+          （年化約 <strong class="font-data">{{ data.summary.roi.annual_excess_fuel_mt.toFixed(1) }} MT</strong>），
+          依 {{ data.summary.roi.energy_pricing.price_source.name }}（{{ data.summary.roi.energy_pricing.price_source.status === 'fetched' ? '已取得公開牌價' : '使用 fallback 牌價' }}）
+          與 USD/TWD {{ data.summary.roi.energy_pricing.exchange_rate.twd_per_usd.toFixed(2) }} 換算，
+          若能排除可維修根因，估計可省下
+          <strong class="font-data">{{ formatUsd(data.summary.roi.energy_pricing.daily_saving_usd) }}/日</strong>、
+          <strong class="font-data">{{ formatUsd(data.summary.roi.energy_pricing.annual_saving_usd) }}/年</strong>
+          （{{ data.summary.roi.energy_pricing.sea_days_per_year }} 海上天）。天候造成的異常不計入此估算。
+        </p>
+      </div>
+
       <!-- Anomaly bar chart -->
       <div v-if="data.anomalies.length" class="panel p-3">
         <DataSourceTag :info="dsBar" />
-        <PanelTag code="FUEL-A2" class="mb-2" />
+        <PanelTag code="FUEL-A3" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">每日油耗殘差 %（顏色=主因，半透明=低信心）</p>
         <div class="h-[280px]">
           <VChart :option="anomalyBarOption" autoresize class="h-full w-full" />
@@ -151,7 +208,7 @@ const anomalyBarOption = computed(() => {
       <!-- Anomaly details table -->
       <div v-if="data.anomalies.length" class="panel p-3 overflow-x-auto">
         <DataSourceTag :info="dsTable" />
-        <PanelTag code="FUEL-A3" class="mb-2" />
+        <PanelTag code="FUEL-A4" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">異常明細（最近 {{ data.anomalies.length }} 筆）</p>
         <table class="w-full text-sm min-w-[720px]">
           <thead>

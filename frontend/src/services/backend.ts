@@ -141,6 +141,24 @@ export interface BackendFuelAnomaly {
   days_since_prop_polish: number
 }
 
+export interface BackendFuelAnomalyEnergyPricing {
+  currency: 'USD'
+  fuel_type: string
+  daily_saving_usd: number
+  annual_saving_usd: number
+  sea_days_per_year: number
+  price_source: { name: string; url: string; effective_date: string | null; status: 'fetched' | 'fallback'; basis: string }
+  exchange_rate: { twd_per_usd: number; effective_date: string | null; name: string; url: string; status: 'fetched' | 'fallback' }
+}
+
+export interface BackendFuelAnomalyRoi {
+  avg_excess_fuel_mt_per_day: number
+  annual_excess_fuel_mt: number
+  annual_saving_usd_if_fixed: number
+  basis: string
+  energy_pricing: BackendFuelAnomalyEnergyPricing
+}
+
 export interface BackendFuelAnomalyCause {
   vessel_id: string
   method: string
@@ -151,6 +169,15 @@ export interface BackendFuelAnomalyCause {
     anomaly_days: number
     cause_breakdown: Partial<Record<FuelAnomalyCause, number>>
     confident_cause_breakdown: Partial<Record<FuelAnomalyCause, number>>
+    /** 可維修（船殼/螺旋槳，能靠排程維護處理）vs 天候（不可控）天數統計 */
+    maintainable_vs_weather: {
+      maintainable_days: number
+      maintainable_confident_days: number
+      weather_days: number
+      weather_confident_days: number
+    }
+    /** 只計入可維修、可信、燒太多的天數估算出的年化 $ 效益 */
+    roi: BackendFuelAnomalyRoi
   }
   anomalies: BackendFuelAnomaly[]
 }

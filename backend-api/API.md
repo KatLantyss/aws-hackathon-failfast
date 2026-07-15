@@ -380,7 +380,13 @@ GET /api/v1/vessels/{vessel_id}/fuel-anomaly-cause?limit=20
 
 **`cause_model_agrees` 很重要**：根因模型是對 `residual_pct` 的另一個獨立預測，不保證跟基準模型算出的真實 `residual_pct` 同方向——`cause_model_agrees=false` 代表這天的 `primary_cause` 分類跟實際異常方向對不上，不可信。`summary.confident_cause_breakdown` 只統計 `cause_model_agrees=true` 的天數，比 `cause_breakdown`（全部異常天，含不可信的）更可信。
 
-**Query params：** `limit`（回傳最近幾筆異常，預設 20）
+**可維修 vs 天候／ROI（`summary.maintainable_vs_weather` / `summary.roi`）：** 船殼/螺旋槳汙損可以靠排程維護（清船殼、拋光螺旋槳）處理，天候不行，所以拆開統計、且只把「可維修」根因算進 $ 效益：
+- `maintainable_vs_weather`：`maintainable_days`/`maintainable_confident_days`（船殼＋螺旋槳）vs `weather_days`/`weather_confident_days`（天候）的天數統計，全部異常天皆計入（不受 `limit` 影響）
+- `roi.avg_excess_fuel_mt_per_day`：只把**可信、`direction=='over'`、可維修根因**的天，`daily_foc_actual − daily_foc_expected` 加總後除以 `total_days_analyzed`（不是除以異常天數，是攤到整個分析區間的平均日耗油浪費率）；天候造成的異常、`under`（燒太少）、`cause_model_agrees=false` 的天都不計入
+- `roi.annual_excess_fuel_mt` / `roi.annual_saving_usd_if_fixed`：年化（`SEA_DAYS_PER_YEAR`=300 天），USD 換算方式跟 [`/predict/fuel-consumption`](#predict-fuel-consumption) 的 `counterfactual_uwc_pp.energy_pricing` 完全一樣（中油柴油牌價 × 公開 USD/TWD 匯率），`roi.energy_pricing` 附完整換算鏈供稽核
+- 兩條資料路徑（precomputed / 即時算）都用同一套 `_fuel_anomaly_roi()` 邏輯，只是 precomputed 路徑用 CSV 算出的乾淨 `total_days_analyzed`，即時算路徑仍受 `vessel-data` 表重複資料影響（分母分子同比例膨脹，年化 $ 數字仍大致可比，但不如 precomputed 路徑準）
+
+**Query params：** `limit`（回傳最近幾筆異常，預設 20；只影響 `anomalies[]`，不影響 `summary` 統計）
 
 **重新產生批次資料：** 來源 CSV 或方法論更動後，重跑 `cd backend-api && AWS_PROFILE=hackathon python3 precompute_fuel_anomaly.py`（`--dry-run` 可先預覽不寫入）。以 `noon_day` 當 SK，重跑會覆蓋同一天的舊值，不會累積重複資料。
 
@@ -395,7 +401,20 @@ GET /api/v1/vessels/{vessel_id}/fuel-anomaly-cause?limit=20
     "total_days_analyzed": 397,
     "anomaly_days": 36,
     "cause_breakdown": { "天候": 19, "螺旋槳汙損": 13, "船殼汙損": 4 },
-    "confident_cause_breakdown": { "天候": 14, "螺旋槳汙損": 8, "船殼汙損": 3 }
+    "confident_cause_breakdown": { "天候": 14, "螺旋槳汙損": 8, "船殼汙損": 3 },
+    "maintainable_vs_weather": {
+      "maintainable_days": 17,
+      "maintainable_confident_days": 11,
+      "weather_days": 19,
+      "weather_confident_days": 14
+    },
+    "roi": {
+      "avg_excess_fuel_mt_per_day": 0.182,
+      "annual_excess_fuel_mt": 54.7,
+      "annual_saving_usd_if_fixed": 54917.0,
+      "basis": "confident, over-consuming, maintainable-cause (hull/propeller) days only; weather excluded",
+      "energy_pricing": { "daily_saving_usd": 183.06, "annual_saving_usd": 54917.0, "sea_days_per_year": 300, "...": "同 predict_fuel 的 energy_pricing 結構" }
+    }
   },
   "anomalies": [
     {
