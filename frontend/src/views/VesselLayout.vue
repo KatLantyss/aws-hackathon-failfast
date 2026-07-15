@@ -56,13 +56,10 @@ function onRequestSubmitted() {
 
 const tabs = computed(() => [
   { to: `/vessels/${props.imo}/overview`, label: '總覽', name: 'vessel-overview' },
-  { to: `/vessels/${props.imo}/hull-efficiency`, label: '🚢 船體能效管理', name: 'vessel-hull-efficiency' },
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
   { to: `/vessels/${props.imo}/inspections`, label: '維護紀錄', name: 'vessel-inspections' },
-  { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
-  { to: `/vessels/${props.imo}/fuel-attribution`, label: 'Speed Loss 歸因', name: 'vessel-fuel-attribution' },
+  { to: `/vessels/${props.imo}/hull-efficiency`, label: '船體污損趨勢', name: 'vessel-hull-efficiency' },
   { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
-  { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析', name: 'vessel-maintenance-correlation' },
 ])
 </script>
 
