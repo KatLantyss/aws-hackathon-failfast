@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary } from '@/types/fleet'
 import type { DataSourceInfo } from '@/types/dataSource'
-import { fetchCorrelation, fetchRecommendation } from '@/composables/useDataSource'
+import { fetchRecommendation } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
+import { correlationDataKey, correlationStateKey } from '@/composables/useCorrelationContext'
 import { useChartTheme } from '@/composables/useChartTheme'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
@@ -12,7 +13,10 @@ import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatDay, formatUsd, formatNumber, formatPct } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
-const { data, state } = useAsyncData(() => props.imo, fetchCorrelation)
+// ALT-01 現在由 VesselLayout.vue（頁籤外層）統一抓取並 provide，這裡直接注入
+// 同一份資料，避免切到這個頁籤時重複打一次 fetchCorrelation
+const data = inject(correlationDataKey)!
+const state = inject(correlationStateKey)!
 const { data: advisorData } = useAsyncData(() => props.imo, fetchRecommendation)
 const chart = useChartTheme()
 
@@ -20,15 +24,6 @@ const chart = useChartTheme()
 // This is the page with the heaviest frontend business logic layered on real data — most
 // blocks below are 'hybrid', not 'real', even though every one of them is fed by a real API.
 const FUEL_FORMULA_NOTE = '前端固定用 fuel = avgConsumption × (1 + slip%/100 × 1.8) 換算，1.8 係數是寫死常數，非模型或後端算出來的'
-
-const dsAlert: DataSourceInfo = {
-  status: 'stub',
-  description: '「⚡ 預警門檻設定」滑桿是純前端 UI 狀態（ref），拖動只會即時重算下方 alertStatus 文字，不會呼叫任何 API 或存到後端 —— 重新整理頁面就重置，是互動式模擬器而非持久化設定。',
-  fields: [
-    { ui: 'Speed Loss 門檻 / 提前天數滑桿', source: '純前端 ref，無對應後端欄位' },
-    { ui: '🚨/⚠️/✅ 狀態文字', source: '前端拿 data.optimalTiming（本身已是 hybrid 計算值，見 COR-03）再套滑桿門檻二次判斷' },
-  ],
-}
 
 const dsSummaryKpis: DataSourceInfo = {
   status: 'hybrid',
@@ -112,27 +107,6 @@ const dsInsight: DataSourceInfo = {
     { ui: '摘要文字', source: '前端模板字串代入 data.summary.* / vessel.avgSlipPct / vessel.speedLossPct / vessel.slipTrend' },
   ],
 }
-
-// ─── Alert Threshold Settings ─────────────────────────────────────────────────
-const alertThresholdPct = ref(8) // Speed Loss % threshold
-const alertDaysBefore = ref(14) // Alert N days before reaching threshold
-const alertEnabled = ref(true)
-
-const alertStatus = computed(() => {
-  if (!data.value || !alertEnabled.value) return null
-  const { currentSpeedLossPct, degradationRatePerDay, daysUntilThreshold } = data.value.optimalTiming
-  const customDaysUntil = degradationRatePerDay > 0
-    ? Math.max(0, Math.round((alertThresholdPct.value - currentSpeedLossPct) / degradationRatePerDay))
-    : 999
-
-  if (currentSpeedLossPct >= alertThresholdPct.value) {
-    return { level: 'CRITICAL' as const, message: `Speed Loss ${currentSpeedLossPct}% 已超過門檻 ${alertThresholdPct.value}%，建議立即安排維修。`, daysLeft: 0 }
-  }
-  if (customDaysUntil <= alertDaysBefore.value) {
-    return { level: 'WARNING' as const, message: `預計 ${customDaysUntil} 天後達到門檻 ${alertThresholdPct.value}%（已進入警報區間 ${alertDaysBefore.value} 天前）。`, daysLeft: customDaysUntil }
-  }
-  return { level: 'OK' as const, message: `距離門檻尚有 ${customDaysUntil} 天，效能正常。`, daysLeft: customDaysUntil }
-})
 
 // ─── Timeline Chart ───────────────────────────────────────────────────────────
 const timelineOption = computed(() => {
@@ -368,11 +342,6 @@ function urgencyLabel(urgency: 'LOW' | 'MEDIUM' | 'HIGH'): string {
   if (urgency === 'MEDIUM') return '中 — 建議近期安排'
   return '低 — 依標準週期'
 }
-function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
-  if (level === 'CRITICAL') return 'var(--color-signal-red)'
-  if (level === 'WARNING') return 'var(--color-brass-amber)'
-  return 'var(--color-fathom-teal)'
-}
 </script>
 
 <template>
@@ -384,66 +353,77 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
     />
     <template v-else-if="data">
 
-      <!-- ═══ Alert Threshold Settings + Status ═══ -->
-      <div class="panel p-4">
-        <DataSourceTag :info="dsAlert" />
-        <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-          <div class="flex items-center gap-2">
-            <PanelTag code="ALT-01" />
-            <p class="font-display text-sm">⚡ 預警門檻設定</p>
+      <!-- ═══ Optimal Timing Recommendation ═══ -->
+      <div class="panel p-4 border-l-4" :style="{ borderLeftColor: urgencyColor(data.optimalTiming.urgency) }">
+        <DataSourceTag :info="dsOptimalTiming" />
+        <PanelTag code="COR-03" class="mb-2" />
+        <p class="font-display text-sm mb-3">🔧 最佳維修時機建議</p>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <p class="text-xs text-[var(--color-ink-slate)]/60">建議養護類型</p>
+            <p class="font-data text-base">{{ data.optimalTiming.recommendedAction }}</p>
           </div>
-          <label class="flex items-center gap-2 text-sm cursor-pointer">
-            <input v-model="alertEnabled" type="checkbox" class="accent-[var(--color-brass-amber)] w-4 h-4" />
-            啟用預警
-          </label>
+          <div>
+            <p class="text-xs text-[var(--color-ink-slate)]/60">急迫程度</p>
+            <p class="font-data text-base flex items-center gap-2">
+              <span class="inline-block w-2.5 h-2.5 rounded-full" :style="{ background: urgencyColor(data.optimalTiming.urgency) }" />
+              {{ urgencyLabel(data.optimalTiming.urgency) }}
+            </p>
+          </div>
+          <div>
+            <p class="text-xs text-[var(--color-ink-slate)]/60">建議窗口</p>
+            <p class="font-data text-base" :style="{ color: urgencyColor(data.optimalTiming.urgency) }">
+              {{ formatDay(data.optimalTiming.windowStartDay) }} — {{ formatDay(data.optimalTiming.windowEndDay) }}
+            </p>
+          </div>
+          <div>
+            <p class="text-xs text-[var(--color-ink-slate)]/60">每日超額成本</p>
+            <p class="font-data text-base text-[var(--color-signal-red)]">{{ formatUsd(data.optimalTiming.excessFuelCostPerDayUsd) }}/day</p>
+          </div>
         </div>
+        <div class="grid grid-cols-3 gap-2 mb-3">
+          <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
+            <p class="text-[10px] text-[var(--color-ink-slate)]/60">目前</p>
+            <p class="font-data text-sm">{{ formatPct(data.optimalTiming.currentSpeedLossPct) }}</p>
+          </div>
+          <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
+            <p class="text-[10px] text-[var(--color-ink-slate)]/60">閾值</p>
+            <p class="font-data text-sm">{{ formatPct(data.optimalTiming.optimalThresholdPct) }}</p>
+          </div>
+          <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
+            <p class="text-[10px] text-[var(--color-ink-slate)]/60">90天節省</p>
+            <p class="font-data text-sm text-[var(--color-fathom-teal)]">{{ formatUsd(data.optimalTiming.projectedSavingsUsd) }}</p>
+          </div>
+        </div>
+        <p class="text-xs text-[var(--color-ink-slate)]/70">{{ data.optimalTiming.reasoning }}</p>
+      </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-          <div>
-            <label class="text-xs text-[var(--color-ink-slate)]/60 block mb-1">Speed Loss 門檻 (%)</label>
-            <input
-              v-model.number="alertThresholdPct"
-              type="range"
-              min="3"
-              max="15"
-              step="0.5"
-              class="w-full accent-[var(--color-brass-amber)]"
-            />
-            <div class="flex justify-between text-xs font-data text-[var(--color-ink-slate)]/60 mt-1">
-              <span>3%</span>
-              <span class="font-bold text-[var(--color-ink-slate)]">{{ alertThresholdPct }}%</span>
-              <span>15%</span>
-            </div>
-          </div>
-          <div>
-            <label class="text-xs text-[var(--color-ink-slate)]/60 block mb-1">提前幾天警報</label>
-            <input
-              v-model.number="alertDaysBefore"
-              type="range"
-              min="3"
-              max="60"
-              step="1"
-              class="w-full accent-[var(--color-brass-amber)]"
-            />
-            <div class="flex justify-between text-xs font-data text-[var(--color-ink-slate)]/60 mt-1">
-              <span>3天</span>
-              <span class="font-bold text-[var(--color-ink-slate)]">{{ alertDaysBefore }} 天</span>
-              <span>60天</span>
-            </div>
-          </div>
-          <div class="flex items-center">
-            <div
-              v-if="alertStatus && alertEnabled"
-              class="w-full rounded-lg p-3 text-sm font-data"
-              :style="{ background: alertLevelColor(alertStatus.level) + '18', borderLeft: `4px solid ${alertLevelColor(alertStatus.level)}` }"
-            >
-              <p class="font-bold mb-1" :style="{ color: alertLevelColor(alertStatus.level) }">
-                {{ alertStatus.level === 'CRITICAL' ? '🚨 超標警報' : alertStatus.level === 'WARNING' ? '⚠️ 預警中' : '✅ 正常' }}
-              </p>
-              <p class="text-xs">{{ alertStatus.message }}</p>
-            </div>
-            <div v-else class="text-sm text-[var(--color-ink-slate)]/50 italic">預警已關閉</div>
-          </div>
+      <!-- ═══ AI Insight ═══ -->
+      <div class="panel p-4 border-l-4" style="border-left-color: var(--color-fathom-teal)">
+        <DataSourceTag :info="dsInsight" />
+        <PanelTag code="COR-08" class="mb-2" />
+        <p class="font-display text-sm mb-2">AI 分析摘要</p>
+        <div class="text-sm text-[var(--color-ink-slate)]/80 flex flex-col gap-2">
+          <p>
+            本船共記錄 <strong>{{ data.summary.totalEvents }}</strong> 次養護事件，
+            平均改善效能 <strong>{{ formatPct(data.summary.avgImprovementPct) }}</strong>。
+          </p>
+          <p v-if="vessel.avgSlipPct != null">
+            全期平均 Slip <strong>{{ vessel.avgSlipPct.toFixed(2) }}%</strong>，
+            近 90 天 <strong>{{ vessel.speedLossPct.toFixed(2) }}%</strong>
+            <template v-if="vessel.slipTrend != null">
+              （趨勢 {{ vessel.slipTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.slipTrend).toFixed(2) }}%）
+            </template>。
+            目前超額燃油成本 <strong class="text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}/天</strong>。
+          </p>
+          <p v-if="data.typeEffectiveness.length > 0">
+            效果最佳：<strong>{{ data.typeEffectiveness[0].type }}</strong>
+            （平均改善 {{ formatPct(data.typeEffectiveness[0].avgImprovementPct) }}）→ 高污損時優先採用。
+          </p>
+          <p v-if="data.typeEffectiveness.length > 1">
+            效果有限：<strong>{{ data.typeEffectiveness[data.typeEffectiveness.length - 1].type }}</strong>
+            （{{ formatPct(data.typeEffectiveness[data.typeEffectiveness.length - 1].avgImprovementPct) }}）→ 適合輕微污損日常維護。
+          </p>
         </div>
       </div>
 
@@ -483,62 +463,14 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         </div>
       </div>
 
-      <!-- ═══ Cost-Benefit + Optimal Timing ═══ -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <!-- Cost-Benefit Curve -->
-        <div class="panel p-3">
-          <DataSourceTag :info="dsCostBenefit" />
-          <PanelTag code="COR-02" class="mb-2" />
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
-          <div class="h-[280px]">
-            <VChart v-if="advisorData" :option="costBenefitOption" autoresize class="h-full w-full" />
-            <div v-else class="h-full flex items-center justify-center text-sm text-[var(--color-ink-slate)]/50">載入中...</div>
-          </div>
-        </div>
-
-        <!-- Optimal Timing Recommendation -->
-        <div class="panel p-4 border-l-4" :style="{ borderLeftColor: urgencyColor(data.optimalTiming.urgency) }">
-          <DataSourceTag :info="dsOptimalTiming" />
-          <PanelTag code="COR-03" class="mb-2" />
-          <p class="font-display text-sm mb-3">🔧 最佳維修時機建議</p>
-          <div class="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">建議養護類型</p>
-              <p class="font-data text-base">{{ data.optimalTiming.recommendedAction }}</p>
-            </div>
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">急迫程度</p>
-              <p class="font-data text-base flex items-center gap-2">
-                <span class="inline-block w-2.5 h-2.5 rounded-full" :style="{ background: urgencyColor(data.optimalTiming.urgency) }" />
-                {{ urgencyLabel(data.optimalTiming.urgency) }}
-              </p>
-            </div>
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">建議窗口</p>
-              <p class="font-data text-base" :style="{ color: urgencyColor(data.optimalTiming.urgency) }">
-                {{ formatDay(data.optimalTiming.windowStartDay) }} — {{ formatDay(data.optimalTiming.windowEndDay) }}
-              </p>
-            </div>
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">每日超額成本</p>
-              <p class="font-data text-base text-[var(--color-signal-red)]">{{ formatUsd(data.optimalTiming.excessFuelCostPerDayUsd) }}/day</p>
-            </div>
-          </div>
-          <div class="grid grid-cols-3 gap-2 mb-3">
-            <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60">目前</p>
-              <p class="font-data text-sm">{{ formatPct(data.optimalTiming.currentSpeedLossPct) }}</p>
-            </div>
-            <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60">閾值</p>
-              <p class="font-data text-sm">{{ formatPct(data.optimalTiming.optimalThresholdPct) }}</p>
-            </div>
-            <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60">90天節省</p>
-              <p class="font-data text-sm text-[var(--color-fathom-teal)]">{{ formatUsd(data.optimalTiming.projectedSavingsUsd) }}</p>
-            </div>
-          </div>
-          <p class="text-xs text-[var(--color-ink-slate)]/70">{{ data.optimalTiming.reasoning }}</p>
+      <!-- ═══ Cost-Benefit Curve ═══ -->
+      <div class="panel p-3">
+        <DataSourceTag :info="dsCostBenefit" />
+        <PanelTag code="COR-02" class="mb-2" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
+        <div class="h-[280px]">
+          <VChart v-if="advisorData" :option="costBenefitOption" autoresize class="h-full w-full" />
+          <div v-else class="h-full flex items-center justify-center text-sm text-[var(--color-ink-slate)]/50">載入中...</div>
         </div>
       </div>
 
@@ -635,35 +567,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
             </span>
           </li>
         </ul>
-      </div>
-
-      <!-- ═══ AI Insight ═══ -->
-      <div class="panel p-4 border-l-4" style="border-left-color: var(--color-fathom-teal)">
-        <DataSourceTag :info="dsInsight" />
-        <PanelTag code="COR-08" class="mb-2" />
-        <p class="font-display text-sm mb-2">AI 分析摘要</p>
-        <div class="text-sm text-[var(--color-ink-slate)]/80 flex flex-col gap-2">
-          <p>
-            本船共記錄 <strong>{{ data.summary.totalEvents }}</strong> 次養護事件，
-            平均改善效能 <strong>{{ formatPct(data.summary.avgImprovementPct) }}</strong>。
-          </p>
-          <p v-if="vessel.avgSlipPct != null">
-            全期平均 Slip <strong>{{ vessel.avgSlipPct.toFixed(2) }}%</strong>，
-            近 90 天 <strong>{{ vessel.speedLossPct.toFixed(2) }}%</strong>
-            <template v-if="vessel.slipTrend != null">
-              （趨勢 {{ vessel.slipTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.slipTrend).toFixed(2) }}%）
-            </template>。
-            目前超額燃油成本 <strong class="text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}/天</strong>。
-          </p>
-          <p v-if="data.typeEffectiveness.length > 0">
-            效果最佳：<strong>{{ data.typeEffectiveness[0].type }}</strong>
-            （平均改善 {{ formatPct(data.typeEffectiveness[0].avgImprovementPct) }}）→ 高污損時優先採用。
-          </p>
-          <p v-if="data.typeEffectiveness.length > 1">
-            效果有限：<strong>{{ data.typeEffectiveness[data.typeEffectiveness.length - 1].type }}</strong>
-            （{{ formatPct(data.typeEffectiveness[data.typeEffectiveness.length - 1].avgImprovementPct) }}）→ 適合輕微污損日常維護。
-          </p>
-        </div>
       </div>
     </template>
   </div>
