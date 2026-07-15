@@ -323,6 +323,8 @@ def route(event, context):
             return get_maintenance_recommendation(vessel_id, event)
         if sub == 'fuel-anomaly-cause':
             return get_fuel_anomaly_cause(vessel_id, event)
+        if sub == 'speed-loss-dashboard':
+            return get_speed_loss_dashboard(vessel_id, event)
 
     # /api/v1/fleet/ranking
     if path == '/api/v1/fleet/ranking':
@@ -2503,3 +2505,234 @@ def main(event, context):
         import traceback
         print(traceback.format_exc())
         return err(500, str(e))
+
+
+# ── Speed Loss Dashboard (ISO 19030 概念，三視圖資料) ─────────────────────────
+def get_speed_loss_dashboard(vessel_id, event):
+    """
+    Speed Loss Dashboard — 規格要求的三視圖後端資料計算。
+
+    演算法（依規格）：
+    1. 前處理：SPEED_LOSS coerce、去重（vessel+day+voyage）、排序
+    2. 平滑趨勢：每 10 天一格，視窗 ±20 天內的 median SPEED_LOSS（≥2 點才算）
+    3. 船殼/螺旋槳歸因指數（啟發式代理）：
+       - hull_idx = distance_since_hull_clean / p95(distance)
+       - prop_idx = slip_excess / p95(slip_excess)，slip_excess = ME_SLIP - p5(ME_SLIP)
+       - hull/prop share → hull/prop contribution = share × max(0, smooth)
+    4. 事件前後對比：±45 天視窗 median SPEED_LOSS，delta = after - before
+       （delta < 0 = 改善；需 n≥3 才算，否則 null）
+    """
+    rows     = query_vessel(vessel_id)
+    if not rows:
+        return err(404, f'Vessel {vessel_id} not found')
+    maint    = query_maintenance(vessel_id)
+    ship_type = 'W1' if SHIP_TYPE.get(vessel_id, 0) == 0 else 'W2'
+
+    # ── 1. 前處理 ──────────────────────────────────────────────────────────
+    records = []
+    seen = set()
+    for r in rows:
+        day_raw = safe_float(r.get('NOON_UTC'))
+        voy_raw = safe_float(r.get('VOYAGE'))
+        if day_raw is None:
+            continue
+        key = (round(day_raw, 1), int(voy_raw) if voy_raw else 0)
+        if key in seen:
+            continue
+        seen.add(key)
+        sl = safe_float(r.get('SPEED_LOSS'))  # None if non-steady-state or HIDDEN
+        slip = safe_float(r.get('ME_SLIP'))
+        records.append({
+            'day':   day_raw,
+            'sl':    sl,      # None = masked/non-steady-state → 圖上斷點
+            'slip':  slip,
+        })
+
+    records.sort(key=lambda x: x['day'])
+
+    if not records:
+        return err(404, f'No data for vessel {vessel_id}')
+
+    day_min = records[0]['day']
+    day_max = records[-1]['day']
+
+    # Raw points（只包含 sl 非 None 的點，讓前端畫散布）
+    raw = [[r['day'], round(r['sl'], 2)] for r in records if r['sl'] is not None]
+
+    # ── 2. 平滑趨勢 ────────────────────────────────────────────────────────
+    import statistics
+
+    def median_window(grid_day, half_win=20):
+        vals = [r['sl'] for r in records
+                if r['sl'] is not None and abs(r['day'] - grid_day) <= half_win]
+        if len(vals) < 2:
+            return None
+        return round(statistics.median(vals), 2)
+
+    grid_step = 10
+    grid_days = []
+    g = day_min
+    while g <= day_max + grid_step:
+        grid_days.append(round(g, 1))
+        g += grid_step
+
+    # ── 3. 船殼/螺旋槳歸因指數 ─────────────────────────────────────────────
+    # 船殼清洗邊界（DD / UWC / UWC+PP）
+    hull_events_sorted = sorted(
+        [safe_float(m.get('event_day'), 0) for m in maint
+         if str(m.get('event_type', '')) in HULL_CLEAN_TYPES],
+    )
+
+    def distance_since_hull_clean(day):
+        prior = [d for d in hull_events_sorted if d <= day]
+        return day - prior[-1] if prior else day - day_min
+
+    # 螺旋槳代理：ME_SLIP p5 基準
+    all_slips = [r['slip'] for r in records if r['slip'] is not None]
+    if all_slips:
+        sorted_slips = sorted(all_slips)
+        p5_idx = max(0, int(len(sorted_slips) * 0.05))
+        baseline_slip = sorted_slips[p5_idx]
+    else:
+        baseline_slip = 0.0
+
+    def slip_excess(day):
+        # 用當天的 ME_SLIP（若有），否則 None
+        nearby = [r['slip'] for r in records
+                  if r['slip'] is not None and abs(r['day'] - day) <= 5]
+        if not nearby:
+            return 0.0
+        return max(0.0, sum(nearby) / len(nearby) - baseline_slip)
+
+    # 計算所有 grid 的 distance 與 slip_excess 以求 p95
+    all_dist = []
+    all_se   = []
+    for gd in grid_days:
+        all_dist.append(distance_since_hull_clean(gd))
+        all_se.append(slip_excess(gd))
+
+    def p95(lst):
+        if not lst:
+            return 1.0
+        s = sorted(lst)
+        idx = min(len(s) - 1, int(len(s) * 0.95))
+        return s[idx] if s[idx] > 0 else 1.0
+
+    dist_p95 = p95(all_dist)
+    se_p95   = p95(all_se)
+
+    smooth = []
+    for gd in grid_days:
+        sm = median_window(gd)
+        if sm is None:
+            smooth.append([gd, None, None, None, 0])
+            continue
+
+        dist = distance_since_hull_clean(gd)
+        se   = slip_excess(gd)
+
+        hull_idx = min(1.0, dist / dist_p95) if dist_p95 > 0 else 0.0
+        prop_idx = min(1.0, se   / se_p95)   if se_p95   > 0 else 0.0
+
+        total = hull_idx + prop_idx
+        if total < 1e-9:
+            hull_share = 0.5
+            prop_share = 0.5
+        else:
+            hull_share = hull_idx / total
+            prop_share = prop_idx / total
+
+        loss = max(0.0, sm)
+        hull_contrib = round(hull_share * loss, 3)
+        prop_contrib = round(prop_share * loss, 3)
+
+        # 計入 window 點數（供前端 tooltip 顯示可信度）
+        n_pts = len([r for r in records
+                     if r['sl'] is not None and abs(r['day'] - gd) <= 20])
+
+        smooth.append([
+            gd,
+            round(sm, 2),
+            round(hull_contrib, 3),
+            round(prop_contrib, 3),
+            n_pts,
+        ])
+
+    # ── 4. 事件前後對比 ────────────────────────────────────────────────────
+    WINDOW = 45
+    MIN_N  = 3
+
+    events_out = []
+    for m in sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0)):
+        d     = safe_float(m.get('event_day'))
+        etype = str(m.get('event_type', ''))
+        if d is None:
+            continue
+        # UWI（單純水下檢查）僅記錄，不計效能改善
+        is_uwi_only = (etype == 'UWI')
+
+        before_vals = [r['sl'] for r in records
+                       if r['sl'] is not None and (d - WINDOW) <= r['day'] < d]
+        after_vals  = [r['sl'] for r in records
+                       if r['sl'] is not None and d < r['day'] <= (d + WINDOW)]
+
+        if is_uwi_only or len(before_vals) < MIN_N or len(after_vals) < MIN_N:
+            b_med = round(statistics.median(before_vals), 2) if before_vals else None
+            a_med = round(statistics.median(after_vals),  2) if after_vals  else None
+            delta = None
+        else:
+            b_med = round(statistics.median(before_vals), 2)
+            a_med = round(statistics.median(after_vals),  2)
+            delta = round(a_med - b_med, 2)  # < 0 = 改善
+
+        events_out.append({
+            'day':                   d,
+            'type':                  etype,
+            'before':                b_med,
+            'after':                 a_med,
+            'delta':                 delta,
+            'n_before':              len(before_vals),
+            'n_after':               len(after_vals),
+            'is_uwi_only':           is_uwi_only,
+            'propeller_condition':   m.get('propeller_condition'),
+            'hull_fouling_type':     m.get('hull_fouling_type'),
+            'hull_coating_condition':m.get('hull_coating_condition'),
+            'cavitation_found':      m.get('cavitation_found'),
+        })
+
+    # 全期加總 hull/prop 佔比摘要（只取有損失的 grid 點）
+    loss_pts = [s for s in smooth if s[1] is not None and s[1] > 0]
+    total_hull = sum(s[2] for s in loss_pts if s[2] is not None)
+    total_prop = sum(s[3] for s in loss_pts if s[3] is not None)
+    total_both = total_hull + total_prop
+    summary_hull_pct = round(total_hull / total_both * 100, 1) if total_both > 0 else 50.0
+    summary_prop_pct = round(total_prop / total_both * 100, 1) if total_both > 0 else 50.0
+
+    return resp(200, {
+        'vessel_id':         vessel_id,
+        'ship_type':         ship_type,
+        'day_min':           day_min,
+        'day_max':           day_max,
+        # raw[i] = [day, speed_loss_pct]（僅穩態全速日，非穩態日不含）
+        'raw':               raw,
+        # smooth[i] = [day, smooth_val, hull_contrib, prop_contrib, n_pts]
+        # smooth_val / hull_contrib / prop_contrib 可為 null（資料不足的斷點）
+        'smooth':            smooth,
+        # events[i] — 含 delta（None = 資料不足或 UWI）
+        'events':            events_out,
+        'summary': {
+            'hull_pct': summary_hull_pct,
+            'prop_pct': summary_prop_pct,
+        },
+        'methodology': {
+            'smooth_window_days': 20,
+            'smooth_grid_step':   10,
+            'event_window_days':  WINDOW,
+            'min_n_for_delta':    MIN_N,
+            'attribution_note':   (
+                '船殼/螺旋槳歸因為啟發式代理指標（非物理精確解）：'
+                '船殼指數依距上次清洗天數估算，螺旋槳指數依 ME_SLIP 超出 p5 基準值估算。'
+                '僅供判讀方向參考，不代表精確物理拆解。'
+            ),
+        },
+    })

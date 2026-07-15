@@ -126,6 +126,15 @@ def get_fuel_anomaly_cause(vessel_id: str, limit: int = 20):
     return _json_response(result)
 
 
+@app.get("/api/v1/vessels/{vessel_id}/speed-loss-dashboard")
+def get_speed_loss_dashboard(vessel_id: str):
+    result = handler.route(
+        _event("GET", f"/api/v1/vessels/{vessel_id}/speed-loss-dashboard"),
+        None,
+    )
+    return _json_response(result)
+
+
 @app.get("/api/v1/fleet/ranking")
 def get_fleet_ranking():
     result = handler.route(_event("GET", "/api/v1/fleet/ranking"), None)

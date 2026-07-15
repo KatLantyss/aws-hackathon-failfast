@@ -401,3 +401,51 @@ export function predictFuelConsumption(input: BackendFuelPredictionInput) {
     body: JSON.stringify(input),
   })
 }
+
+// ── Speed Loss Dashboard (ISO 19030 三視圖) ───────────────────────────────────
+
+/**
+ * raw[i]    = [day, speed_loss_pct]
+ * smooth[i] = [day, smooth_val | null, hull_contrib | null, prop_contrib | null, n_pts]
+ */
+export interface BackendSpeedLossDashboardEvent {
+  day: number
+  type: string                      // PP / UWI+PP / UWC / UWC+PP / DD / UWI
+  before: number | null             // median SPEED_LOSS 事件前 45 天
+  after: number | null              // median SPEED_LOSS 事件後 45 天
+  delta: number | null              // after - before (< 0 = 改善); null = 資料不足
+  n_before: number
+  n_after: number
+  is_uwi_only: boolean
+  propeller_condition: string | null
+  hull_fouling_type: string | null
+  hull_coating_condition: string | null
+  cavitation_found: string | null
+}
+
+export interface BackendSpeedLossDashboard {
+  vessel_id: string
+  ship_type: 'W1' | 'W2'
+  day_min: number
+  day_max: number
+  raw: [number, number][]           // [day, speed_loss_pct]
+  smooth: [number, number | null, number | null, number | null, number][]
+  events: BackendSpeedLossDashboardEvent[]
+  summary: {
+    hull_pct: number
+    prop_pct: number
+  }
+  methodology: {
+    smooth_window_days: number
+    smooth_grid_step: number
+    event_window_days: number
+    min_n_for_delta: number
+    attribution_note: string
+  }
+}
+
+export function getSpeedLossDashboard(vesselId: string) {
+  return request<BackendSpeedLossDashboard>(
+    `/api/v1/vessels/${encodeURIComponent(vesselId)}/speed-loss-dashboard`,
+  )
+}
