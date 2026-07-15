@@ -56,16 +56,10 @@ function onRequestSubmitted() {
 
 const tabs = computed(() => [
   { to: `/vessels/${props.imo}/overview`, label: '總覽', name: 'vessel-overview' },
+  { to: `/vessels/${props.imo}/hull-efficiency`, label: '🚢 船體能效管理', name: 'vessel-hull-efficiency' },
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
   { to: `/vessels/${props.imo}/inspections`, label: '維護紀錄', name: 'vessel-inspections' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
-  // Renamed to "Speed Loss 歸因" (2026-07): page now leads with
-  // GET /vessels/{id}/speed-loss-attribution — ISO 19030-framed % of Speed
-  // Loss attributable to hull vs. propeller fouling, fleet-calibrated
-  // degradation rate (see handler.py _fleet_degradation_rates). The
-  // fuel-anomaly-cause section (SHAP $ ROI breakdown) stays below it on the
-  // same page — same underlying FOC signal, different currency ($ vs
-  // speed-loss %), both kept since they answer different rubric criteria.
   { to: `/vessels/${props.imo}/fuel-attribution`, label: 'Speed Loss 歸因', name: 'vessel-fuel-attribution' },
   { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
   { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析', name: 'vessel-maintenance-correlation' },

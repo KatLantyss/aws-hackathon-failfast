@@ -38,6 +38,12 @@ const router = createRouter({
           props: true,
         },
         {
+          path: 'hull-efficiency',
+          name: 'vessel-hull-efficiency',
+          component: () => import('@/views/vessel/HullEfficiencyDashboard.vue'),
+          props: true,
+        },
+        {
           path: 'speed-loss',
           name: 'vessel-speed-loss',
           component: () => import('@/views/vessel/SpeedLoss.vue'),
