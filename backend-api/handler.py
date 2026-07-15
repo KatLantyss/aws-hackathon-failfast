@@ -672,10 +672,9 @@ def get_speed_loss(vessel_id, event):
                 'speed_loss_pct': safe_float(r.get('SPEED_LOSS')),
                 'sort_key': r.get('sort_key'),
                 'row_index': safe_float(r.get('row_index')),
-                'is_valid': r.get('SPEED_LOSS') is not None,
+                'is_valid': r.get('SPEED_LOSS') is not None,  # true = has speed_loss, false = null/missing
             }
             for r in rows
-            if r.get('SPEED_LOSS') is not None  # Only include records with actual speed_loss values
         ),
         key=lambda p: p['noon_day'],
     )

@@ -106,10 +106,14 @@ function xValue(r: NoonReportEntry) {
 }
 
 const scatterBallast = computed(() =>
-  filteredReports.value.filter((r) => r.loadCondition === 'ballast').map((r) => [xValue(r), r.speedLossPct, r]),
+  filteredReports.value
+    .filter((r) => r.loadCondition === 'ballast' && r.speedLossPct != null)
+    .map((r) => [xValue(r), r.speedLossPct, r]),
 )
 const scatterLaden = computed(() =>
-  filteredReports.value.filter((r) => r.loadCondition === 'laden').map((r) => [xValue(r), r.speedLossPct, r]),
+  filteredReports.value
+    .filter((r) => r.loadCondition === 'laden' && r.speedLossPct != null)
+    .map((r) => [xValue(r), r.speedLossPct, r]),
 )
 
 // simple linear regression for the fouling trend line, over currently visible points
