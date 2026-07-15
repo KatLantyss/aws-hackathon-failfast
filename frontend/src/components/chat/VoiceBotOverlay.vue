@@ -35,10 +35,10 @@ function resetConversation() {
 }
 
 const SUGGESTED_QUESTIONS = [
-  'YM WELLNESS 現在狀況怎麼樣？',
   '哪些船需要優先安排維修？',
-  '比較 YM WELLNESS 跟 YM VICTORY 的污損趨勢',
-  '上次水下清洗是什麼時候？',
+  '比較 S1 與 S2 的污損趨勢',
+  '查詢 S23 現在狀況',
+  'S9 上次船體清洗是何時？',
 ]
 
 const loading = ref(false)
