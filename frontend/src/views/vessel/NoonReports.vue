@@ -129,26 +129,59 @@ const showForm = ref(false)
 const formError = ref<string | null>(null)
 
 const form = reactive({
+  voyage: 0,
   avgSpeed: 15,
   stw: 15,
-  meConsumption: 30,
-  windScale: 3,
-  seaHeight: 1,
+  meAvgRpm: 60,
+  propellerSpeed: 16,
   foreDraft: 13.5,
   aftDraft: 13.5,
+  displacement: 0,
   cargoOnBoard: 0,
+  windScale: 3,
+  seaHeight: 1,
+  seaWaterTemp: 25,
+  windSpeed: 10,
+  windDirection: 0,
+  swellHeight: 1,
+  swellDirection: 0,
+  seaDirection: 0,
+  waterDepth: 100,
+  midDraft: 13.5,
+  totalDistance: 400,
+  seaSpeedDistance: 380,
+  diffStwSog: 0,
+  fullSpdStwSlip: 0,
+  horsePower: 13000,
+  loadPct: 85,
+  sfoc: 170,
+  meSlip: 5,
+  thrust: 0,
+  thrustQuotient: 0,
+  totalConsump: 50,
+  meFullspeedConsumpHshfo: 0,
+  meFullspeedConsumpVlsfo: 51,
+  meFullspeedConsumpUlsfo: 0,
+  meFullspeedConsumpLsmgo: 0,
+  meFullspeedConsumpBioHsfo: 0,
+  meConsumption: 30,
+  hoursFullSpeed: 22,
+  hoursTotal: 24,
 })
 
 function openForm() {
   const last = combinedReports.value[combinedReports.value.length - 1] ?? null
+  form.voyage = (last?.voyage as number) ?? 0
   form.avgSpeed = Number((last?.observedSpeedKt || props.vessel.avgSpeedKn || 15).toFixed(1))
   form.stw = Number((last?.correctedSpeedKt || props.vessel.avgStwKn || form.avgSpeed).toFixed(1))
-  form.meConsumption = Number((last?.fuelConsumptionMt || props.vessel.avgConsumptionMt || 30).toFixed(1))
-  form.windScale = last?.beaufort ?? props.vessel.avgWindScale ?? 3
-  form.seaHeight = props.vessel.avgSeaHeightM ?? 1
+  form.meAvgRpm = (last as any)?.rpm ?? 60
+  form.propellerSpeed = (last as any)?.propeller_speed ?? 16
   form.foreDraft = Number((last?.draftFwd || props.vessel.avgForeDraftM || 13.5).toFixed(1))
   form.aftDraft = Number((last?.draftAft || props.vessel.avgAftDraftM || 13.5).toFixed(1))
   form.cargoOnBoard = props.vessel.avgCargoOnBoardMt ?? 0
+  form.windScale = last?.beaufort ?? props.vessel.avgWindScale ?? 3
+  form.seaHeight = props.vessel.avgSeaHeightM ?? 1
+  form.meConsumption = Number((last?.fuelConsumptionMt || props.vessel.avgConsumptionMt || 30).toFixed(1))
   formError.value = null
   showForm.value = true
 }
@@ -210,8 +243,8 @@ function runStagedReveal(): Promise<void> {
 }
 
 async function submitReport() {
-  if (!(form.avgSpeed > 0) || !(form.meConsumption > 0)) {
-    formError.value = '請輸入有效的航速與油耗數值（須大於 0）。'
+  if (!(form.avgSpeed > 0)) {
+    formError.value = '請輸入有效的航速數值（須大於 0）。'
     return
   }
   formError.value = null
@@ -233,13 +266,8 @@ async function submitReport() {
     isLocal: true,
   })
 
-  submittedDay.value = day
-  reportedConsumptionMt.value = form.meConsumption
   showForm.value = false
   bannerRequestSent.value = false
-
-  diagnosing.value = true
-  diagnosisError.value = null
   diagnosis.value = null
   try {
     const [result] = await Promise.all([
@@ -354,39 +382,45 @@ function onRequestSubmitted() {
           新增 Day {{ newDayIndex }} 填報
         </p>
       </div>
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">航速(觀測) kt</span>
-          <input v-model.number="form.avgSpeed" type="number" step="0.1" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">航速(修正後/STW) kt</span>
-          <input v-model.number="form.stw" type="number" step="0.1" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">主機油耗 MT/日</span>
-          <input v-model.number="form.meConsumption" type="number" step="0.1" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">載貨量 MT</span>
-          <input v-model.number="form.cargoOnBoard" type="number" step="10" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">蒲福風級</span>
-          <input v-model.number="form.windScale" type="number" min="0" max="12" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">浪高 m</span>
-          <input v-model.number="form.seaHeight" type="number" step="0.1" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">前吃水 m</span>
-          <input v-model.number="form.foreDraft" type="number" step="0.1" class="field font-data" />
-        </label>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">後吃水 m</span>
-          <input v-model.number="form.aftDraft" type="number" step="0.1" class="field font-data" />
-        </label>
+      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 text-sm">
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">航次</span><input v-model.number="form.voyage" type="number" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">平均對地航速 kt</span><input v-model.number="form.avgSpeed" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">對水航速 kt</span><input v-model.number="form.stw" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">主機轉速 RPM</span><input v-model.number="form.meAvgRpm" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">螺旋槳轉速 RPM</span><input v-model.number="form.propellerSpeed" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">首吃水 m</span><input v-model.number="form.foreDraft" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">尾吃水 m</span><input v-model.number="form.aftDraft" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">舯吃水 m</span><input v-model.number="form.midDraft" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">排水量 MT</span><input v-model.number="form.displacement" type="number" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">載貨量 MT</span><input v-model.number="form.cargoOnBoard" type="number" step="10" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">風力等級 BF</span><input v-model.number="form.windScale" type="number" min="0" max="12" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">浪高 m</span><input v-model.number="form.seaHeight" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">海水溫度 °C</span><input v-model.number="form.seaWaterTemp" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">風速 knots</span><input v-model.number="form.windSpeed" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">風向 deg</span><input v-model.number="form.windDirection" type="number" step="1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">湧浪高度 m</span><input v-model.number="form.swellHeight" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">湧浪方向 deg</span><input v-model.number="form.swellDirection" type="number" step="1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">浪方向 deg</span><input v-model.number="form.seaDirection" type="number" step="1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">水深 m</span><input v-model.number="form.waterDepth" type="number" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">對地總航距 nm</span><input v-model.number="form.totalDistance" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速對水航距 nm</span><input v-model.number="form.seaSpeedDistance" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">速差 knots</span><input v-model.number="form.diffStwSog" type="number" step="0.01" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速滑差 %</span><input v-model.number="form.fullSpdStwSlip" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">主機功率 kW</span><input v-model.number="form.horsePower" type="number" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">負載率 %MCR</span><input v-model.number="form.loadPct" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">比油耗 g/kWh</span><input v-model.number="form.sfoc" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">滑差 %</span><input v-model.number="form.meSlip" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">推力 kN</span><input v-model.number="form.thrust" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">推力係數</span><input v-model.number="form.thrustQuotient" type="number" step="0.01" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">總油耗 MT/day</span><input v-model.number="form.totalConsump" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速油耗(HSHFO) MT/day</span><input v-model.number="form.meFullspeedConsumpHshfo" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速油耗(VLSFO) MT/day</span><input v-model.number="form.meFullspeedConsumpVlsfo" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速油耗(ULSFO) MT/day</span><input v-model.number="form.meFullspeedConsumpUlsfo" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速油耗(LSMGO) MT/day</span><input v-model.number="form.meFullspeedConsumpLsmgo" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速油耗(BIO_HSFO) MT/day</span><input v-model.number="form.meFullspeedConsumpBioHsfo" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">主機油耗合計 MT/day</span><input v-model.number="form.meConsumption" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">全速時數 hr</span><input v-model.number="form.hoursFullSpeed" type="number" step="0.1" class="field font-data text-xs" /></label>
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">總時數 hr</span><input v-model.number="form.hoursTotal" type="number" step="0.1" class="field font-data text-xs" /></label>
       </div>
       <p v-if="formError" class="text-xs text-[var(--color-signal-red)]">{{ formError }}</p>
       <div class="flex justify-end gap-2">
@@ -400,7 +434,7 @@ function onRequestSubmitted() {
           class="border rounded-[2px] px-3 py-1.5 text-xs font-display uppercase tracking-wide bg-[var(--color-brass-amber)] text-white border-[var(--color-brass-amber)] hover:opacity-90 transition-opacity"
           @click="submitReport"
         >
-          送出並跑油耗診斷
+          送出
         </button>
       </div>
     </div>
