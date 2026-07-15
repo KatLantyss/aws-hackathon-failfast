@@ -294,7 +294,6 @@ function onRequestSubmitted() {
     <div class="panel p-4 flex flex-col gap-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-2">
-          <PanelTag code="NR-01" />
           <span v-if="data" class="text-xs text-[var(--color-ink-slate)]/50 font-data">
             共 {{ combinedReports.length.toLocaleString() }} 筆{{ filteredReports.length !== combinedReports.length ? `（篩選後 ${filteredReports.length.toLocaleString()} 筆）` : '' }}
             <template v-if="localReports.length">· 含 {{ localReports.length }} 筆本地新增</template>
@@ -330,7 +329,6 @@ function onRequestSubmitted() {
     <div v-if="showForm" class="relative panel p-4 flex flex-col gap-3">
       <DataSourceTag :info="dsReportForm" />
       <div class="flex items-center justify-between">
-        <PanelTag code="NR-02" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">
           新增 Day {{ newDayIndex }} 填報
         </p>
@@ -392,7 +390,6 @@ function onRequestSubmitted() {
     <div v-if="diagnosing || diagnosis || diagnosisError" class="relative panel p-4 flex flex-col gap-3">
       <DataSourceTag :info="dsDiagnosis" />
       <div class="flex items-center justify-between">
-        <PanelTag code="NR-03" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">
           Day {{ submittedDay }} 即時閥值檢查與油耗診斷
         </p>

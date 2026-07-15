@@ -12,7 +12,7 @@ import KpiCard from '@/components/KpiCard.vue'
 import StateDisplay from '@/components/StateDisplay.vue'
 import VesselFocusMap from '@/components/VesselFocusMap.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
-import { formatUsd, STATUS_LABEL } from '@/utils/format'
+import { formatUsd, STATUS_LABEL, URGENCY_COLOR, URGENCY_LABEL } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
@@ -102,114 +102,114 @@ function trendColor(trend: number | null): string {
 
 <template>
   <div class="flex flex-col gap-4">
-    <!-- Basic info + Main diagnostic: Speed Loss (side-by-side) -->
-    <div class="relative grid grid-cols-1 md:grid-cols-[200px_1fr] gap-3">
+    <!-- Top row: Metadata + Main diagnostic -->
+    <div class="relative grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-3">
       <DataSourceTag :info="dsKpiRow1" />
 
-      <!-- Left: Basic info cards -->
-      <div class="flex flex-col gap-2">
-        <div class="px-3 py-2 rounded-[3px] bg-[var(--color-ink-slate)]/5 text-xs font-data">
+      <!-- Left: Compact metadata row -->
+      <div class="flex flex-wrap gap-2 items-center">
+        <div class="px-2.5 py-1.5 rounded-[2px] bg-[var(--color-ink-slate)]/5 text-xs font-data whitespace-nowrap">
           <span class="text-[var(--color-ink-slate)]/60">船型：</span>
-          <span>{{ vessel.shipClass }}</span>
+          <span class="font-semibold">{{ vessel.shipClass }}</span>
         </div>
-        <div v-if="vessel.dataSpanDays" class="px-3 py-2 rounded-[3px] bg-[var(--color-ink-slate)]/5 text-xs font-data">
-          <span class="text-[var(--color-ink-slate)]/60">資料期間：</span>
-          <span>{{ vessel.dataSpanDays }} 天</span>
+        <div v-if="vessel.dataSpanDays" class="px-2.5 py-1.5 rounded-[2px] bg-[var(--color-ink-slate)]/5 text-xs font-data whitespace-nowrap">
+          <span class="text-[var(--color-ink-slate)]/60">資料：</span>
+          <span class="font-semibold">{{ vessel.dataSpanDays }}d</span>
         </div>
-        <div v-if="vessel.totalRecords" class="px-3 py-2 rounded-[3px] bg-[var(--color-ink-slate)]/5 text-xs font-data">
-          <span class="text-[var(--color-ink-slate)]/60">日報筆數：</span>
-          <span>{{ vessel.totalRecords.toLocaleString() }} 筆</span>
+        <div v-if="vessel.totalRecords" class="px-2.5 py-1.5 rounded-[2px] bg-[var(--color-ink-slate)]/5 text-xs font-data whitespace-nowrap">
+          <span class="text-[var(--color-ink-slate)]/60">日報：</span>
+          <span class="font-semibold">{{ vessel.totalRecords.toLocaleString() }}</span>
         </div>
       </div>
 
-      <!-- Right: Speed Loss diagnostic -->
-      <div class="panel p-4 flex items-center gap-6">
-        <FathometerGauge
-          :value="Math.min(100, vessel.speedLossPct * 8)"
-          :grade="vessel.foulingGrade"
-          label="船體污損程度"
-          :display-value="`${vessel.speedLossPct.toFixed(1)}%`"
-        />
-        <div class="flex flex-col gap-2">
-          <div>
-            <p class="font-data text-xs text-[var(--color-ink-slate)]/60 mb-1">趨勢（90天 vs 全期）</p>
-            <p
-              class="font-data font-semibold text-lg"
-              :style="{ color: trendColor(vessel.slipTrend) }"
-            >
-              <template v-if="vessel.slipTrend != null">
-                {{ vessel.slipTrend > 0 ? '+' : '' }}{{ vessel.slipTrend.toFixed(2) }}% {{ trendArrow(vessel.slipTrend) }}
-              </template>
-              <template v-else>—</template>
-            </p>
-          </div>
+      <!-- Right: Speed Loss + Trend compact -->
+      <div class="panel p-3 flex items-center gap-3">
+        <div class="shrink-0">
+          <FathometerGauge
+            :value="Math.min(100, vessel.speedLossPct * 8)"
+            :grade="vessel.foulingGrade"
+            :display-value="`${vessel.speedLossPct.toFixed(1)}%`"
+            size="sm"
+          />
+        </div>
+        <div class="flex flex-col gap-1 min-w-0">
+          <p class="font-data text-xs text-[var(--color-ink-slate)]/60">趨勢</p>
+          <p
+            class="font-data font-semibold text-sm"
+            :style="{ color: trendColor(vessel.speedLossTrend) }"
+          >
+            <template v-if="vessel.speedLossTrend != null">
+              {{ vessel.speedLossTrend > 0 ? '+' : '' }}{{ vessel.speedLossTrend.toFixed(2) }}% {{ trendArrow(vessel.speedLossTrend) }}
+            </template>
+            <template v-else>—</template>
+          </p>
         </div>
       </div>
     </div>
 
-    <!-- Action row: 4 columns -->
+    <!-- Action row: 4 KPI cards -->
     <div class="relative grid grid-cols-2 md:grid-cols-4 gap-3">
       <DataSourceTag :info="dsKpiRow1" />
       <KpiCard
-        label="距上次水下清洗天數"
+        label="距清洗"
         :value="vessel.daysSinceHullClean"
-        :formatter="(n) => `${Math.round(n)} 天`"
+        :formatter="(n) => `${Math.round(n)}d`"
       />
       <KpiCard
-        label="維修急迫度"
+        label="急迫度"
         :value="vessel.maintenanceUrgency"
         :formatter="(v) => URGENCY_LABEL[v]"
         :tone="vessel.maintenanceUrgency === 'HIGH' ? 'red' : vessel.maintenanceUrgency === 'MEDIUM' ? 'amber' : 'green'"
       />
       <KpiCard
-        label="趨勢"
-        :value="vessel.slipTrend"
-        :formatter="(v) => v != null ? `${v > 0 ? '+' : ''}${v.toFixed(2)}% ${trendArrow(v)}` : '—'"
-      />
-      <KpiCard
-        label="超額燃油成本 (USD/天)"
+        label="超額成本"
         :value="vessel.excessFuelCostUsdMtd"
         :formatter="formatUsd"
         tone="red"
       />
+      <KpiCard
+        label="平均油耗"
+        :value="vessel.avgConsumptionMt"
+        :formatter="(n) => n ? `${n.toFixed(1)}MT` : '—'"
+      />
     </div>
 
-    <!-- Reference info: performance averages -->
-    <div class="relative grid grid-cols-2 md:grid-cols-4 gap-3">
+    <!-- Reference info: 1 row -->
+    <div class="relative grid grid-cols-2 lg:grid-cols-5 gap-3">
       <DataSourceTag :info="dsKpiRow2" />
       <div class="panel p-3">
-        <p class="font-display text-[10px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">平均油耗</p>
-        <p class="font-data text-lg tabular-nums">
-          {{ vessel.avgConsumptionMt != null ? vessel.avgConsumptionMt.toFixed(1) : '—' }}
-          <span class="text-xs text-[var(--color-ink-slate)]/60">MT/天</span>
-        </p>
-      </div>
-      <div class="panel p-3" v-if="vessel.avgSfoc">
-        <p class="font-display text-[10px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">平均 SFOC</p>
-        <p class="font-data text-lg tabular-nums">
-          {{ vessel.avgSfoc.toFixed(0) }}
+        <p class="font-display text-[9px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">SFOC</p>
+        <p class="font-data text-base font-semibold">
+          {{ vessel.avgSfoc ? vessel.avgSfoc.toFixed(0) : '—' }}
           <span class="text-xs text-[var(--color-ink-slate)]/60">g/kWh</span>
         </p>
       </div>
-      <div class="panel p-3" v-if="vessel.avgLoadPct">
-        <p class="font-display text-[10px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">平均負載率</p>
-        <p class="font-data text-lg tabular-nums">
-          {{ vessel.avgLoadPct.toFixed(1) }}
+      <div class="panel p-3">
+        <p class="font-display text-[9px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">負載率</p>
+        <p class="font-data text-base font-semibold">
+          {{ vessel.avgLoadPct ? vessel.avgLoadPct.toFixed(1) : '—' }}
           <span class="text-xs text-[var(--color-ink-slate)]/60">% MCR</span>
         </p>
       </div>
-      <div class="panel p-3" v-if="vessel.avgCargoOnBoardMt">
-        <p class="font-display text-[10px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">平均貨載</p>
-        <p class="font-data text-lg tabular-nums">
-          {{ (vessel.avgCargoOnBoardMt / 1000).toFixed(0) }}
+      <div class="panel p-3">
+        <p class="font-display text-[9px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">平均貨載</p>
+        <p class="font-data text-base font-semibold">
+          {{ vessel.avgCargoOnBoardMt ? (vessel.avgCargoOnBoardMt / 1000).toFixed(0) : '—' }}
           <span class="text-xs text-[var(--color-ink-slate)]/60">k MT</span>
         </p>
       </div>
-      <div class="panel p-3" v-if="vessel.totalMaintEvents != null">
-        <p class="font-display text-[10px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">養護事件總數</p>
-        <p class="font-data text-lg tabular-nums">
-          {{ vessel.totalMaintEvents }}
+      <div class="panel p-3">
+        <p class="font-display text-[9px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">養護事件</p>
+        <p class="font-data text-base font-semibold">
+          {{ vessel.totalMaintEvents != null ? vessel.totalMaintEvents : '—' }}
           <span class="text-xs text-[var(--color-ink-slate)]/60">次</span>
+        </p>
+      </div>
+      <div class="panel p-3">
+        <p class="font-display text-[9px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">平均 RPM</p>
+        <p class="font-data text-base font-semibold">
+          {{ vessel.avgRpm ? vessel.avgRpm.toFixed(0) : '—' }}
+          <span class="text-xs text-[var(--color-ink-slate)]/60">rpm</span>
         </p>
       </div>
     </div>
@@ -234,9 +234,6 @@ function trendColor(trend: number | null): string {
           vessel.position.lat.toFixed(2)
         }}, {{ vessel.position.lon.toFixed(2) }}
       </p>
-    </div>
-
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     </div>
   </div>
 </template>
