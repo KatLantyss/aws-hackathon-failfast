@@ -102,40 +102,21 @@ function trendColor(trend: number | null): string {
 
 <template>
   <div class="flex flex-col gap-4">
-    <!-- Top row: Metadata + Main diagnostic -->
-    <div class="relative grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-3">
+    <!-- Speed Loss diagnostic: full width -->
+    <div class="relative">
       <DataSourceTag :info="dsKpiRow1" />
-
-      <!-- Left: Compact metadata row -->
-      <div class="flex flex-wrap gap-2 items-center">
-        <div class="px-2.5 py-1.5 rounded-[2px] bg-[var(--color-ink-slate)]/5 text-xs font-data whitespace-nowrap">
-          <span class="text-[var(--color-ink-slate)]/60">船型：</span>
-          <span class="font-semibold">{{ vessel.shipClass }}</span>
-        </div>
-        <div v-if="vessel.dataSpanDays" class="px-2.5 py-1.5 rounded-[2px] bg-[var(--color-ink-slate)]/5 text-xs font-data whitespace-nowrap">
-          <span class="text-[var(--color-ink-slate)]/60">資料：</span>
-          <span class="font-semibold">{{ vessel.dataSpanDays }}d</span>
-        </div>
-        <div v-if="vessel.totalRecords" class="px-2.5 py-1.5 rounded-[2px] bg-[var(--color-ink-slate)]/5 text-xs font-data whitespace-nowrap">
-          <span class="text-[var(--color-ink-slate)]/60">日報：</span>
-          <span class="font-semibold">{{ vessel.totalRecords.toLocaleString() }}</span>
-        </div>
-      </div>
-
-      <!-- Right: Speed Loss + Trend compact -->
-      <div class="panel p-3 flex items-center gap-3">
+      <div class="panel p-4 flex items-center gap-6">
         <div class="shrink-0">
           <FathometerGauge
             :value="Math.min(100, vessel.speedLossPct * 8)"
             :grade="vessel.foulingGrade"
             :display-value="`${vessel.speedLossPct.toFixed(1)}%`"
-            size="sm"
           />
         </div>
-        <div class="flex flex-col gap-1 min-w-0">
-          <p class="font-data text-xs text-[var(--color-ink-slate)]/60">趨勢</p>
+        <div class="flex flex-col gap-2">
+          <p class="font-data text-xs text-[var(--color-ink-slate)]/60 mb-1">趨勢（90天 vs 全期）</p>
           <p
-            class="font-data font-semibold text-sm"
+            class="font-data font-semibold text-lg"
             :style="{ color: trendColor(vessel.speedLossTrend) }"
           >
             <template v-if="vessel.speedLossTrend != null">
