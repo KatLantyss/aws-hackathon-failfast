@@ -195,18 +195,45 @@ const form = reactive({
 })
 
 function openForm() {
-  const last = combinedReports.value[combinedReports.value.length - 1] ?? null
-  form.voyage = (last?.voyage as number) ?? 0
-  form.avgSpeed = Number((last?.observedSpeedKt || props.vessel.avgSpeedKn || 15).toFixed(1))
-  form.stw = Number((last?.correctedSpeedKt || props.vessel.avgStwKn || form.avgSpeed).toFixed(1))
-  form.meAvgRpm = (last as any)?.rpm ?? 60
-  form.propellerSpeed = (last as any)?.propeller_speed ?? 16
-  form.foreDraft = Number((last?.draftFwd || props.vessel.avgForeDraftM || 13.5).toFixed(1))
-  form.aftDraft = Number((last?.draftAft || props.vessel.avgAftDraftM || 13.5).toFixed(1))
-  form.cargoOnBoard = props.vessel.avgCargoOnBoardMt ?? 0
-  form.windScale = last?.beaufort ?? props.vessel.avgWindScale ?? 3
-  form.seaHeight = props.vessel.avgSeaHeightM ?? 1
-  form.meConsumption = Number((last?.fuelConsumptionMt || props.vessel.avgConsumptionMt || 30).toFixed(1))
+  // Reset form to empty defaults
+  form.voyage = 0
+  form.avgSpeed = 0
+  form.stw = 0
+  form.meAvgRpm = 0
+  form.propellerSpeed = 0
+  form.foreDraft = 0
+  form.aftDraft = 0
+  form.displacement = 0
+  form.cargoOnBoard = 0
+  form.windScale = 0
+  form.seaHeight = 0
+  form.seaWaterTemp = 0
+  form.windSpeed = 0
+  form.windDirection = 0
+  form.swellHeight = 0
+  form.swellDirection = 0
+  form.seaDirection = 0
+  form.waterDepth = 0
+  form.midDraft = 0
+  form.totalDistance = 0
+  form.seaSpeedDistance = 0
+  form.diffStwSog = 0
+  form.fullSpdStwSlip = 0
+  form.horsePower = 0
+  form.loadPct = 0
+  form.sfoc = 0
+  form.meSlip = 0
+  form.thrust = 0
+  form.thrustQuotient = 0
+  form.totalConsump = 0
+  form.meFullspeedConsumpHshfo = 0
+  form.meFullspeedConsumpVlsfo = 0
+  form.meFullspeedConsumpUlsfo = 0
+  form.meFullspeedConsumpLsmgo = 0
+  form.meFullspeedConsumpBioHsfo = 0
+  form.meConsumption = 0
+  form.hoursFullSpeed = 0
+  form.hoursTotal = 0
   formError.value = null
   showForm.value = true
 }
