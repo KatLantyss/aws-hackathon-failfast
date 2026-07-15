@@ -14,6 +14,7 @@
 |------|---------------|------|
 | 船舶航行日報 | `ship-analysis-dev-vessel-data` | 21,282 筆 |
 | 維護事件記錄 | `ship-analysis-dev-maintenance-events` | 77 筆 |
+| 船隊摘要（預計算） | `ship-analysis-dev-fleet-summary` | 15 筆（每船一筆，`build_fleet_summary.py` 產生，`/api/v1/fleet/summary` 用）|
 
 **船舶分類：**
 - 訓練集：S1–S12（12 艘，5 年歷史數據）
@@ -138,33 +139,50 @@ GET /api/v1/vessels/{vessel_id}/noon-reports
 GET /api/v1/vessels/{vessel_id}/speed-loss
 ```
 
-計算每日速度損失。
+`method: "ISO19030_FOC_normalized + STW_RPM_baseline"` — 題目指定的 FOC-based 方法為主指標，另附 ISO 19030 STW 驗證層。篩選條件（題目指定）：`WIND_SCALE ≤ 4`、`HOURS_FULL_SPEED ≥ 22`。
 
-**演算法：**
-1. 取 calm condition（風力 ≤ 3, 浪高 ≤ 1m）的 STW 取中位數作為 **reference speed**
-2. `speed_loss = reference_speed - actual_STW`
-3. 正值 = 慢於基準（效能下降），負值 = 快於基準（正常）
+**Layer 1（FOC-based，主指標，`foc_summary`/`foc_timeline`）：**
+1. `Daily FOC = ME_FULLSPEED_CONSUMP_{當日燃料} 依 LCV 換算 VLSFO 當量 ÷ HOURS_FULL_SPEED × 24`（跟主辦單位公式一致）
+2. 依養護事件（`HULL_CLEAN_TYPES`：DD/UWC/UWC+PP）切出養護週期，每個週期取前段 calm 記錄的 RPM-bin median FOC 當 baseline
+3. `speed_loss_pct = (實際FOC - baseline FOC) / baseline FOC × 100`（下限 0，不允許負的 speed loss）
 
-**Response:**
+**Layer 2（STW-based，ISO 19030 驗證層，`stw_summary`/`stw_timeline`）：** 同一組週期／RPM-bin baseline，改比較 STW：`speed_loss_pct = (baseline STW - 實際STW) / baseline STW × 100`
+
+**Response（節錄）：**
 ```json
 {
   "vessel_id": "S1",
-  "reference_speed": 12.96,
-  "avg_speed_loss_kn": -0.881,
-  "calm_records_used": 464,
-  "timeline": [
-    {
-      "noon_day": 0.0,
-      "voyage": 28.0,
-      "stw": 14.68,
-      "ref_speed": 12.96,
-      "speed_loss": -1.72,
-      "wind_scale": 3.0,
-      "sea_height": null
-    }
+  "method": "ISO19030_FOC_normalized + STW_RPM_baseline",
+  "filter_criteria": { "wind_scale_max": 4, "hours_full_speed_min": 22 },
+  "foc_summary": {
+    "avg_daily_foc_vlsfo": 58.4,
+    "avg_speed_loss_pct": 3.2,
+    "baseline_foc_by_rpm": { "65": 55.1, "70": 60.3 },
+    "valid_records": 1450,
+    "total_records": 1482
+  },
+  "foc_timeline": [
+    { "noon_day": 0.0, "voyage": 28.0, "rpm": 67.2, "stw": 14.68, "daily_foc_vlsfo": 56.05,
+      "baseline_foc": 55.1, "speed_loss_pct": 1.7, "fuel_type": "VLSFO",
+      "hours_full_speed": 23.0, "wind_scale": 3.0, "cargo_on_board": 91791.0,
+      "load_condition": "laden", "maintenance_cycle": 0 }
+  ],
+  "stw_summary": { "avg_speed_loss_pct": 0.9, "baseline_stw_by_rpm": { "65": 14.51 }, "valid_records": 1420 },
+  "stw_timeline": [
+    { "noon_day": 0.0, "voyage": 28.0, "rpm": 67.2, "stw": 14.68, "ref_stw": 14.51,
+      "speed_loss_pct": 0.0, "wind_scale": 3.0, "load_condition": "laden", "maintenance_cycle": 0 }
+  ],
+  "maintenance_cycles": [
+    { "cycle_index": 0, "start_day": 0.0, "end_day": 980.0, "trigger_event": null,
+      "records": 188, "baseline_foc_avg": 52.1, "end_foc_avg": 61.3, "degradation_pct": 17.7 }
   ]
 }
 ```
+
+| 欄位 | 說明 |
+|------|------|
+| `load_condition` | `laden`／`ballast`，依 `CARGO_ON_BOARD` 對船型（W1/W2）門檻值判定 |
+| `maintenance_cycles[].degradation_pct` | 該養護週期從開始到結束，FOC 劣化幅度（%），`trigger_event` 是觸發該週期開始的事件類型 |
 
 ---
 
@@ -174,37 +192,48 @@ GET /api/v1/vessels/{vessel_id}/speed-loss
 GET /api/v1/vessels/{vessel_id}/speed-loss-attribution
 ```
 
-將速度損失分解為 4 個來源。
+`method: "fleet_calibrated_degradation_rate"` — 用**艦隊校準的劣化速率**分開估算船殼、螺旋槳對滑差（`FULL_SPD_STW_SLIP`）的貢獻，取代早期「事件前後 ±30 天快照平均」的做法。
 
-**歸因模型（Heuristic）：**
+**為什麼不是直接比較事件前後的原始資料**：單一事件、單一船的 before/after 快照，會被天候、載重、清潔後試俥等短期操作雜訊嚴重污染——實測過三種改法（天候篩選、RPM 配對、週期邊界快照），「清潔後效能反而變差」這種違反物理常識的比例都還停在 40–60% 區間。真正乾淨的訊號來自把全船隊資料 pool 起來做迴歸：單一船單一週期的 R² 只有 ~0.07（雜訊蓋過趨勢），但把所有訓練船（S1–S12）的資料一起 pool（n>3000）後，船殼、螺旋槳的滑差劣化速率都達到統計顯著。
 
-| 來源 | 計算方式 |
-|------|---------|
-| `weather_loss` | 風力 × 0.04 + 浪高 × 0.08 |
-| `hull_loss` | 距上次 DD（乾塢）天數 × 0.0005（上限 1.5 kn）|
-| `propeller_loss` | ME_SLIP × 0.02 |
-| `other_loss` | 固定 0.1 |
+**艦隊校準（`_fleet_degradation_rates()`，快取，啟動時預熱）：**
+
+1. 取 calm condition（`WIND_SCALE≤4`、`HOURS_FULL_SPEED≥22`）的 `FULL_SPD_STW_SLIP`
+2. 依事件類型切出兩種獨立週期：船殼週期（邊界＝`DD`/`UWC`/`UWC+PP`）、螺旋槳週期（邊界＝`DD`/`PP`/`UWI+PP`/`UWC+PP`）
+3. 每個週期以自己的 baseline（前 ~15%）置中，把「週期內第幾天」vs「相對 baseline 的滑差」這兩個數列，跨全部訓練船 pool 起來做線性迴歸
+4. 斜率（%/30天）即為船隊平均劣化速率；目前實測約：船殼 **0.088%/30天**（t≈12）、螺旋槳 **0.083%/30天**（t≈6），兩者都遠超過 `|t|>2` 顯著性門檻
+
+**單船事件歸因**：`slip_after_pct` 是該次清潔後新週期的**實際觀測**baseline；`slip_delta_pct` = 艦隊劣化速率 × 這次清潔距上次同通道清潔累積的天數（模型推論值，非原始資料比較，因此恆為非負）；`slip_before_pct = slip_after_pct + slip_delta_pct`。`DD`/`UWC+PP` 套用船殼+螺旋槳（category `hull+propeller`）；`UWC` 只套船殼；`PP`/`UWI+PP` 只套螺旋槳；`UWI`（純檢查，無物理介入）不套用任何速率，`before`/`after`/`delta` 皆為 `null`。
 
 **Response:**
 ```json
 {
   "vessel_id": "S1",
-  "summary": {
-    "weather_loss": 0.183,
-    "hull_loss": 0.412,
-    "propeller_loss": 0.201,
-    "other_loss": 0.1,
-    "total_loss": 0.896
+  "method": "fleet_calibrated_degradation_rate",
+  "fleet_calibration": {
+    "hull":      { "slope_per_30d_pct": 0.0877, "t_stat": 12.23, "n_records": 3402, "significant": true },
+    "propeller": { "slope_per_30d_pct": 0.0826, "t_stat": 5.94,  "n_records": 3645, "significant": true },
+    "calibrated_on_vessels": 12,
+    "method": "pooled_linear_regression_calm_slip_vs_days_since_cleaning"
   },
-  "timeline": [
+  "summary": {
+    "hull+propeller": 2.87,
+    "propeller": 0.57
+  },
+  "event_attributions": [
     {
-      "noon_day": 0.0,
-      "weather_loss": 0.12,
-      "hull_loss": 0.0,
-      "propeller_loss": 0.265,
-      "other_loss": 0.1,
-      "total_loss": 0.485
+      "event_type": "DD",
+      "event_day": 981.0,
+      "category": "hull+propeller",
+      "physical_intervention": true,
+      "slip_before_pct": 10.15,
+      "slip_after_pct": 7.28,
+      "slip_delta_pct": 2.87,
+      "notes": "Fleet-rate-modeled improvement: +2.87%"
     }
+  ],
+  "weather_timeline": [
+    { "noon_day": 0.0, "diff_stw_sog": 0.42 }
   ]
 }
 ```
@@ -284,15 +313,26 @@ GET /api/v1/vessels/{vessel_id}/maintenance-recommendation
   "vessel_id": "S1",
   "days_since_maintenance": 21,
   "avg_me_slip_pct": 8.45,
+  "avg_consumption_mt": 58.4,
+  "degradation_rate_pct_per_day": 0.0032,
+  "fuel_price_usd_per_mt": 620,
   "recommendation": "ROUTINE",
   "recommended_type": "UWC",
   "reason": "Scheduled maintenance due (21 days since last event)",
   "last_maintenance": {
     "event_type": "UWI+PP",
     "event_day": 1804.0
-  }
+  },
+  "curve": [
+    { "deferral_days": 0, "projected_slip_pct": 8.45, "cumulative_excess_fuel_cost_usd": 583.2 }
+  ]
 }
 ```
+
+| 欄位 | 說明 |
+|------|------|
+| `degradation_rate_pct_per_day` | 近 90 天 vs 前 90 天平均 slip 的變化率，用來推算未來衰退曲線 |
+| `curve` | 未來 91 天（0–90 天）若不維護，累積超耗油成本的推算曲線，`cumulative_excess_fuel_cost_usd = Σ avg_consumption_mt × (projected_slip_pct/100) × 1.8 × fuel_price_usd_per_mt` |
 
 ---
 
@@ -302,7 +342,7 @@ GET /api/v1/vessels/{vessel_id}/maintenance-recommendation
 GET /api/v1/fleet/ranking
 ```
 
-以 speed loss 排名訓練船（S1–S12）。排名越前 = 效能越好（損失越少）。
+以 `FULL_SPD_STW_SLIP`（0–30% 有效值）平均排名訓練船（S1–S12）。`avg_slip_pct` 越低 = 效能越好，排名越前。
 
 **Response:**
 ```json
@@ -312,14 +352,57 @@ GET /api/v1/fleet/ranking
     {
       "rank": 1,
       "vessel_id": "S3",
-      "avg_speed_loss_kn": -2.14,
-      "avg_me_slip_pct": 7.82,
+      "avg_slip_pct": 7.82,
+      "recent_90d_slip_pct": 7.4,
+      "slip_trend": -0.42,
       "avg_consumption_mt": 52.3,
-      "records": 1521
+      "valid_slip_records": 1490,
+      "total_records": 1521
     }
   ]
 }
 ```
+
+| 欄位 | 說明 |
+|------|------|
+| `recent_90d_slip_pct` | 最近 90 筆有效 slip 資料的平均 |
+| `slip_trend` | `recent_90d_slip_pct - avg_slip_pct`，正值 = 近期比全期均值差（效能在衰退）|
+
+---
+
+### 船隊摘要（Dashboard 用）
+
+```
+GET /api/v1/fleet/summary
+```
+
+單次呼叫回傳整個船隊（15 艘）的彙總 KPI + 逐船摘要，給 Dashboard 總覽頁用。優先讀 `ship-analysis-dev-fleet-summary` 表（`build_fleet_summary.py` 預計算寫入，啟動時預熱）；該表讀取失敗或為空時才即時用 DynamoDB 原始資料現算（欄位較少）；若連現算都對全部船失敗（例如憑證過期），回傳 `502` 而非假裝資料是空的 `200`。
+
+**Response（節錄）：**
+```json
+{
+  "total_vessels": 15,
+  "training_vessels": 12,
+  "prediction_vessels": 3,
+  "pending_maintenance": 4,
+  "avg_fleet_slip_pct": 8.1,
+  "total_excess_fuel_cost_usd_per_day": 3120.5,
+  "worst_vessel": { "vessel_id": "S7", "avg_slip_pct": 12.3, "urgency": "HIGH" },
+  "per_vessel": [
+    {
+      "vessel_id": "S1", "type": "training", "ship_class": "W1",
+      "avg_slip_pct": 8.12, "recent_90d_slip_pct": 7.9, "slip_trend": -0.22,
+      "avg_consumption_mt": 58.4, "urgency": "MEDIUM",
+      "days_since_maintenance": 21, "days_since_hull_clean": 21, "days_since_prop_polish": 21,
+      "excess_fuel_cost_usd_per_day": 583.2,
+      "lat": 24.1, "lon": 121.7, "heading_deg": 88.0, "speed_kt": 14.2,
+      "total_records": 1482, "total_voyages": 22, "rank": 3
+    }
+  ]
+}
+```
+
+`urgency`（`LOW`/`MEDIUM`/`HIGH`）：`recent_90d_slip_pct`（或退回 `avg_slip_pct`）≥10 或距上次維護>365天 → `HIGH`；≥6 或 >270天 → `MEDIUM`；其餘 `LOW`。`excess_fuel_cost_usd_per_day = avg_consumption_mt × (slip%/100) × 1.8 × 620`（VLSFO 假設單價 USD 620/噸）。
 
 ---
 
@@ -440,7 +523,7 @@ curl -X POST $BASE/api/v1/predict/fuel-consumption \
 ## 快速測試
 
 ```bash
-BASE="https://4rh4qj5e3i.execute-api.us-east-1.amazonaws.com/dev"
+BASE="https://d1yvzz0da29zvi.cloudfront.net"   # 生產。本機測試改用 http://localhost:8000
 
 # Health
 curl $BASE/health
@@ -456,6 +539,9 @@ curl $BASE/api/v1/vessels/S1/maintenance-events
 
 # 船隊排名
 curl $BASE/api/v1/fleet/ranking
+
+# 船隊摘要（Dashboard 總覽用）
+curl $BASE/api/v1/fleet/summary
 
 # 燃油預測 — noon_day lookup（推薦）
 curl -X POST $BASE/api/v1/predict/fuel-consumption \
