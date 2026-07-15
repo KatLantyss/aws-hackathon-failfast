@@ -54,8 +54,6 @@ const dayFrom = ref<number | null>(null)
 const dayTo = ref<number | null>(null)
 const maxBeaufort = ref(9)
 const onlyCalmSeas = ref(false)
-const showBallast = ref(true)
-const showLaden = ref(true)
 const compareLastCycle = ref(false)
 const xAxisMode = ref<'day' | 'daysSinceClean'>('day')
 const chartReady = ref(false)
@@ -94,8 +92,6 @@ function withinFilters(r: NoonReportEntry) {
   if (dayTo.value != null && r.day > dayTo.value) return false
   if (r.beaufort > maxBeaufort.value) return false
   if (onlyCalmSeas.value && r.beaufort > 3) return false
-  if (r.loadCondition === 'ballast' && !showBallast.value) return false
-  if (r.loadCondition === 'laden' && !showLaden.value) return false
   return true
 }
 
@@ -105,14 +101,9 @@ function xValue(r: NoonReportEntry) {
   return xAxisMode.value === 'day' ? r.day : r.day - currentCycleStart.value
 }
 
-const scatterBallast = computed(() =>
+const scatterData = computed(() =>
   filteredReports.value
-    .filter((r) => r.loadCondition === 'ballast' && r.speedLossPct != null)
-    .map((r) => [xValue(r), r.speedLossPct, r]),
-)
-const scatterLaden = computed(() =>
-  filteredReports.value
-    .filter((r) => r.loadCondition === 'laden' && r.speedLossPct != null)
+    .filter((r) => r.speedLossPct != null)
     .map((r) => [xValue(r), r.speedLossPct, r]),
 )
 
@@ -188,7 +179,7 @@ const chartOption = computed(() => {
     legend: {
       top: 8,
       textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 12, color: c.inkSlate },
-      data: ['Ballast', 'Laden', '污損趨勢擬合', '乾淨船體基準', ...(compareLastCycle.value ? ['上次清洗週期'] : [])],
+      data: ['Speed Loss', '污損趨勢擬合', '乾淨船體基準', ...(compareLastCycle.value ? ['上次清洗週期'] : [])],
     },
     tooltip: {
       trigger: 'item',
@@ -196,15 +187,9 @@ const chartOption = computed(() => {
       borderWidth: 0,
       textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
       formatter: (p: any) => {
-        if (p.seriesName === 'Ballast' || p.seriesName === 'Laden') {
+        if (p.seriesName === 'Speed Loss') {
           const r: NoonReportEntry = p.data[2]
-          // No fuel figure here: the speed-loss endpoint this chart is built
-          // from doesn't return consumption, so there's nothing real to show
-          // (a hardcoded 0 was previously displayed here, which looked real
-          // but wasn't — see docs/frontend-backend-integration-status.html §7).
-          return `<b>Day ${r.day}</b><br/>Speed Loss ${r.speedLossPct.toFixed(1)}%<br/>海況 BF${r.beaufort} · ${
-            r.loadCondition === 'laden' ? '滿載' : '壓載'
-          }`
+          return `<b>Day ${r.day}</b><br/>Speed Loss ${r.speedLossPct.toFixed(1)}%<br/>海況 BF${r.beaufort}`
         }
         return `${p.seriesName}: ${Array.isArray(p.value) ? Number(p.value[1]).toFixed(2) : p.value}%`
       },
@@ -246,20 +231,12 @@ const chartOption = computed(() => {
     ],
     series: [
       {
-        name: 'Ballast',
+        name: 'Speed Loss',
         type: 'scatter',
         symbol: 'circle',
-        symbolSize: 7,
+        symbolSize: 6,
         itemStyle: { color: c.brassAmber, opacity: 0.8 },
-        data: scatterBallast.value,
-      },
-      {
-        name: 'Laden',
-        type: 'scatter',
-        symbol: 'diamond',
-        symbolSize: 8,
-        itemStyle: { color: c.inkSlate, opacity: 0.8 },
-        data: scatterLaden.value,
+        data: scatterData.value,
       },
       {
         name: '污損趨勢擬合',
@@ -338,14 +315,6 @@ const chartOption = computed(() => {
       <label class="flex items-center gap-2">
         <input v-model="onlyCalmSeas" type="checkbox" class="accent-[var(--color-brass-amber)]" />
         <span class="text-xs">僅顯示 Beaufort ≤ 3</span>
-      </label>
-      <label class="flex items-center gap-2">
-        <input v-model="showBallast" type="checkbox" class="accent-[var(--color-brass-amber)]" />
-        <span class="text-xs">Ballast</span>
-      </label>
-      <label class="flex items-center gap-2">
-        <input v-model="showLaden" type="checkbox" class="accent-[var(--color-brass-amber)]" />
-        <span class="text-xs">Laden</span>
       </label>
       <button
         class="border rounded-[2px] px-3 py-1.5 text-xs font-display uppercase tracking-wide transition-colors"
