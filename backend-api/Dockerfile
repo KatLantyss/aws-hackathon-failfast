@@ -15,7 +15,8 @@ RUN pip install --no-cache-dir \
     "xgboost[cpu]==2.1.4" \
     lightgbm==4.6.0 \
     scikit-learn==1.6.1 \
-    numpy==1.26.4
+    "numpy>=2" \
+    shap==0.52.0
 
 # Copy application files
 COPY handler.py app.py ./
