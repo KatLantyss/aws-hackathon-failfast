@@ -59,14 +59,14 @@ const tabs = computed(() => [
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
   { to: `/vessels/${props.imo}/inspections`, label: '維護紀錄', name: 'vessel-inspections' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
-  // Renamed back to "油耗歸因" (2026-07): now backed by GET
-  // /vessels/{id}/fuel-anomaly-cause — a baseline model blind to maintenance
-  // state predicts expected daily fuel consumption from operating
-  // conditions; SHAP decomposes each anomalous day's actual-vs-expected gap
-  // into hull/propeller/weather contributions. This is a real fuel-based
-  // attribution (see notebooks/anomaly_analysis.ipynb §6-9), not the
-  // speed-loss-attribution (slip%) this tab used to show.
-  { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因', name: 'vessel-fuel-attribution' },
+  // Renamed to "Speed Loss 歸因" (2026-07): page now leads with
+  // GET /vessels/{id}/speed-loss-attribution — ISO 19030-framed % of Speed
+  // Loss attributable to hull vs. propeller fouling, fleet-calibrated
+  // degradation rate (see handler.py _fleet_degradation_rates). The
+  // fuel-anomaly-cause section (SHAP $ ROI breakdown) stays below it on the
+  // same page — same underlying FOC signal, different currency ($ vs
+  // speed-loss %), both kept since they answer different rubric criteria.
+  { to: `/vessels/${props.imo}/fuel-attribution`, label: 'Speed Loss 歸因', name: 'vessel-fuel-attribution' },
   { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
   { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析', name: 'vessel-maintenance-correlation' },
 ])
@@ -154,6 +154,17 @@ const tabs = computed(() => [
         <span v-if="vessel.lastEventType" class="font-data text-xs text-[var(--color-ink-slate)]/50">
           · 最後養護：{{ vessel.lastEventType }}
         </span>
+
+        <span
+          v-if="vessel.recommendedAction"
+          class="font-semibold text-sm px-2.5 py-0.5 rounded-[3px] ml-2"
+          style="color: var(--color-signal-red); background: color-mix(in srgb, var(--color-signal-red) 14%, transparent)"
+        >建議動作：{{ vessel.recommendedAction }}</span>
+        <span
+          v-if="vessel.ddDue"
+          class="font-semibold text-sm px-2.5 py-0.5 rounded-[3px]"
+          style="color: var(--color-signal-red); background: color-mix(in srgb, var(--color-signal-red) 14%, transparent)"
+        >DD 已到期</span>
       </div>
 
       <MaintenanceRequestModal
