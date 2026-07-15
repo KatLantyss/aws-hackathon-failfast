@@ -32,6 +32,29 @@ const EVENT_LABEL: Record<string, string> = {
 function eventColor(type: string) { return EVENT_COLOR[type] ?? '#888' }
 function eventLabel(type: string) { return EVENT_LABEL[type] ?? type }
 
+// 計算線性回歸線（預測衰退趨勢）
+function calculateRegressionLine(data: Array<[number, number | null]>) {
+  const validPoints = data.filter(([_, y]) => y !== null) as Array<[number, number]>
+  if (validPoints.length < 2) return []
+
+  const n = validPoints.length
+  const sumX = validPoints.reduce((s, [x]) => s + x, 0)
+  const sumY = validPoints.reduce((s, [, y]) => s + y, 0)
+  const sumXY = validPoints.reduce((s, [x, y]) => s + x * y, 0)
+  const sumX2 = validPoints.reduce((s, [x]) => s + x * x, 0)
+
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX)
+  const intercept = (sumY - slope * sumX) / n
+
+  const minX = Math.min(...validPoints.map(([x]) => x))
+  const maxX = Math.max(...validPoints.map(([x]) => x))
+
+  return [
+    [minX, intercept + slope * minX],
+    [maxX, intercept + slope * maxX],
+  ]
+}
+
 // ── 視圖 1：Speed Loss 趨勢圖 ─────────────────────────────────────────────────
 const trendOption = computed(() => {
   if (!data.value) return {}
@@ -41,6 +64,7 @@ const trendOption = computed(() => {
   const events = data.value.events
 
   const smoothLine = smooth.filter(s => s[1] !== null).map(s => [s[0], s[1]])
+  const regressionLine = calculateRegressionLine(smooth)
 
   const markLineData = events.map(ev => ({
     xAxis: ev.day,
@@ -101,6 +125,15 @@ const trendOption = computed(() => {
         connectNulls: false,
         z: 3,
         markLine: { symbol: 'none', silent: false, data: markLineData },
+      },
+      {
+        name: '衰退趨勢線 (線性回歸)',
+        type: 'line',
+        data: regressionLine,
+        lineStyle: { width: 1.5, color: c.brassAmber, type: 'dashed' },
+        itemStyle: { color: c.brassAmber },
+        symbol: 'none',
+        z: 2,
       },
     ],
   }
