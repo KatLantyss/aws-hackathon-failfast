@@ -62,19 +62,38 @@ const dsResult: DataSourceInfo = {
   ],
 }
 
+async function loadSpeedLossFallback(vesselId: string) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      getSpeedLoss(vesselId),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('取得舊版 speed-loss 基準資料逾時，請稍後再試。')), 15_000)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 async function selectBaseline(vesselId: string) {
-  // Some deployed API versions do not yet include HOURS_FULL_SPEED in their
-  // noon-report response. The existing speed-loss response includes the same
-  // steady-state rows, so join it by noon_day as a backwards-compatible source.
-  const [reports, speedLoss] = await Promise.all([getNoonReports(vesselId), getSpeedLoss(vesselId)])
-  const speedLossRows = Array.isArray(speedLoss.slip_timeline)
-    ? speedLoss.slip_timeline
-    : (speedLoss as unknown as { foc_timeline?: Array<{ noon_day: number; hours_full_speed: number | null }> }).foc_timeline ?? []
-  const hoursByNoonDay = new Map(
-    speedLossRows
-      .filter((point) => point.hours_full_speed != null)
-      .map((point) => [point.noon_day, point.hours_full_speed] as const),
-  )
+  const reports = await getNoonReports(vesselId)
+  let hoursByNoonDay = new Map<number, number>()
+
+  // Newer APIs include HOURS_FULL_SPEED in noon reports. Avoid an expensive
+  // speed-loss request in the normal path; only query it for old deployments.
+  if (!reports.records.some((report) => report.hours_full_speed != null)) {
+    const speedLoss = await loadSpeedLossFallback(vesselId)
+    const speedLossRows = Array.isArray(speedLoss.slip_timeline)
+      ? speedLoss.slip_timeline
+      : (speedLoss as unknown as { foc_timeline?: Array<{ noon_day: number; hours_full_speed: number | null }> }).foc_timeline ?? []
+    hoursByNoonDay = new Map(
+      speedLossRows
+        .filter((point) => point.hours_full_speed != null)
+        .map((point) => [point.noon_day, point.hours_full_speed] as const),
+    )
+  }
+
   const eligible = reports.records
     .map((report) => ({
       report,
