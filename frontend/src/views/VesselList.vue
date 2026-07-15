@@ -19,7 +19,7 @@ const dsTable: DataSourceInfo = {
   description: '整張表格與展開列全部來自單一 fleet/summary 呼叫（per_vessel 陣列），沒有額外前端計算——盤點的 9 個頁面中還原度最高的一頁。',
   fields: [
     { ui: '船型', source: 'ship_class', note: '缺值時才 fallback 用前端寫死的 W1_SHIPS/W2_SHIPS 陣列猜測' },
-    { ui: 'Speed Loss % / 趨勢', source: 'recent_90d_slip_pct（或 avg_slip_pct）/ slip_trend' },
+    { ui: 'Speed Loss % / 趨勢', source: 'latest_speed_loss_pct（或 avg_speed_loss_pct）/ speed_loss_trend' },
     { ui: '平均油耗 / RPM / SFOC / 負載率', source: 'avg_consumption_mt / avg_rpm / avg_sfoc / avg_load_pct' },
     { ui: '距上次清洗 / 拋光 (天)', source: 'days_since_hull_clean / days_since_prop_polish' },
     { ui: '超額成本 (USD/天)', source: 'excess_fuel_cost_usd_per_day' },
@@ -39,7 +39,7 @@ const vesselNames = computed(() => {
 
 // ── Sort ──────────────────────────────────────────────────────────────────────
 type SortField =
-  | 'name' | 'shipClass' | 'speedLossPct' | 'slipTrend'
+  | 'name' | 'shipClass' | 'speedLossPct' | 'speedLossTrend'
   | 'avgConsumptionMt' | 'avgRpm' | 'daysSinceHullClean'
   | 'daysSincePropPolish' | 'excessFuelCostUsdMtd' | 'maintenanceUrgency'
   | 'totalRecords' | 'totalMaintEvents'
@@ -101,9 +101,9 @@ const rows = computed<VesselSummary[]>(() => {
         aVal = urgencyRank[a.maintenanceUrgency] ?? 0
         bVal = urgencyRank[b.maintenanceUrgency] ?? 0
         break
-      case 'slipTrend':
-        aVal = a.slipTrend ?? 0
-        bVal = b.slipTrend ?? 0
+      case 'speedLossTrend':
+        aVal = a.speedLossTrend ?? 0
+        bVal = b.speedLossTrend ?? 0
         break
       case 'daysSincePropPolish':
         aVal = a.daysSincePropPolish ?? 0
@@ -204,8 +204,8 @@ function cleanDayColor(days: number): string {
             <!-- 4 趨勢 -->
             <th
               class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
-              @click="toggleSort('slipTrend')"
-            >趨勢{{ sortIcon('slipTrend') }}</th>
+              @click="toggleSort('speedLossTrend')"
+            >趨勢{{ sortIcon('speedLossTrend') }}</th>
             <!-- 5 平均油耗 -->
             <th
               class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
@@ -271,10 +271,10 @@ function cleanDayColor(days: number): string {
 
               <!-- 4 趨勢 -->
               <td class="px-3 py-3 font-data text-right tabular-nums">
-                <span :style="{ color: trendColor(v.slipTrend) }">
-                  {{ trendArrow(v.slipTrend) }}
-                  <template v-if="v.slipTrend != null">
-                    {{ v.slipTrend > 0 ? '+' : '' }}{{ v.slipTrend.toFixed(2) }}
+                <span :style="{ color: trendColor(v.speedLossTrend) }">
+                  {{ trendArrow(v.speedLossTrend) }}
+                  <template v-if="v.speedLossTrend != null">
+                    {{ v.speedLossTrend > 0 ? '+' : '' }}{{ v.speedLossTrend.toFixed(2) }}
                   </template>
                 </span>
               </td>
@@ -357,8 +357,8 @@ function cleanDayColor(days: number): string {
                       <p>{{ v.lastHullCleanType ?? '—' }}</p>
                     </div>
                     <div>
-                      <p class="text-[var(--color-ink-muted)] mb-0.5">全期 avg slip</p>
-                      <p class="tabular-nums">{{ v.avgSlipPct?.toFixed(2) ?? '—' }} %</p>
+                      <p class="text-[var(--color-ink-muted)] mb-0.5">近90天平均</p>
+                      <p class="tabular-nums">{{ v.avgSpeedLossPct?.toFixed(2) ?? '—' }} %</p>
                     </div>
                   </div>
                 </div>

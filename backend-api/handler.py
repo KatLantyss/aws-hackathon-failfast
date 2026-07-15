@@ -27,6 +27,8 @@ from boto3.dynamodb.conditions import Key
 import lightgbm  # Required to deserialize the v5 LightGBM ensemble member.
 import numpy as np
 import pandas as pd
+import shap
+from sklearn.ensemble import RandomForestRegressor
 
 # ── Model loading (module-level: loaded once per Lambda container) ────────────
 _MODEL_BUNDLE = None
@@ -62,16 +64,50 @@ PROP_POLISH_TYPES = {'DD', 'PP', 'UWI+PP', 'UWC+PP'}
 # Effective maintenance (any physical intervention, not pure inspection)
 EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}
 
+# Fuel LCV constants (MJ/kg) — used to convert whichever fuel a day used into
+# a VLSFO-equivalent Daily FOC (competition-specified formula).
+FUEL_LCV = {
+    'ME_FULLSPEED_CONSUMP_HSHFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_ULSFO': 41.2,
+    'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
+    'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
+}
+LCV_VLSFO = 40.2
+FUEL_COLS = list(FUEL_LCV.keys())
+
+
+def get_daily_foc(r):
+    """Daily FOC (VLSFO-equivalent, normalized to 24h) for one noon-report
+    row, or (None, None) if the row doesn't qualify (not full-speed, no
+    valid fuel column)."""
+    hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
+    if hfs < 22:
+        return None, None
+    best_col, best_val = None, 0
+    for fc in FUEL_COLS:
+        v = safe_float(r.get(fc), 0)
+        if v > best_val:
+            best_val, best_col = v, fc
+    if best_col is None or best_val <= 0:
+        return None, None
+    lcv = FUEL_LCV.get(best_col, LCV_VLSFO)
+    vlsfo_equiv = best_val * lcv / LCV_VLSFO
+    daily_foc = vlsfo_equiv / hfs * 24.0
+    return round(daily_foc, 2), best_col.replace('ME_FULLSPEED_CONSUMP_', '')
+
 # ── DynamoDB setup ──────────────────────────────────────────────────────────
 REGION          = os.environ.get('AWS_REGION', 'us-east-1')
 VESSEL_TABLE         = os.environ.get('VESSEL_TABLE',        'ship-analysis-dev-vessel-data')
 MAINT_TABLE          = os.environ.get('MAINT_TABLE',         'ship-analysis-dev-maintenance-events')
 FLEET_SUMMARY_TABLE  = os.environ.get('FLEET_SUMMARY_TABLE', 'ship-analysis-dev-fleet-summary')
+FUEL_ANOMALY_TABLE   = os.environ.get('FUEL_ANOMALY_TABLE',  'ship-analysis-dev-fuel-anomaly-cause')
 
 ddb = boto3.resource('dynamodb', region_name=REGION)
 vessel_tbl       = ddb.Table(VESSEL_TABLE)
 maint_tbl        = ddb.Table(MAINT_TABLE)
 fleet_summary_tbl = ddb.Table(FLEET_SUMMARY_TABLE)
+fuel_anomaly_tbl  = ddb.Table(FUEL_ANOMALY_TABLE)
 
 # Pre-load model on cold start (best-effort; errors surface at predict time)
 try:
@@ -134,6 +170,21 @@ def _warmup_cache():
     try:
         get_fleet_summary({})
         get_fleet_ranking({})
+    except Exception:
+        pass
+
+    # Prime the fleet-wide degradation-rate calibration used by
+    # speed-loss-attribution — it pools all 12 training vessels' data, so
+    # without this the first attribution request pays that full cost.
+    try:
+        _fleet_degradation_rates()
+    except Exception:
+        pass
+
+    # Prime the fuel-anomaly-cause fleet models (two RandomForests + a SHAP
+    # explainer, fit on all 12 training vessels) — same reasoning as above.
+    try:
+        _fleet_fuel_anomaly_models()
     except Exception:
         pass
 
@@ -270,6 +321,8 @@ def route(event, context):
             return get_maintenance_events(vessel_id, event)
         if sub == 'maintenance-recommendation':
             return get_maintenance_recommendation(vessel_id, event)
+        if sub == 'fuel-anomaly-cause':
+            return get_fuel_anomaly_cause(vessel_id, event)
 
     # /api/v1/fleet/ranking
     if path == '/api/v1/fleet/ranking':
@@ -400,17 +453,6 @@ def get_speed_loss(vessel_id, event):
 
     maint = query_maintenance(vessel_id)
 
-    # ── Fuel LCV constants (MJ/kg) ───────────────────────────────────────
-    FUEL_LCV = {
-        'ME_FULLSPEED_CONSUMP_HSHFO': 40.2,
-        'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
-        'ME_FULLSPEED_CONSUMP_ULSFO': 41.2,
-        'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
-        'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
-    }
-    LCV_VLSFO = 40.2
-    FUEL_COLS = list(FUEL_LCV.keys())
-
     # W1 capacity ~110,000 DWT, W2 ~85,000 DWT — ballast threshold ~20%
     W1_BALLAST_THRESHOLD = 22000
     W2_BALLAST_THRESHOLD = 17000
@@ -434,35 +476,8 @@ def get_speed_loss(vessel_id, event):
         return idx
 
     # ── Filter rows: calm condition per competition spec ──────────────────
-    def get_daily_foc(r):
-        """Calculate Daily FOC in VLSFO equivalent, normalized to 24h."""
-        hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
-        if hfs < 22:
-            return None, None
-
-        # Find primary fuel (largest consumption value)
-        best_col = None
-        best_val = 0
-        for fc in FUEL_COLS:
-            v = safe_float(r.get(fc), 0)
-            if v > best_val:
-                best_val = v
-                best_col = fc
-
-        if best_col is None or best_val <= 0:
-            return None, None
-
-        # Convert to VLSFO equivalent via LCV
-        lcv = FUEL_LCV.get(best_col, LCV_VLSFO)
-        vlsfo_equiv = best_val * lcv / LCV_VLSFO
-
-        # Normalize to 24-hour basis (competition formula)
-        daily_foc = vlsfo_equiv / hfs * 24.0
-
-        # Fuel type short name
-        fuel_short = best_col.replace('ME_FULLSPEED_CONSUMP_', '')
-
-        return round(daily_foc, 2), fuel_short
+    # get_daily_foc is the module-level helper (shared with
+    # _fleet_degradation_rates / get_speed_loss_attribution).
 
     # Build filtered dataset
     calm_rows = []
@@ -682,18 +697,643 @@ def get_speed_loss(vessel_id, event):
     })
 
 
+def _calm_slip_series(vessel_id):
+    """FULL_SPD_STW_SLIP series filtered to calm/steady-state days (same
+    criteria as get_speed_loss(): WIND_SCALE ≤ 4, HOURS_FULL_SPEED ≥ 22),
+    sorted by day. This is a propeller-condition metric (theoretical vs.
+    actual advance per revolution) — used for the propeller channel."""
+    recs = []
+    for r in query_vessel(vessel_id):
+        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
+        day  = safe_float(r.get('NOON_UTC'))
+        ws   = safe_float(r.get('WIND_SCALE'))
+        hfs  = safe_float(r.get('HOURS_FULL_SPEED'))
+        if slip is None or day is None or not (0 <= slip <= 30):
+            continue
+        if ws is None or hfs is None or ws > 4 or hfs < 22:
+            continue
+        recs.append((day, slip))
+    recs.sort()
+    return recs
+
+
+def _calm_foc_series(vessel_id):
+    """Daily FOC (VLSFO-equivalent, same as get_speed_loss()'s Layer 1)
+    filtered to calm/steady-state days. FOC is driven by total resistance —
+    hull fouling's actual physical signature (same RPM needs more fuel to
+    push through a dirtier hull) — used for the hull channel. FULL_SPD_STW_SLIP
+    is a propeller-advance-efficiency metric, not a hull-resistance metric,
+    so it's the wrong variable to calibrate hull degradation against even
+    though it was the one originally used here."""
+    recs = []
+    for r in query_vessel(vessel_id):
+        day = safe_float(r.get('NOON_UTC'))
+        ws  = safe_float(r.get('WIND_SCALE'))
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'))
+        if day is None or ws is None or hfs is None or ws > 4 or hfs < 22:
+            continue
+        foc, _fuel = get_daily_foc(r)
+        if foc is None or foc < 10:
+            continue
+        recs.append((day, foc))
+    recs.sort()
+    return recs
+
+
+def _cycle_index(day, boundaries):
+    idx = 0
+    for b in boundaries:
+        if day >= b:
+            idx += 1
+    return idx
+
+
+def _fleet_degradation_rates():
+    """Fleet-calibrated hull / propeller degradation rate, pooled across all
+    12 training vessels — hull uses Daily FOC (Speed-Loss-equivalent, %
+    relative to each cycle's own baseline), propeller uses FULL_SPD_STW_SLIP
+    (percentage points relative to baseline). Different metrics on purpose:
+    slip is a propeller-advance-efficiency indicator, FOC/resistance is the
+    hull-fouling signature — using slip for both would silently attribute
+    hull degradation to the wrong physical quantity.
+
+    Why pooled instead of per-ship/per-event: a single ship's single
+    maintenance cycle is dominated by day-to-day operational noise (R² ~0.07
+    fitting either metric vs. days-since-cleaning per cycle — the trend is
+    real but weak relative to noise). Pooling thousands of calm-condition
+    records per channel across the whole fleet turns that weak per-cycle
+    signal into a statistically solid population-level rate: hull
+    ~0.7%/30d (t≈8), propeller ~0.083%/30d (t≈6) — both far past the |t|>2
+    significance bar. (The hull figure lines up with the ~20%/severe-fouling
+    order of magnitude the competition brief itself cites for hull/propeller
+    over a multi-year neglected cycle.) This is the number that actually
+    answers "how much of speed loss is attributable to hull vs. propeller
+    fouling", not any single event's noisy before/after snapshot.
+
+    Each cycle is centered on its own baseline (mean of its first ~15%)
+    before pooling, so ship-to-ship absolute-level differences don't bias
+    the pooled slope — only the *shape* of degradation over elapsed days
+    contributes. Cached (queries all 12 training vessels).
+    """
+    cache_key = 'fleet:degradation_rates'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    TRAIN_VESSELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12']
+
+    def pooled_rate(type_set, series_fn, relative):
+        """relative=True: pool (value-baseline)/baseline*100 (FOC, cross-ship/
+        cross-fuel scale varies so normalize to % of baseline). relative=False:
+        pool value-baseline directly (slip is already a percentage, its own
+        scale is comparable across ships)."""
+        pooled_x, pooled_y = [], []
+        for vid in TRAIN_VESSELS:
+            recs  = series_fn(vid)
+            maint = query_maintenance(vid)
+            boundaries = sorted(
+                safe_float(m.get('event_day'), 0)
+                for m in maint if str(m.get('event_type', '')) in type_set
+            )
+            cycles = defaultdict(list)
+            for day, val in recs:
+                cycles[_cycle_index(day, boundaries)].append((day, val))
+
+            for idx, cyc in cycles.items():
+                if idx == 0 or len(cyc) < 10:
+                    continue  # skip unanchored first cycle + too-sparse cycles
+                cyc.sort()
+                start_day = boundaries[idx - 1]
+                n_base = max(3, len(cyc) // 7)
+                baseline = mean([v for _, v in cyc[:n_base]])
+                if relative and baseline == 0:
+                    continue
+                for d, v in cyc:
+                    pooled_x.append(d - start_day)
+                    pooled_y.append((v - baseline) / baseline * 100 if relative else v - baseline)
+
+        n = len(pooled_x)
+        if n < 30:
+            return {'slope_per_30d_pct': None, 't_stat': None, 'n_records': n, 'significant': False}
+
+        mx, my = mean(pooled_x), mean(pooled_y)
+        sxx = sum((x - mx) ** 2 for x in pooled_x)
+        if sxx == 0:
+            return {'slope_per_30d_pct': None, 't_stat': None, 'n_records': n, 'significant': False}
+        sxy   = sum((x - mx) * (y - my) for x, y in zip(pooled_x, pooled_y))
+        slope = sxy / sxx
+        intercept = my - slope * mx
+        resid = [y - (slope * x + intercept) for x, y in zip(pooled_x, pooled_y)]
+        mse = sum(r ** 2 for r in resid) / (n - 2)
+        se_slope = math.sqrt(mse / sxx)
+        t_stat = slope / se_slope if se_slope else None
+
+        return {
+            'slope_per_30d_pct': round(slope * 30, 4),
+            't_stat':            round(t_stat, 2) if t_stat else None,
+            'n_records':         n,
+            'significant':       bool(t_stat and abs(t_stat) > 2),
+        }
+
+    result = {
+        'hull': {
+            **pooled_rate(HULL_CLEAN_TYPES, _calm_foc_series, relative=True),
+            'metric': 'speed_loss_pct_foc_relative_to_cycle_baseline',
+        },
+        'propeller': {
+            **pooled_rate(PROP_POLISH_TYPES, _calm_slip_series, relative=False),
+            'metric': 'full_spd_stw_slip_pct_points',
+        },
+        'calibrated_on_vessels': len(TRAIN_VESSELS),
+        'method': 'pooled_linear_regression_vs_days_since_cleaning',
+    }
+    _cache_set(cache_key, result)
+    return result
+
+
+# ── Fuel anomaly root-cause classification ─────────────────────────────────
+# Ported from notebooks/anomaly_analysis.ipynb §6-9: a baseline model that
+# only sees operating conditions predicts "expected" daily fuel consumption;
+# the gap between actual and expected (residual) is what a second model +
+# SHAP decompose into hull / propeller / weather contributions, per day.
+
+FUEL_ANOMALY_OP_FEATURES = [
+    'ME_AVG_RPM', 'SPEED_THROUGH_WATER', 'AVG_SPEED', 'FORE_DRAFT', 'AFTER_DRAFT',
+    'CARGO_ON_BOARD', 'WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP',
+]
+FUEL_ANOMALY_CAUSE_FEATURES = [
+    'days_since_hull_clean', 'days_since_prop_polish', 'propeller_condition_code',
+    'WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP',
+]
+FUEL_ANOMALY_CAUSE_GROUPS = {
+    '船殼汙損': ['days_since_hull_clean'],
+    '螺旋槳汙損': ['days_since_prop_polish', 'propeller_condition_code'],
+    '天候': ['WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP'],
+}
+FUEL_ANOMALY_THRESHOLD_PCT = 15
+PROPELLER_CONDITION_CODE = {'Poor': 0, 'Fair': 1, 'Good': 2, 'Unknown': -1}
+
+# 船殼/螺旋槳汙損可以靠排程維護（清船殼、拋光螺旋槳）處理，天候不行——
+# ROI 估算只把「可維修」根因算進省下的油耗，天候造成的異常天數只統計不計入 $。
+FUEL_ANOMALY_MAINTAINABLE_CAUSES = {'船殼汙損', '螺旋槳汙損'}
+
+# 觀察到的 DD（Dry Dock）週期：10 艘訓練船的 DD 事件都落在 event_day 769–985
+# （平均 ~877），且每一筆 DD 紀錄的 propeller_condition/hull_fouling_type/
+# hull_coating_condition/cavitation_found 全部是空的——代表 DD 在這份資料裡是
+# 船級社定期特檢週期，不是被觀測到的船況觸發的。跟 PP/UWC 不同，沒有任何船況
+# 訊號可以拿來從油耗異常歸因推論「該不該排 DD」，只能用固定週期提醒。
+FLEET_DD_INTERVAL_DAYS = 877
+
+
+def _recommend_maintenance_action(hull_confident_days, propeller_confident_days):
+    """PP/UWC/UWC+PP 直接對應到已經判定出的根因——船殼汙損就該 UWC、螺旋槳
+    汙損就該 PP，這是物理上固定的映射，不是另外學一個分類器。真正不確定、
+    需要模型判斷的是「根因是什麼」（cause_model 的 SHAP 分解），這裡只是把
+    結果轉成動作。DD 不適用這套推論，見 FLEET_DD_INTERVAL_DAYS 說明。"""
+    if hull_confident_days and propeller_confident_days:
+        return 'UWC+PP'
+    if hull_confident_days:
+        return 'UWC'
+    if propeller_confident_days:
+        return 'PP'
+    return None
+
+
+def _days_since_maint_type(maint_rows, noon_day, type_set):
+    """Days since the most recent maintenance event whose type is in
+    type_set, as of noon_day. No prior event of that type → treat noon_day
+    itself as the elapsed count (same fallback as get_speed_loss_attribution)."""
+    prior_days = [
+        safe_float(m.get('event_day'), 0) for m in maint_rows
+        if str(m.get('event_type', '')) in type_set and safe_float(m.get('event_day'), 1e18) <= noon_day
+    ]
+    return (noon_day - max(prior_days)) if prior_days else noon_day
+
+
+def _last_propeller_condition(maint_rows, noon_day):
+    prior = [m for m in maint_rows if safe_float(m.get('event_day'), 1e18) <= noon_day and m.get('propeller_condition')]
+    if not prior:
+        return 'Unknown'
+    last = max(prior, key=lambda m: safe_float(m.get('event_day'), 0))
+    return last.get('propeller_condition') or 'Unknown'
+
+
+def _fuel_anomaly_rows(vessel_id, rows=None, maint_rows=None):
+    """Build the per-day feature table (operating conditions + maintenance-
+    derived cause features + daily_foc) for one vessel's calm-condition days.
+    Shared by fleet model training and per-vessel inference so both use the
+    exact same feature definitions."""
+    rows = query_vessel(vessel_id) if rows is None else rows
+    maint_rows = query_maintenance(vessel_id) if maint_rows is None else maint_rows
+
+    out = []
+    for r in rows:
+        ws  = safe_float(r.get('WIND_SCALE'))
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'))
+        day = safe_float(r.get('NOON_UTC'))
+        if ws is None or hfs is None or day is None or ws > 4 or hfs < 22:
+            continue
+        daily_foc, _fuel = get_daily_foc(r)
+        if daily_foc is None or daily_foc < 10:
+            continue
+
+        op_vals = {f: safe_float(r.get(f)) for f in FUEL_ANOMALY_OP_FEATURES}
+        if any(v is None for v in op_vals.values()):
+            continue
+
+        prop_cond = _last_propeller_condition(maint_rows, day)
+        row = {
+            'noon_day': day,
+            'daily_foc': daily_foc,
+            'days_since_hull_clean':  _days_since_maint_type(maint_rows, day, HULL_CLEAN_TYPES),
+            'days_since_prop_polish': _days_since_maint_type(maint_rows, day, PROP_POLISH_TYPES),
+            'propeller_condition_code': PROPELLER_CONDITION_CODE.get(prop_cond, -1),
+            **op_vals,
+        }
+        out.append(row)
+    return out
+
+
+def _fleet_fuel_anomaly_models():
+    """Fleet-calibrated fuel-anomaly models, cached (queries all 12 training
+    vessels — expensive, don't recompute per request):
+
+    1. baseline_model: operating conditions (RPM/STW/draft/cargo/weather) →
+       daily_foc. Deliberately blind to maintenance state, so its residual
+       (actual − predicted) is attributable to whatever it *can't* see.
+    2. cause_model: maintenance + weather features → residual_pct. Its SHAP
+       values decompose each anomalous day's residual into hull/propeller/
+       weather contributions.
+    """
+    cache_key = 'fleet:fuel_anomaly_models'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    TRAIN_VESSELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12']
+    all_rows = []
+    for vid in TRAIN_VESSELS:
+        all_rows.extend(_fuel_anomaly_rows(vid))
+
+    if len(all_rows) < 50:
+        result = {'baseline_model': None, 'cause_model': None, 'explainer': None, 'r2': None, 'n_records': len(all_rows)}
+        _cache_set(cache_key, result)
+        return result
+
+    df = pd.DataFrame(all_rows)
+
+    X_op = df[FUEL_ANOMALY_OP_FEATURES]
+    y = df['daily_foc']
+    baseline_model = RandomForestRegressor(n_estimators=300, max_depth=8, random_state=42, n_jobs=-1)
+    baseline_model.fit(X_op, y)
+    # In-sample R² — a quick sanity check this cache entry is healthy, not a
+    # held-out validation metric (the notebook's train/test split is what's
+    # used to actually validate the method; see notebooks/anomaly_analysis.ipynb).
+    r2 = float(baseline_model.score(X_op, y))
+
+    df['predicted_foc'] = baseline_model.predict(X_op)
+    df['residual_pct'] = (df['daily_foc'] - df['predicted_foc']) / df['predicted_foc'] * 100
+
+    X_cause = df[FUEL_ANOMALY_CAUSE_FEATURES]
+    cause_model = RandomForestRegressor(n_estimators=300, max_depth=6, random_state=42, n_jobs=-1)
+    cause_model.fit(X_cause, df['residual_pct'])
+    explainer = shap.TreeExplainer(cause_model)
+
+    result = {
+        'baseline_model': baseline_model,
+        'cause_model': cause_model,
+        'explainer': explainer,
+        'r2': round(r2, 4),
+        'n_records': len(df),
+        'calibrated_on_vessels': len(TRAIN_VESSELS),
+    }
+    _cache_set(cache_key, result)
+    return result
+
+
+def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
+    """Split anomaly days into 可維修 (hull/propeller — actionable via a
+    cleaning/drydock schedule) vs 天候 (not actionable), and estimate the $
+    upside of fixing the maintainable share.
+
+    Only confident (`cause_model_agrees`), over-consuming (`direction=='over'`)
+    maintainable-cause days count toward the $ estimate — weather-driven or
+    unconfident days aren't something a maintenance schedule can fix, and
+    'under' days aren't excess consumption to begin with. The per-day excess
+    is spread across `total_days_analyzed` (not just the anomaly days) to get
+    an average daily waste rate representative of the whole observed period,
+    then annualized and priced the same way as predict_fuel()'s counterfactual
+    (`_calculate_energy_pricing`), so the $ figure is comparable across
+    endpoints.
+
+    `anomaly_items` — list of dicts with normalized keys: primary_cause,
+    direction, cause_model_agrees, daily_foc_actual, daily_foc_expected.
+    """
+    maintainable_days = 0
+    maintainable_confident_days = 0
+    hull_confident_days = 0
+    propeller_confident_days = 0
+    weather_days = 0
+    weather_confident_days = 0
+    excess_mt_total = 0.0
+
+    for it in anomaly_items:
+        cause = it.get('primary_cause')
+        agrees = bool(it.get('cause_model_agrees'))
+        if cause in FUEL_ANOMALY_MAINTAINABLE_CAUSES:
+            maintainable_days += 1
+            if agrees:
+                maintainable_confident_days += 1
+                if cause == '船殼汙損':
+                    hull_confident_days += 1
+                elif cause == '螺旋槳汙損':
+                    propeller_confident_days += 1
+                if it.get('direction') == 'over':
+                    actual = safe_float(it.get('daily_foc_actual'), 0.0)
+                    expected = safe_float(it.get('daily_foc_expected'), 0.0)
+                    excess_mt_total += max(0.0, actual - expected)
+        elif cause == '天候':
+            weather_days += 1
+            if agrees:
+                weather_confident_days += 1
+
+    avg_excess_mt_per_day = (excess_mt_total / total_days_analyzed) if total_days_analyzed else 0.0
+    pricing = _calculate_energy_pricing(avg_excess_mt_per_day, 'VLSFO_equivalent', LCV_VLSFO)
+
+    return {
+        'maintainable_vs_weather': {
+            'maintainable_days': maintainable_days,
+            'maintainable_confident_days': maintainable_confident_days,
+            'weather_days': weather_days,
+            'weather_confident_days': weather_confident_days,
+        },
+        'recommended_action': _recommend_maintenance_action(hull_confident_days, propeller_confident_days),
+        'roi': {
+            'avg_excess_fuel_mt_per_day': round(avg_excess_mt_per_day, 3),
+            'annual_excess_fuel_mt': round(avg_excess_mt_per_day * SEA_DAYS_PER_YEAR, 1),
+            'annual_saving_usd_if_fixed': pricing['annual_saving_usd'],
+            'basis': 'confident, over-consuming, maintainable-cause (hull/propeller) days only; weather excluded',
+            'energy_pricing': pricing,
+        },
+    }
+
+
+def _fuel_anomaly_from_precomputed(vessel_id, limit):
+    """Try the precomputed table first (populated by
+    precompute_fuel_anomaly.py directly from CSV — deliberately bypasses
+    query_vessel()/the vessel-data table, which has duplicate noon-report
+    items from an earlier double-upload). Returns None if the table is
+    empty/unavailable for this vessel, so the caller falls back to live
+    computation."""
+    try:
+        resp_page = fuel_anomaly_tbl.query(
+            KeyConditionExpression=Key('vessel_id').eq(vessel_id),
+            ScanIndexForward=False,  # newest noon_day first
+        )
+        items = resp_page.get('Items', [])
+    except Exception:
+        return None
+    if not items:
+        return None
+
+    # noon_day=-1 is a sentinel meta item (see precompute_fuel_anomaly.py)
+    # holding fleet-wide stats that don't fit the per-day anomaly shape.
+    meta = next((it for it in items if safe_float(it.get('noon_day')) == -1), None)
+    items = [it for it in items if safe_float(it.get('noon_day')) != -1]
+
+    cause_breakdown: dict = {}
+    confident_cause_breakdown: dict = {}
+    for it in items:
+        cause = it.get('primary_cause')
+        if cause:
+            cause_breakdown[cause] = cause_breakdown.get(cause, 0) + 1
+            if it.get('cause_model_agrees'):
+                confident_cause_breakdown[cause] = confident_cause_breakdown.get(cause, 0) + 1
+
+    total_days_analyzed = int(safe_float(meta.get('total_days_analyzed'), 0)) if meta else 0
+    roi = _fuel_anomaly_roi(items, total_days_analyzed)
+
+    anomalies_out = [{
+        'noon_day': safe_float(it.get('noon_day')),
+        'daily_foc_actual': safe_float(it.get('daily_foc_actual')),
+        'daily_foc_expected': safe_float(it.get('daily_foc_expected')),
+        'residual_pct': safe_float(it.get('residual_pct')),
+        'direction': it.get('direction'),
+        'primary_cause': it.get('primary_cause'),
+        'primary_cause_contribution_pct': safe_float(it.get('primary_cause_contribution_pct')),
+        'cause_model_agrees': bool(it.get('cause_model_agrees')) if it.get('cause_model_agrees') is not None else None,
+        'days_since_hull_clean': int(safe_float(it.get('days_since_hull_clean'), 0)),
+        'days_since_prop_polish': int(safe_float(it.get('days_since_prop_polish'), 0)),
+    } for it in items[:limit]]
+
+    return resp(200, {
+        'vessel_id': vessel_id,
+        'method': 'residual_shap_classification_precomputed',
+        'baseline_model_r2': safe_float(meta.get('baseline_model_r2')) if meta else None,
+        'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
+        'summary': {
+            'total_days_analyzed': total_days_analyzed,
+            'anomaly_days': len(items),
+            'cause_breakdown': cause_breakdown,
+            'confident_cause_breakdown': confident_cause_breakdown,
+            **roi,
+        },
+        'anomalies': anomalies_out,
+    })
+
+
+def get_fuel_anomaly_cause(vessel_id, event):
+    """
+    每日油耗異常根因分類：先用只看操作條件的模型算出「這個操作條件下預期油耗」，
+    殘差（實際−預期）超過門檻的日子視為異常，再用 SHAP 把殘差拆解成船殼/螺旋槳/
+    天候三類貢獻，取貢獻最大的當這一天的主因。方法完整推導見
+    notebooks/anomaly_analysis.ipynb §6-9。
+
+    優先讀 ship-analysis-dev-fuel-anomaly-cause 表（precompute_fuel_anomaly.py
+    直接從 CSV 算出、批次寫入，繞開 vessel-data 表現有的重複資料問題）；
+    表是空的（還沒跑過批次腳本）才即時計算。
+    """
+    qs = event.get('queryStringParameters') or {}
+    try:
+        limit = int(qs.get('limit', 20))
+    except (TypeError, ValueError):
+        limit = 20
+
+    precomputed = _fuel_anomaly_from_precomputed(vessel_id, limit)
+    if precomputed is not None:
+        return precomputed
+
+    rows = query_vessel(vessel_id)
+    if not rows:
+        return err(404, f'Vessel {vessel_id} not found')
+    maint_rows = query_maintenance(vessel_id)
+
+    models = _fleet_fuel_anomaly_models()
+    if models['baseline_model'] is None:
+        return err(502, 'fuel-anomaly-cause: fleet models unavailable (insufficient calibration data)')
+
+    qs = event.get('queryStringParameters') or {}
+    try:
+        limit = int(qs.get('limit', 20))
+    except (TypeError, ValueError):
+        limit = 20
+
+    vessel_rows = _fuel_anomaly_rows(vessel_id, rows=rows, maint_rows=maint_rows)
+    if not vessel_rows:
+        return resp(200, {
+            'vessel_id': vessel_id, 'method': 'residual_shap_classification',
+            'baseline_model_r2': models['r2'], 'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
+            'summary': {
+                'total_days_analyzed': 0, 'anomaly_days': 0, 'cause_breakdown': {},
+                'confident_cause_breakdown': {}, **_fuel_anomaly_roi([], 0),
+            },
+            'anomalies': [],
+        })
+
+    df = pd.DataFrame(vessel_rows)
+    X_op = df[FUEL_ANOMALY_OP_FEATURES]
+    df['predicted_foc'] = models['baseline_model'].predict(X_op)
+    df['residual_pct'] = (df['daily_foc'] - df['predicted_foc']) / df['predicted_foc'] * 100
+    df['direction'] = np.select(
+        [df['residual_pct'] > FUEL_ANOMALY_THRESHOLD_PCT, df['residual_pct'] < -FUEL_ANOMALY_THRESHOLD_PCT],
+        ['over', 'under'], default='normal',
+    )
+
+    anomalies_df = df[df['direction'] != 'normal'].copy()
+    cause_breakdown = {}
+    confident_cause_breakdown = {}
+    if len(anomalies_df):
+        X_cause = anomalies_df[FUEL_ANOMALY_CAUSE_FEATURES]
+        # cause_model 自己對 residual_pct 的預測值（= SHAP 貢獻加總 + base_value）。
+        # 這是「候選根因特徵能解釋的部分」，不等於 baseline_model 算出的真實
+        # residual_pct——cause_model 不是完美模型，兩者方向可能不一致，尤其
+        # 天候雜訊大的天。方向一致時 primary_cause 才可信，用
+        # cause_model_agrees 明確標示，不要讓不一致的分類悄悄混進統計。
+        cause_model_pred = models['cause_model'].predict(X_cause)
+        anomalies_df['cause_model_predicted_residual_pct'] = cause_model_pred
+        anomalies_df['cause_model_agrees'] = np.sign(cause_model_pred) == np.sign(anomalies_df['residual_pct'])
+
+        shap_values = models['explainer'].shap_values(X_cause)
+        shap_df = pd.DataFrame(shap_values, columns=FUEL_ANOMALY_CAUSE_FEATURES, index=anomalies_df.index)
+        group_shap = pd.DataFrame({
+            group: shap_df[cols].sum(axis=1) for group, cols in FUEL_ANOMALY_CAUSE_GROUPS.items()
+        })
+        # 對「燒太多」(over) 是貢獻最正的那組主導；對「燒太少」(under) 是貢獻
+        # 最負的那組（把預期往下拉最多）主導——兩者統一用「絕對值最大」判斷，
+        # 用 apply 逐列找出來，比矩陣花式索引直覺、不怕 index/位置對不齊。
+        primary_cause = group_shap.abs().idxmax(axis=1)
+        primary_cause_shap = group_shap.apply(lambda row: row[primary_cause[row.name]], axis=1)
+        anomalies_df['primary_cause'] = primary_cause
+        anomalies_df['primary_cause_shap'] = primary_cause_shap
+        cause_breakdown = anomalies_df['primary_cause'].value_counts().to_dict()
+        confident_cause_breakdown = anomalies_df.loc[anomalies_df['cause_model_agrees'], 'primary_cause'].value_counts().to_dict()
+
+    # ROI 要用「全部異常天」算，不能被下面的 limit 截斷影響（截斷只是給
+    # anomalies[] 顯示用的，summary/ROI 要反映完整分析區間）。
+    roi_items = [{
+        'primary_cause': r.get('primary_cause'),
+        'direction': r['direction'],
+        'cause_model_agrees': bool(r.get('cause_model_agrees', False)),
+        'daily_foc_actual': r['daily_foc'],
+        'daily_foc_expected': r.get('predicted_foc'),
+    } for _, r in anomalies_df.iterrows()]
+    roi = _fuel_anomaly_roi(roi_items, len(df))
+
+    anomalies_df = anomalies_df.sort_values('noon_day', ascending=False).head(limit)
+
+    anomalies_out = []
+    for _, r in anomalies_df.iterrows():
+        anomalies_out.append({
+            'noon_day': r['noon_day'],
+            'daily_foc_actual': round(r['daily_foc'], 2),
+            'daily_foc_expected': round(r['predicted_foc'], 2),
+            'residual_pct': round(r['residual_pct'], 2),
+            'direction': r['direction'],
+            'primary_cause': r.get('primary_cause'),
+            'primary_cause_contribution_pct': round(r['primary_cause_shap'], 2) if 'primary_cause_shap' in r else None,
+            'cause_model_agrees': bool(r['cause_model_agrees']) if 'cause_model_agrees' in r else None,
+            'days_since_hull_clean': round(r['days_since_hull_clean']),
+            'days_since_prop_polish': round(r['days_since_prop_polish']),
+        })
+
+    return resp(200, {
+        'vessel_id': vessel_id,
+        'method': 'residual_shap_classification',
+        'baseline_model_r2': models['r2'],
+        'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
+        'summary': {
+            'total_days_analyzed': len(df),
+            'anomaly_days': len(df[df['direction'] != 'normal']),
+            'cause_breakdown': cause_breakdown,
+            'confident_cause_breakdown': confident_cause_breakdown,
+            **roi,
+        },
+        'anomalies': anomalies_out,
+    })
+
+
+def _vessel_excess_fuel_mt_per_day(vessel_id, rows=None, maint_rows=None):
+    """Model-grounded current excess fuel rate (MT/day) for one vessel:
+    average of (actual − baseline-model-expected) daily FOC over its most
+    recent qualifying (calm-condition) days, floored at 0.
+
+    Replaces the old `avg_consumption_mt * (slip% / 100) * 1.8` heuristic —
+    that 1.8 multiplier has no documented derivation anywhere in the repo
+    (checked git blame back to the commit that introduced it); this uses the
+    same baseline model as get_fuel_anomaly_cause() instead, so "excess fuel"
+    means the same thing everywhere in the API. Returns None if there isn't
+    enough calm-condition data to compute it.
+    """
+    models = _fleet_fuel_anomaly_models()
+    if models['baseline_model'] is None:
+        return None
+
+    vessel_rows = _fuel_anomaly_rows(vessel_id, rows=rows, maint_rows=maint_rows)
+    if not vessel_rows:
+        return None
+
+    df = pd.DataFrame(vessel_rows).sort_values('noon_day')
+    recent = df.tail(90)  # same 90-day recency window used elsewhere in this file
+    predicted = models['baseline_model'].predict(recent[FUEL_ANOMALY_OP_FEATURES])
+    residual_mt = recent['daily_foc'].to_numpy() - predicted
+    return max(0.0, float(np.mean(residual_mt)))
+
+
 def get_speed_loss_attribution(vessel_id, event):
     """
-    Speed Loss 歸因分析：基於養護事件前後 FULL_SPD_STW_SLIP 的實際差值。
+    Speed Loss 歸因分析：用「艦隊校準劣化速率」模型分開估算船殼與螺旋槳個別
+    貢獻，取代舊版「事件前後 ±30 天快照平均」的做法。船殼、螺旋槳用不同物理量：
+
+    - 船殼通道：Daily FOC（跟 get_speed_loss() Layer 1 同一套，VLSFO 當量）—
+      船殼阻力的直接訊號是「同轉速下要燒更多油」，不是滑差。
+    - 螺旋槳通道：FULL_SPD_STW_SLIP（螺旋槳理論前進 vs 實際前進的差）— 這才是
+      滑差真正對應的物理量。
+
+    （這兩個通道原本都用滑差校準，是錯的——滑差本質是螺旋槳效率指標，拿它去
+    估算船殼貢獻，物理上量錯東西了。）
+
+    為什麼要換方法（而不是原始事件前後直接比較）：單一事件、單一船的
+    before/after 快照比較，被短期操作雜訊（天候、載重、清潔後試俥等）嚴重
+    污染——實測過三種改法（天候篩選、RPM 配對、週期邊界快照），「清潔後效能
+    反而變差」這種違反物理常識的比例都還停在 40-60% 區間。真正乾淨的訊號，
+    是把全船隊的資料 pool 起來做迴歸（見 `_fleet_degradation_rates()`）：
+    單一週期的 R² 只有 ~0.07（雜訊蓋過趨勢），但 pool 起來後 n>3000，兩個
+    通道的劣化速率都達到統計顯著（|t|>2）。
 
     邏輯：
-    - DD (乾塢) → hull + propeller 同時恢復
-    - UWC / UWC+PP → hull cleaning 效果
-    - PP / UWI+PP  → propeller polishing 效果
-    - UWI          → 純檢查，理論上無改善（用來驗證模型）
-    - weather      → DIFF_STW_SOG_SLIP（洋流/天候代理）
+    - 船殼：`slip_after_pct`（欄位名稱沿用舊 schema，實際代表 speed-loss %）
+      固定為 0（清潔後即為該週期自己的基準，定義上是 0%）；`slip_before_pct`＝
+      船隊船殼速率 × 這次清潔距上次船殼清潔累積的天數（模型推論的speed loss%）；
+      `slip_delta_pct` 等於 `slip_before_pct`。
+    - 螺旋槳：`slip_after_pct`＝清潔後新週期實際觀測到的滑差 baseline（真實
+      資料錨點）；`slip_before_pct`＝該值加上船隊螺旋槳速率 × 累積天數；
+      `slip_delta_pct`＝累積量。
+    - DD/UWC+PP → 船殼+螺旋槳速率都套用；UWC → 只套船殼；PP/UWI+PP → 只套
+      螺旋槳；UWI（純檢查）→ 不套用任何速率，維持「不該有改善」。
+    - 每筆額外回傳 `metric` 欄位標示這筆數字實際單位（船殼是 speed-loss %、
+      螺旋槳是 slip 百分點），避免誤讀成同一種量。
 
-    每個事件計算前後 30 天的 avg slip 差值，正值 = 改善（slip 下降）。
+    weather：DIFF_STW_SOG_SLIP（洋流/天候代理），跟養護事件無關，維持原樣。
     """
     rows  = query_vessel(vessel_id)
     maint = query_maintenance(vessel_id)
@@ -701,36 +1341,76 @@ def get_speed_loss_attribution(vessel_id, event):
     if not rows:
         return err(404, f'Vessel {vessel_id} not found')
 
-    # 有效 slip 資料（0–30%）
-    slip_map = {}  # noon_day → slip_pct
-    for r in rows:
-        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
-        day  = safe_float(r.get('NOON_UTC'))
-        if slip is not None and 0 <= slip <= 30 and day is not None:
-            slip_map[day] = slip
+    rates = _fleet_degradation_rates()
+    hull_rate = rates['hull']['slope_per_30d_pct']
+    prop_rate = rates['propeller']['slope_per_30d_pct']
 
-    def avg_slip_in_window(start, end):
-        vals = [v for d, v in slip_map.items() if start <= d <= end]
-        return round(mean(vals), 2) if len(vals) >= 3 else None
+    hull_series = _calm_foc_series(vessel_id)
+    prop_series = _calm_slip_series(vessel_id)
+
+    MIN_CYCLE_RECORDS = 6
+
+    def cycle_events_and_boundaries(type_set):
+        trigger_events = sorted(
+            [m for m in maint if str(m.get('event_type', '')) in type_set],
+            key=lambda x: safe_float(x.get('event_day'), 0),
+        )
+        boundaries = [safe_float(m.get('event_day'), 0) for m in trigger_events]
+        return trigger_events, boundaries
+
+    def observed_baselines(series, boundaries):
+        """Observed baseline (mean of first ~15%) per cycle, keyed by cycle index."""
+        buckets = defaultdict(list)
+        for day, val in series:
+            buckets[_cycle_index(day, boundaries)].append((day, val))
+        baselines = {}
+        for idx, records in buckets.items():
+            if len(records) < MIN_CYCLE_RECORDS:
+                continue
+            n_base = max(3, len(records) // 7)
+            baselines[idx] = mean([v for _, v in records[:n_base]])
+        return baselines
+
+    hull_events, hull_boundaries = cycle_events_and_boundaries(HULL_CLEAN_TYPES)
+    prop_events, prop_boundaries = cycle_events_and_boundaries(PROP_POLISH_TYPES)
+    prop_baselines = observed_baselines(prop_series, prop_boundaries)
+    # Hull cycles only need to know which cycles have *enough* records to
+    # trust — the FOC baseline value itself isn't used (hull "after" is
+    # defined as 0%, its own cycle's baseline by construction).
+    hull_has_enough_data = set(observed_baselines(hull_series, hull_boundaries).keys())
+
+    def estimate_hull(target_day):
+        """Hull: after = 0% (this cycle's own baseline, by definition);
+        before = fleet hull rate × days since prior hull-clean (modeled
+        Speed-Loss-% accumulated, FOC-based, not slip)."""
+        idx = next((i for i, m in enumerate(hull_events)
+                    if safe_float(m.get('event_day'), 0) == target_day), None)
+        if idx is None or hull_rate is None or (idx + 1) not in hull_has_enough_data:
+            return None, None
+        days_accumulated = target_day - (hull_boundaries[idx - 1] if idx > 0 else 0.0)
+        before = round(hull_rate / 30.0 * days_accumulated, 2)
+        return before, 0.0
+
+    def estimate_propeller(target_day):
+        """Propeller: after = observed post-clean slip baseline (real data
+        anchor); before = after + fleet propeller rate × days accumulated."""
+        idx = next((i for i, m in enumerate(prop_events)
+                    if safe_float(m.get('event_day'), 0) == target_day), None)
+        if idx is None or prop_rate is None:
+            return None, None
+        after = prop_baselines.get(idx + 1)
+        if after is None:
+            return None, None
+        days_accumulated = target_day - (prop_boundaries[idx - 1] if idx > 0 else 0.0)
+        before = round(after + prop_rate / 30.0 * days_accumulated, 2)
+        return before, round(after, 2)
 
     # 養護事件歸因
-    WINDOW = 30
     event_attributions = []
     for m in sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0)):
         day   = safe_float(m.get('event_day'), 0)
         etype = str(m.get('event_type', ''))
 
-        before = avg_slip_in_window(day - WINDOW, day)
-        after  = avg_slip_in_window(day, day + WINDOW)
-
-        if before is None or after is None:
-            delta = None
-            physical = False
-        else:
-            delta    = round(before - after, 2)   # 正值 = 改善（slip 降低）
-            physical = 'UWI' not in etype or 'PP' in etype or 'UWC' in etype or 'DD' in etype
-
-        # 歸因分類
         if 'DD' in etype:
             category = 'hull+propeller'
         elif 'UWC' in etype and 'PP' in etype:
@@ -740,22 +1420,39 @@ def get_speed_loss_attribution(vessel_id, event):
         elif 'PP' in etype:
             category = 'propeller'
         elif etype == 'UWI':
-            category = 'inspection_only'  # 不應有改善
+            category = 'inspection_only'  # 不應有改善，不套用任何速率
         else:
             category = 'other'
+
+        if category in ('hull', 'hull+propeller'):
+            before, after = estimate_hull(day)
+            metric = 'speed_loss_pct_foc'
+        elif category == 'propeller':
+            before, after = estimate_propeller(day)
+            metric = 'slip_pct_points'
+        else:
+            before, after, metric = None, None, None
+
+        if before is None or after is None:
+            delta = None
+            physical = False
+        else:
+            delta    = round(before - after, 2)   # 正值 = 改善，模型推論恆非負
+            physical = category != 'inspection_only'
 
         event_attributions.append({
             'event_type':     etype,
             'event_day':      day,
             'category':       category,
             'physical_intervention': physical,
+            'metric':          metric,
             'slip_before_pct': before,
             'slip_after_pct':  after,
             'slip_delta_pct':  delta,   # 正值 = 改善
             'notes': (
                 'No physical intervention expected' if etype == 'UWI'
-                else f'Expected improvement: {delta:+.2f}%' if delta is not None
-                else 'Insufficient data'
+                else f'Fleet-rate-modeled improvement: {delta:+.2f}% ({metric})' if delta is not None
+                else 'Insufficient data (cycle too short/sparse, or first event with no prior anchor)'
             ),
         })
 
@@ -780,7 +1477,8 @@ def get_speed_loss_attribution(vessel_id, event):
 
     return resp(200, {
         'vessel_id':   vessel_id,
-        'method':      'maintenance_event_before_after_slip_delta',
+        'method':      'fleet_calibrated_degradation_rate',
+        'fleet_calibration': rates,
         'summary':     summary,
         'event_attributions': event_attributions,
         'weather_timeline': weather_timeline[:200],  # 限制回傳量
@@ -824,8 +1522,8 @@ def get_maintenance_recommendation(vessel_id, event):
     slips = recent_numeric(recent, 'ME_SLIP')
     avg_slip = round(mean(slips), 2) if slips else None
 
-    # Prior 90-day window, same recent-vs-prior methodology as slip_trend in
-    # build_fleet_summary.py, to get a real degradation rate (not a guess).
+    # Prior 90-day window, same recent-vs-prior methodology as speed_loss_trend
+    # in build_fleet_summary.py, to get a real degradation rate (not a guess).
     prior = rows_sorted[-180:-90] if len(rows_sorted) > 90 else []
     prior_slips = recent_numeric(prior, 'ME_SLIP')
     avg_prior_slip = round(mean(prior_slips), 2) if prior_slips else None
@@ -834,22 +1532,30 @@ def get_maintenance_recommendation(vessel_id, event):
         if avg_slip is not None and avg_prior_slip is not None else 0.0
     )
 
-    # Real average fuel consumption for this vessel (MT/day). Combined with the
-    # same baseline*slip%*1.8*FUEL_PRICE methodology used in
-    # build_fleet_summary.py for excess_fuel_cost_usd_per_day, this projects a
-    # cumulative excess-fuel-cost curve if maintenance is deferred — no
-    # per-event cleaning/opportunity cost is included since that data doesn't
-    # exist anywhere in the dataset.
+    # Real average fuel consumption for this vessel (MT/day), used only for
+    # display — the projection curve below is anchored to a model-derived
+    # excess rate, not a slip%-based guess.
     cons_list = recent_numeric(recent, 'ME_CONSUMPTION')
     avg_consumption_mt = round(mean(cons_list), 2) if cons_list else None
 
+    # Current excess fuel rate (MT/day), from the same baseline model as
+    # get_fuel_anomaly_cause() — replaces the old avg_consumption_mt *
+    # (slip%/100) * 1.8 heuristic, whose 1.8 multiplier has no documented
+    # derivation anywhere in this repo's history.
+    current_excess_mt_per_day = _vessel_excess_fuel_mt_per_day(vessel_id, rows=rows, maint_rows=maint)
+
     FUEL_PRICE = 620
     curve = []
-    if avg_slip is not None and avg_consumption_mt is not None:
+    if avg_slip is not None and current_excess_mt_per_day is not None:
         cumulative = 0.0
         for d in range(91):
             projected_slip = max(0.0, avg_slip + degradation_rate_pct_per_day * d)
-            excess_per_day = avg_consumption_mt * (projected_slip / 100) * 1.8 * FUEL_PRICE
+            # Excess fuel is assumed to scale with projected slip relative to
+            # today's slip (same degradation trend as the rest of this curve);
+            # the anchor value itself — how much excess *today* — comes from
+            # the model, not a fixed multiplier.
+            scale = (projected_slip / avg_slip) if avg_slip > 0 else 1.0
+            excess_per_day = current_excess_mt_per_day * scale * FUEL_PRICE
             cumulative += excess_per_day
             curve.append({
                 'deferral_days':                   d,
@@ -864,6 +1570,13 @@ def get_maintenance_recommendation(vessel_id, event):
     latest_day = safe_float(recent[-1].get('NOON_UTC'), 0) if recent else 0
     days_since = latest_day - last_day
 
+    # DD 用最近一次「DD 事件」本身算,不是最近一次任意類型維護——DD 走固定
+    # 週期(見 FLEET_DD_INTERVAL_DAYS),跟 PP/UWC 的觸發條件不是同一回事。
+    dd_events     = [m for m in all_maint if 'DD' in str(m.get('event_type', ''))]
+    last_dd_day   = safe_float(dd_events[-1].get('event_day'), 0) if dd_events else 0
+    days_since_dd = latest_day - last_dd_day
+    dd_due        = days_since_dd >= FLEET_DD_INTERVAL_DAYS
+
     # Simple rule: recommend if slip > 10% or days since last > 365
     urgent = (avg_slip and avg_slip > 10) or days_since > 365
 
@@ -872,14 +1585,20 @@ def get_maintenance_recommendation(vessel_id, event):
         'days_since_maintenance':        round(days_since),
         'avg_me_slip_pct':               avg_slip,
         'avg_consumption_mt':            avg_consumption_mt,
+        'current_excess_fuel_mt_per_day': round(current_excess_mt_per_day, 2) if current_excess_mt_per_day is not None else None,
         'degradation_rate_pct_per_day':  degradation_rate_pct_per_day,
         'fuel_price_usd_per_mt':         FUEL_PRICE,
         'recommendation':                'URGENT' if urgent else 'ROUTINE',
-        'recommended_type':              'DD' if days_since > 730 else 'UWC',
+        'recommended_type':              'DD' if dd_due else 'UWC',
         'reason':                        (
             'High ME slip indicates hull/propeller fouling' if avg_slip and avg_slip > 10
             else f'Scheduled maintenance due ({round(days_since)} days since last event)'
         ),
+        'drydock_reminder': {
+            'days_since_last_dd':         round(days_since_dd),
+            'fleet_avg_dd_interval_days': FLEET_DD_INTERVAL_DAYS,
+            'due':                        dd_due,
+        },
         'last_maintenance': {
             'event_type': last_m.get('event_type') if last_m else None,
             'event_day':  last_day,
@@ -901,13 +1620,14 @@ def get_fleet_summary(event):
       training_vessels: int,
       prediction_vessels: int,
       pending_maintenance: int,
-      avg_fleet_slip_pct: float,
+      avg_fleet_speed_loss_pct: float,
       total_excess_fuel_cost_usd_per_day: float,
-      worst_vessel: { vessel_id, avg_slip_pct, urgency },
+      worst_vessel: { vessel_id, avg_speed_loss_pct, urgency },
       per_vessel: [
-        { vessel_id, vessel_type, ship_class, avg_slip_pct,
-          recent_90d_slip_pct, slip_trend, avg_consumption_mt,
-          urgency, days_since_maintenance, excess_fuel_cost_usd_per_day,
+        { vessel_id, vessel_type, ship_class, avg_speed_loss_pct,
+          latest_speed_loss_pct, speed_loss_trend, avg_consumption_mt,
+          urgency, days_since_maintenance, days_since_dd, dd_due,
+          recommended_action, excess_fuel_cost_usd_per_day,
           total_records, total_voyages, last_updated }
       ]
     }
@@ -946,17 +1666,21 @@ def get_fleet_summary(event):
             v = item.get(key)
             return str(v) if v is not None else default
 
+        def _bool(item, key, default=False):
+            v = item.get(key)
+            return bool(v) if v is not None else default
+
         for item in raw_items:
             per_vessel.append({
                 # identification
                 'vessel_id':    _s(item, 'vessel_id'),
                 'type':         _s(item, 'vessel_type', 'training'),
                 'ship_class':   _s(item, 'ship_class'),
-                # slip
-                'avg_slip_pct':        _f(item, 'avg_slip_pct'),
-                'recent_90d_slip_pct': _f(item, 'recent_90d_slip_pct'),
-                'slip_trend':          _f(item, 'slip_trend'),
-                'valid_slip_records':  _i(item, 'valid_slip_records'),
+                # speed loss
+                'avg_speed_loss_pct':       _f(item, 'avg_speed_loss_pct'),
+                'latest_speed_loss_pct':    _f(item, 'latest_speed_loss_pct'),
+                'speed_loss_trend':         _f(item, 'speed_loss_trend'),
+                'valid_speed_loss_records': _i(item, 'valid_speed_loss_records'),
                 # performance
                 'avg_speed_kn':       _f(item, 'avg_speed_kn'),
                 'avg_stw_kn':         _f(item, 'avg_stw_kn'),
@@ -992,6 +1716,9 @@ def get_fleet_summary(event):
                 'last_hull_clean_day':    _i(item, 'last_hull_clean_day'),
                 'last_prop_polish_day':   _i(item, 'last_prop_polish_day'),
                 'days_since_prop_polish': _i(item, 'days_since_prop_polish'),
+                'days_since_dd':          _i(item, 'days_since_dd'),
+                'dd_due':                 _bool(item, 'dd_due'),
+                'recommended_action':     _s(item, 'recommended_action') or None,
                 # cost
                 'excess_fuel_cost_usd_per_day': float(item['excess_fuel_cost_usd_per_day']) if item.get('excess_fuel_cost_usd_per_day') is not None else 0.0,
                 # urgency
@@ -1024,18 +1751,26 @@ def get_fleet_summary(event):
         def _vessel_summary_fallback(vid: str) -> dict:
             rows  = query_vessel(vid)
             maint = query_maintenance(vid)
-            slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP'))
-                         for r in rows
-                         if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                         and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
-            avg_slip   = round(mean(slip_list), 2) if slip_list else None
-            slip_sorted = sorted(
-                [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+            # Same source + semantics as build_fleet_summary.py's compute_summary:
+            # precomputed SPEED_LOSS column, avg = last-90 mean, latest = most
+            # recent valid reading, trend = latest vs. nearest reading >=90 days prior.
+            speed_loss_pts = sorted(
+                [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('SPEED_LOSS')))
                  for r in rows
-                 if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                 and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+                 if safe_float(r.get('SPEED_LOSS')) is not None],
                 key=lambda x: x[0])
-            recent_90d = round(mean([v for _, v in slip_sorted[-90:]]), 2) if len(slip_sorted) >= 10 else avg_slip
+            all_speed_losses = [s for _, s in speed_loss_pts]
+            avg_speed_loss   = round(mean([s for _, s in speed_loss_pts[-90:]]), 2) if speed_loss_pts else None
+            if speed_loss_pts:
+                latest_day, latest_speed_loss = speed_loss_pts[-1]
+                prior_speed_loss = next(
+                    (s for d, s in reversed(speed_loss_pts[:-1]) if d <= latest_day - 90),
+                    None,
+                )
+                speed_loss_trend = round(latest_speed_loss - prior_speed_loss, 2) if prior_speed_loss is not None else None
+            else:
+                latest_speed_loss = None
+                speed_loss_trend = None
             sorted_maint = sorted(maint, key=lambda x: safe_float(x.get('event_day'), 0))
             last_day   = safe_float(sorted_maint[-1].get('event_day'), 0) if sorted_maint else 0
             latest_day = safe_float(max((safe_float(r.get('NOON_UTC'), 0) for r in rows), default=0))
@@ -1044,23 +1779,27 @@ def get_fleet_summary(event):
             hull_clean_events = [m for m in sorted_maint if str(m.get('event_type', '')).strip() in HULL_CLEAN_TYPES]
             last_hull_day = safe_float(hull_clean_events[-1].get('event_day'), 0) if hull_clean_events else 0
             days_since_hull = round(latest_day - last_hull_day) if (rows and hull_clean_events) else None
-            slip_val   = recent_90d or avg_slip or 0
-            urgency    = ('HIGH'   if (slip_val >= 10 or (days_since and days_since > 365)) else
-                          'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
+            speed_loss_trend_val = speed_loss_trend or 0
+            urgency    = ('HIGH'   if speed_loss_trend_val >= 20 else
+                          'MEDIUM' if speed_loss_trend_val >= 10 else 'LOW')
             cons_list  = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
             avg_consumption = round(mean(cons_list), 2) if cons_list else None
-            # Uses this vessel's own real avg consumption, not a guessed per-class constant.
+            # Model-grounded excess (see _vessel_excess_fuel_mt_per_day) — not
+            # the old avg_consumption * (speed-loss%/100) * 1.8 heuristic, whose
+            # 1.8 multiplier has no documented derivation anywhere in this repo.
+            excess_mt_per_day = _vessel_excess_fuel_mt_per_day(vid, rows=rows, maint_rows=maint)
             excess_per_day = (
-                round(avg_consumption * (slip_val / 100) * 1.8 * FUEL_PRICE, 2)
-                if avg_consumption is not None else None
+                round(excess_mt_per_day * FUEL_PRICE, 2)
+                if excess_mt_per_day is not None else None
             )
             return {
                 'vessel_id':               vid,
                 'type':                    'training' if vid in TRAIN_VESSELS else 'prediction',
                 'ship_class':              'W1' if vid in W1_SHIPS_SET else 'W2',
-                'avg_slip_pct':            avg_slip,
-                'recent_90d_slip_pct':     recent_90d,
-                'slip_trend':              None,
+                'avg_speed_loss_pct':       avg_speed_loss,
+                'latest_speed_loss_pct':    latest_speed_loss,
+                'speed_loss_trend':         speed_loss_trend,
+                'valid_speed_loss_records': len(all_speed_losses),
                 'avg_consumption_mt':      avg_consumption,
                 'urgency':                 urgency,
                 'days_since_maintenance':  days_since,
@@ -1084,27 +1823,27 @@ def get_fleet_summary(event):
                 except Exception:
                     pass
 
-    # Sort: training first, then prediction; within group by avg_slip desc
-    per_vessel.sort(key=lambda v: (0 if v['type'] == 'training' else 1, -(v['avg_slip_pct'] or 0)))
+    # Sort: training first, then prediction; within group by avg_speed_loss desc
+    per_vessel.sort(key=lambda v: (0 if v['type'] == 'training' else 1, -(v['avg_speed_loss_pct'] or 0)))
 
-    # Fleet-level aggregates (training vessels only for slip average)
-    training  = [v for v in per_vessel if v['type'] == 'training']
-    slip_vals = [v['avg_slip_pct'] for v in training if v['avg_slip_pct'] is not None]
+    # Fleet-level aggregates (training vessels only for speed-loss average)
+    training        = [v for v in per_vessel if v['type'] == 'training']
+    speed_loss_vals = [v['avg_speed_loss_pct'] for v in training if v['avg_speed_loss_pct'] is not None]
     pending   = [v for v in per_vessel if v['urgency'] != 'LOW']
     total_excess = sum(v['excess_fuel_cost_usd_per_day'] or 0 for v in per_vessel)
-    worst = max(training, key=lambda v: v['avg_slip_pct'] or 0) if training else None
+    worst = max(training, key=lambda v: v['avg_speed_loss_pct'] or 0) if training else None
 
     result = resp(200, {
         'total_vessels':                  len(ALL),
         'training_vessels':               len(TRAIN_VESSELS),
         'prediction_vessels':             len(PRED_VESSELS),
         'pending_maintenance':            len(pending),
-        'avg_fleet_slip_pct':             round(mean(slip_vals), 2) if slip_vals else None,
+        'avg_fleet_speed_loss_pct':       round(mean(speed_loss_vals), 2) if speed_loss_vals else None,
         'total_excess_fuel_cost_usd_per_day': round(total_excess, 2),
         'worst_vessel': {
-            'vessel_id':    worst['vessel_id'],
-            'avg_slip_pct': worst['avg_slip_pct'],
-            'urgency':      worst['urgency'],
+            'vessel_id':         worst['vessel_id'],
+            'avg_speed_loss_pct': worst['avg_speed_loss_pct'],
+            'urgency':           worst['urgency'],
         } if worst else None,
         'per_vessel': per_vessel,
     })
@@ -1113,37 +1852,48 @@ def get_fleet_summary(event):
 
 
 def _rank_one_vessel(vid: str) -> dict:
-    """Compute ranking stats for a single vessel (runs in thread pool)."""
-    rows = query_vessel(vid)
+    """Compute ranking stats for a single vessel (runs in thread pool).
 
-    slip_list = [safe_float(r.get('FULL_SPD_STW_SLIP')) for r in rows
-                 if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-                 and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30]
+    Same SPEED_LOSS source + semantics as build_fleet_summary.py's
+    compute_summary and get_fleet_summary's _vessel_summary_fallback: avg =
+    last-90 mean, latest = most recent valid reading, trend = latest vs.
+    nearest reading >=90 days prior.
+    """
+    rows = query_vessel(vid)
     cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
 
-    slip_sorted = sorted(
-        [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('FULL_SPD_STW_SLIP')))
+    speed_loss_pts = sorted(
+        [(safe_float(r.get('NOON_UTC'), 0), safe_float(r.get('SPEED_LOSS')))
          for r in rows
-         if safe_float(r.get('FULL_SPD_STW_SLIP')) is not None
-         and 0 <= safe_float(r.get('FULL_SPD_STW_SLIP'), -1) <= 30],
+         if safe_float(r.get('SPEED_LOSS')) is not None],
         key=lambda x: x[0]
     )
-    recent_slip = [v for _, v in slip_sorted[-90:]] if len(slip_sorted) >= 10 else []
-    trend = round(mean(recent_slip) - mean(slip_list), 2) if recent_slip and slip_list else None
+    all_speed_losses = [s for _, s in speed_loss_pts]
+    avg_speed_loss = round(mean([s for _, s in speed_loss_pts[-90:]]), 2) if speed_loss_pts else None
+    if speed_loss_pts:
+        latest_day, latest_speed_loss = speed_loss_pts[-1]
+        prior_speed_loss = next(
+            (s for d, s in reversed(speed_loss_pts[:-1]) if d <= latest_day - 90),
+            None,
+        )
+        speed_loss_trend = round(latest_speed_loss - prior_speed_loss, 2) if prior_speed_loss is not None else None
+    else:
+        latest_speed_loss = None
+        speed_loss_trend = None
 
     return {
-        'vessel_id':           vid,
-        'avg_slip_pct':        round(mean(slip_list), 2) if slip_list else None,
-        'recent_90d_slip_pct': round(mean(recent_slip), 2) if recent_slip else None,
-        'slip_trend':          trend,
-        'avg_consumption_mt':  round(mean(cons_list), 2) if cons_list else None,
-        'valid_slip_records':  len(slip_list),
-        'total_records':       len(rows),
+        'vessel_id':                vid,
+        'avg_speed_loss_pct':       avg_speed_loss,
+        'latest_speed_loss_pct':    latest_speed_loss,
+        'speed_loss_trend':         speed_loss_trend,
+        'avg_consumption_mt':       round(mean(cons_list), 2) if cons_list else None,
+        'valid_speed_loss_records': len(all_speed_losses),
+        'total_records':            len(rows),
     }
 
 
 def get_fleet_ranking(event):
-    """Rank all training vessels by avg FULL_SPD_STW_SLIP (lower = better performance)."""
+    """Rank all training vessels by avg_speed_loss_pct (lower = better performance)."""
     TRAIN_VESSELS = ['S1','S2','S3','S4','S5','S6','S7','S8','S9','S10','S11','S12']
 
     # Return cached ranking if still fresh
@@ -1162,8 +1912,8 @@ def get_fleet_ranking(event):
             except Exception:
                 pass  # skip failed vessel, don't crash the whole ranking
 
-    # 排名：avg_slip_pct 越低越好
-    rankings.sort(key=lambda x: x['avg_slip_pct'] if x['avg_slip_pct'] is not None else 99)
+    # 排名：avg_speed_loss_pct 越低越好
+    rankings.sort(key=lambda x: x['avg_speed_loss_pct'] if x['avg_speed_loss_pct'] is not None else 99)
     for i, r in enumerate(rankings):
         r['rank'] = i + 1
 

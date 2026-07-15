@@ -14,6 +14,7 @@ const INTENT_LABEL: Record<NluResult['intent'], string> = {
   fleet_ranking: '優先排行',
   fuel_attribution: '油耗歸因',
   compare_vessels: '污損比較',
+  maintenance_recommendation: '維修建議',
   single_fact: '快速查詢',
   follow_up: '追問',
   out_of_scope: '超出範疇',
@@ -111,11 +112,21 @@ function findConfidence(cards: ChatCardSpec[]): 'high' | 'medium' | 'low' | null
   return null
 }
 
-function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fetchVesselData>>, lastHullCleaningDay: number | null): string {
+function factAnswer(
+  factType: ChatFactType,
+  vessel: Awaited<ReturnType<typeof fetchVesselData>>,
+  lastHullCleaningDay: number | null,
+): string {
   if (!vessel) return '目前查無這艘船的資料。'
   switch (factType) {
-    case 'last_hull_cleaning':
-      return lastHullCleaningDay != null ? `上次船體清洗為 Day ${lastHullCleaningDay}。` : `尚無船體清洗紀錄，最近一次坐塢為 Day ${vessel.lastDrydockDay ?? '—'}。`
+    case 'last_hull_cleaning': {
+      if (lastHullCleaningDay == null) return `尚無船體清洗或坐塢紀錄。`
+      const daysSince = vessel.dataDayMax == null
+        ? null
+        : Math.max(0, Math.round(vessel.dataDayMax - lastHullCleaningDay))
+      const dayLabel = `最近一次船體恢復作業為 Day ${lastHullCleaningDay}`
+      return daysSince == null ? `${dayLabel}。` : `距上次船體清洗 ${daysSince} 天（${dayLabel}）。`
+    }
     case 'last_drydock':
       return `上次坐塢為 Day ${vessel.lastDrydockDay ?? '—'}。`
     case 'next_drydock':
@@ -208,13 +219,37 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
     }
   }
 
-  // remaining intents (vessel_overview / fuel_attribution / single_fact) all need exactly one resolved vessel
+  // remaining intents (vessel_overview / maintenance_recommendation / fuel_attribution / single_fact) all need exactly one resolved vessel
   const target = nlu.vessels[0]
   if (!target) return vesselClarificationTurn(userText, nlu.intent, nlu.factType)
 
+  if (nlu.intent === 'maintenance_recommendation') {
+    const [vessel, recommendation] = await Promise.all([
+      fetchVesselData(target.imo),
+      fetchRecommendation(target.imo),
+    ])
+    if (!vessel || !recommendation) return dataUnavailableTurn(userText, nlu, target.imo)
+    return {
+      id: makeId(),
+      userText,
+      intent: 'maintenance_recommendation',
+      replyText: `${target.name}：${recommendation.reasoning} 建議於 Day ${recommendation.windowStartDay} 至 Day ${recommendation.windowEndDay} 安排${recommendation.action === 'drydock' ? '坐塢' : '水下清洗'}。`,
+      cards: [{ type: 'maintenance', vessel, data: recommendation }],
+      vesselImo: target.imo,
+      vesselName: target.name,
+      breadcrumbLabel: `${target.name} › ${INTENT_LABEL.maintenance_recommendation}`,
+    }
+  }
+
   if (nlu.intent === 'single_fact') {
     const [vessel, series] = await Promise.all([fetchVesselData(target.imo), fetchSpeedLossData(target.imo)])
-    const lastHullCleaning = series?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.day).sort((a, b) => a - b).pop() ?? null
+    // DD also restores the hull condition, matching the backend's
+    // HULL_CLEAN_TYPES definition used for performance cycles.
+    const lastHullCleaning = series?.events
+      .filter((event) => event.type === 'hull_cleaning' || event.type === 'drydock')
+      .map((event) => event.day)
+      .sort((a, b) => a - b)
+      .pop() ?? null
     const factType = nlu.factType ?? 'current_speed_loss'
     if (!vessel) return dataUnavailableTurn(userText, nlu, target.imo)
     return {

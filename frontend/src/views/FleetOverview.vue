@@ -45,7 +45,7 @@ const dsRanking: DataSourceInfo = {
   endpoint: 'GET /api/v1/fleet/summary',
   description: '取 per_vessel 依 speedLossPct 由前端排序後顯示前 6 艘，數值本身皆為後端原始欄位。',
   fields: [
-    { ui: 'Speed Loss % 量表', source: 'recent_90d_slip_pct（或 avg_slip_pct）' },
+    { ui: 'Speed Loss % 量表', source: 'latest_speed_loss_pct（或 avg_speed_loss_pct）' },
     { ui: '船舶狀態', source: 'status（前端固定寫死 "underway"，非後端欄位）' },
     { ui: '急迫度', source: 'urgency' },
   ],

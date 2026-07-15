@@ -46,8 +46,8 @@ const dsKpiRow1: DataSourceInfo = {
   endpoint: 'GET /api/v1/fleet/summary',
   description: 'Speed Loss 量表、趨勢、距上次清洗天數、超額燃油成本皆為後端原始欄位。',
   fields: [
-    { ui: '目前 Speed Loss 量表', source: 'speedLossPct（recent_90d_slip_pct）, foulingGrade（前端依 speedLossPct 門檻分級）' },
-    { ui: '趨勢 (%／近90天 vs 全期)', source: 'slipTrend' },
+    { ui: '目前 Speed Loss 量表', source: 'speedLossPct（latest_speed_loss_pct）, foulingGrade（前端依 speedLossPct 門檻分級）' },
+    { ui: '趨勢 (%／最新 vs 90天前)', source: 'speedLossTrend' },
     { ui: '距上次水下清洗天數', source: 'daysSinceHullClean' },
     { ui: '超額燃油成本 (USD/天)', source: 'excessFuelCostUsdMtd' },
   ],

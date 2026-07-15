@@ -93,7 +93,7 @@ export interface BackendSpeedLossIsoPoint {
 export interface BackendSpeedLoss {
   vessel_id: string
   method: string
-  slip_summary: { avg_slip_pct: number; valid_records: number; total_records: number }
+  speed_loss_summary: { avg_speed_loss_pct: number; valid_records: number; total_records: number }
   slip_timeline: BackendSpeedLossSlipPoint[]
   iso_summary: {
     avg_speed_loss_kn: number
@@ -111,18 +111,95 @@ export interface BackendSpeedLossAttributionEvent {
   event_day: number
   category: SpeedLossAttributionCategory
   physical_intervention: boolean
-  slip_before_pct: number
-  slip_after_pct: number
-  slip_delta_pct: number
+  /** 'speed_loss_pct_foc' (hull channel) | 'slip_pct_points' (propeller channel) | null (no rate applied, e.g. inspection_only) */
+  metric: string | null
+  slip_before_pct: number | null
+  slip_after_pct: number | null
+  slip_delta_pct: number | null
   notes: string
+}
+
+export interface BackendFleetDegradationChannel {
+  slope_per_30d_pct: number | null
+  t_stat: number | null
+  n_records: number
+  significant: boolean
+  metric: string
 }
 
 export interface BackendSpeedLossAttribution {
   vessel_id: string
   method: string
+  fleet_calibration: {
+    hull: BackendFleetDegradationChannel
+    propeller: BackendFleetDegradationChannel
+    calibrated_on_vessels: number
+    method: string
+  }
   summary: Partial<Record<SpeedLossAttributionCategory, number>>
   event_attributions: BackendSpeedLossAttributionEvent[]
   weather_timeline: { noon_day: number; diff_stw_sog: number }[]
+}
+
+export type FuelAnomalyCause = '船殼汙損' | '螺旋槳汙損' | '天候'
+export type FuelAnomalyDirection = 'over' | 'under' | 'normal'
+
+export interface BackendFuelAnomaly {
+  noon_day: number
+  daily_foc_actual: number
+  daily_foc_expected: number
+  residual_pct: number
+  direction: FuelAnomalyDirection
+  primary_cause: FuelAnomalyCause | null
+  primary_cause_contribution_pct: number | null
+  cause_model_agrees: boolean | null
+  days_since_hull_clean: number
+  days_since_prop_polish: number
+}
+
+export interface BackendFuelAnomalyEnergyPricing {
+  currency: 'USD'
+  fuel_type: string
+  daily_saving_usd: number
+  annual_saving_usd: number
+  sea_days_per_year: number
+  price_source: { name: string; url: string; effective_date: string | null; status: 'fetched' | 'fallback'; basis: string }
+  exchange_rate: { twd_per_usd: number; effective_date: string | null; name: string; url: string; status: 'fetched' | 'fallback' }
+}
+
+export interface BackendFuelAnomalyRoi {
+  avg_excess_fuel_mt_per_day: number
+  annual_excess_fuel_mt: number
+  annual_saving_usd_if_fixed: number
+  basis: string
+  energy_pricing: BackendFuelAnomalyEnergyPricing
+}
+
+export interface BackendFuelAnomalyCause {
+  vessel_id: string
+  method: string
+  baseline_model_r2: number | null
+  anomaly_threshold_pct: number
+  summary: {
+    total_days_analyzed: number
+    anomaly_days: number
+    cause_breakdown: Partial<Record<FuelAnomalyCause, number>>
+    confident_cause_breakdown: Partial<Record<FuelAnomalyCause, number>>
+    /** 可維修（船殼/螺旋槳，能靠排程維護處理）vs 天候（不可控）天數統計 */
+    maintainable_vs_weather: {
+      maintainable_days: number
+      maintainable_confident_days: number
+      weather_days: number
+      weather_confident_days: number
+    }
+    /** 由可信天數的船殼/螺旋槳根因分佈直接映射出的建議動作；兩者皆有訊號才會是
+     *  UWC+PP，都沒有（例如全是天候）則是 null。DD 不適用這套推論，見
+     *  maintenance-recommendation 的 drydock_reminder。 */
+    recommended_action: 'UWC' | 'PP' | 'UWC+PP' | null
+    /** 只計入可維修、可信、燒太多的天數估算出的年化 $ 效益 */
+    roi: BackendFuelAnomalyRoi
+  }
+  anomalies: BackendFuelAnomaly[]
 }
 
 export interface BackendMaintenanceEvent {
@@ -150,16 +227,23 @@ export interface BackendMaintenanceRecommendation {
   recommendation: 'URGENT' | 'ROUTINE'
   recommended_type: 'DD' | 'UWC'
   reason: string
+  /** DD 走固定的船級社定檢週期，跟 recommended_type 用的「距上次任意維護天數」
+   *  是不同基準——這裡用「距上次 DD 事件本身」比對艦隊觀察到的平均週期。 */
+  drydock_reminder: {
+    days_since_last_dd: number
+    fleet_avg_dd_interval_days: number
+    due: boolean
+  }
   last_maintenance: { event_type: string; event_day: number } | null
 }
 
 export interface BackendFleetRankingItem {
   vessel_id: string
-  avg_slip_pct: number
-  recent_90d_slip_pct: number
-  slip_trend: number
+  avg_speed_loss_pct: number
+  latest_speed_loss_pct: number
+  speed_loss_trend: number
   avg_consumption_mt: number
-  valid_slip_records: number
+  valid_speed_loss_records: number
   total_records: number
   rank: number
 }
@@ -291,6 +375,12 @@ export function getSpeedLoss(vesselId: string) {
 
 export function getSpeedLossAttribution(vesselId: string) {
   return request<BackendSpeedLossAttribution>(`/api/v1/vessels/${encodeURIComponent(vesselId)}/speed-loss-attribution`)
+}
+
+export function getFuelAnomalyCause(vesselId: string, limit = 20) {
+  return request<BackendFuelAnomalyCause>(
+    `/api/v1/vessels/${encodeURIComponent(vesselId)}/fuel-anomaly-cause?limit=${limit}`,
+  )
 }
 
 export function getMaintenanceEvents(vesselId: string) {

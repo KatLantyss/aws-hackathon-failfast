@@ -112,6 +112,7 @@ dev-api: check-dev
 		VESSEL_TABLE=ship-analysis-dev-vessel-data \
 		MAINT_TABLE=ship-analysis-dev-maintenance-events \
 		FLEET_SUMMARY_TABLE=ship-analysis-dev-fleet-summary \
+		FUEL_ANOMALY_TABLE=ship-analysis-dev-fuel-anomaly-cause \
 		$(VENV_UVICORN) app:app --host 0.0.0.0 --port $(API_PORT) > /tmp/backend-api.log 2>&1 &
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
 		if curl -fsS http://127.0.0.1:$(API_PORT)/health >/dev/null; then \
@@ -184,20 +185,20 @@ prod-backend: prod-login
 	@echo "▶  Generating task definition JSON..."
 	@python3 scripts/gen_taskdef.py $(ECR_BACKEND):latest $(AWS_REGION) $(ACCOUNT_ID) /tmp/ship-api-taskdef.json
 	@echo "▶  Registering new ECS task definition..."
+	@echo "▶  Updating ECS service to new task definition..."
 	@NEW_ARN=$$(aws ecs register-task-definition \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
 		--cli-input-json file:///tmp/ship-api-taskdef.json \
 		--query 'taskDefinition.taskDefinitionArn' --output text) && \
-		echo "  Registered: $$NEW_ARN"
-	@echo "▶  Updating ECS service to new task definition..."
-	@aws ecs update-service \
-		--profile $(AWS_PROFILE) --region $(AWS_REGION) \
-		--cluster $(ECS_CLUSTER) \
-		--service $(ECS_BACKEND_SVC) \
-		--task-definition $(ECS_BACKEND_TDEF) \
-		--force-new-deployment \
-		--query 'service.deployments[0].{status:status,desired:desiredCount}' \
-		--output table
+		echo "  Registered: $$NEW_ARN" && \
+		aws ecs update-service \
+			--profile $(AWS_PROFILE) --region $(AWS_REGION) \
+			--cluster $(ECS_CLUSTER) \
+			--service $(ECS_BACKEND_SVC) \
+			--task-definition "$$NEW_ARN" \
+			--force-new-deployment \
+			--query 'service.deployments[0].{status:status,desired:desiredCount}' \
+			--output table
 	@echo "▶  Stopping old running tasks to free port 8000 (host-network mode)..."
 	@OLD_TASKS=$$(aws ecs list-tasks \
 		--profile $(AWS_PROFILE) --region $(AWS_REGION) \

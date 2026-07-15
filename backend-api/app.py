@@ -117,6 +117,15 @@ def get_maintenance_recommendation(vessel_id: str):
     return _json_response(result)
 
 
+@app.get("/api/v1/vessels/{vessel_id}/fuel-anomaly-cause")
+def get_fuel_anomaly_cause(vessel_id: str, limit: int = 20):
+    result = handler.route(
+        _event("GET", f"/api/v1/vessels/{vessel_id}/fuel-anomaly-cause", query_params={"limit": str(limit)}),
+        None,
+    )
+    return _json_response(result)
+
+
 @app.get("/api/v1/fleet/ranking")
 def get_fleet_ranking():
     result = handler.route(_event("GET", "/api/v1/fleet/ranking"), None)

@@ -111,7 +111,7 @@ const dsInsight: DataSourceInfo = {
   endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/fleet/summary'],
   description: 'AI 分析摘要是純前端字串模板（非真的呼叫 LLM），把 summary（hybrid）與 vessel（real）欄位代入固定句型組出來的文字。',
   fields: [
-    { ui: '摘要文字', source: '前端模板字串代入 data.summary.* / vessel.avgSlipPct / vessel.speedLossPct / vessel.slipTrend' },
+    { ui: '摘要文字', source: '前端模板字串代入 data.summary.* / vessel.avgSpeedLossPct / vessel.speedLossPct / vessel.speedLossTrend' },
   ],
 }
 
@@ -675,11 +675,11 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
             本船共記錄 <strong>{{ data.summary.totalEvents }}</strong> 次養護事件，
             平均改善效能 <strong>{{ formatPct(data.summary.avgImprovementPct) }}</strong>。
           </p>
-          <p v-if="vessel.avgSlipPct != null">
-            全期平均 Slip <strong>{{ vessel.avgSlipPct.toFixed(2) }}%</strong>，
-            近 90 天 <strong>{{ vessel.speedLossPct.toFixed(2) }}%</strong>
-            <template v-if="vessel.slipTrend != null">
-              （趨勢 {{ vessel.slipTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.slipTrend).toFixed(2) }}%）
+          <p v-if="vessel.avgSpeedLossPct != null">
+            近90天平均速度損失 <strong>{{ vessel.avgSpeedLossPct.toFixed(2) }}%</strong>，
+            最新 <strong>{{ vessel.speedLossPct.toFixed(2) }}%</strong>
+            <template v-if="vessel.speedLossTrend != null">
+              （趨勢 {{ vessel.speedLossTrend > 0 ? '↑ 惡化' : '↓ 改善' }} {{ Math.abs(vessel.speedLossTrend).toFixed(2) }}%）
             </template>。
             目前超額燃油成本 <strong class="text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}/天</strong>。
           </p>

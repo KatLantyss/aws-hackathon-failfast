@@ -30,7 +30,7 @@ const dsRanking: DataSourceInfo = {
   endpoint: 'GET /api/v1/fleet/summary',
   description: '排行表全部欄位直接來自 fleet/summary，跟 /vessels 頁是同一份資料，只是排序 UI 不同。',
   fields: [
-    { ui: 'Speed Loss % / 趨勢 / 平均油耗 / 平均 RPM', source: 'recent_90d_slip_pct(或avg_slip_pct) / slip_trend / avg_consumption_mt / avg_rpm' },
+    { ui: 'Speed Loss % / 趨勢 / 平均油耗 / 平均 RPM', source: 'latest_speed_loss_pct(或avg_speed_loss_pct) / speed_loss_trend / avg_consumption_mt / avg_rpm' },
     { ui: '距上次清洗 (天) / 超額成本 / 急迫度', source: 'days_since_hull_clean / excess_fuel_cost_usd_per_day / urgency' },
   ],
 }
@@ -209,10 +209,10 @@ function goToVessel(imo: string) {
                   >{{ v.speedLossPct.toFixed(1) }}%</span>
                 </td>
                 <td class="px-3 py-2 font-data text-right tabular-nums">
-                  <span :style="{ color: trendColor(v.slipTrend) }">
-                    {{ trendArrow(v.slipTrend) }}
-                    <template v-if="v.slipTrend != null">
-                      {{ v.slipTrend > 0 ? '+' : '' }}{{ v.slipTrend.toFixed(2) }}
+                  <span :style="{ color: trendColor(v.speedLossTrend) }">
+                    {{ trendArrow(v.speedLossTrend) }}
+                    <template v-if="v.speedLossTrend != null">
+                      {{ v.speedLossTrend > 0 ? '+' : '' }}{{ v.speedLossTrend.toFixed(2) }}
                     </template>
                   </span>
                 </td>

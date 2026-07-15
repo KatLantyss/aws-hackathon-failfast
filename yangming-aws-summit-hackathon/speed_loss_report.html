@@ -1,0 +1,206 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Speed Loss 分析報告</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; border-bottom: 3px solid #667eea; }
+        h2 { color: #667eea; margin-top: 30px; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #667eea; color: white; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        .good { color: green; font-weight: bold; }
+        .warning { color: orange; font-weight: bold; }
+        .critical { color: red; font-weight: bold; }
+        .box { border: 1px solid #ccc; padding: 15px; margin: 10px 0; background: #f5f5f5; }
+    </style>
+</head>
+<body>
+    <h1>陽明海運 - 船隊 Speed Loss 分析報告</h1>
+    <p>生成時間：2026-07-15 10:53:04</p>
+
+    <h2>執行摘要</h2>
+    <div class="box">
+        <p><strong>船隊平均 Speed Loss (L1)：</strong>
+           <span class="warning">102.3%</span>
+        </p>
+        <p><strong>異常事件數：</strong> 12894</p>
+        <p><strong>分析期間：</strong> Day 0 - Day 1825</p>
+    </div>
+
+    <h2>單船性能排名</h2>
+    <table>
+        <tr>
+            <th>排名</th>
+            <th>船舶</th>
+            <th>航日數</th>
+            <th>平均油耗 (MT/day)</th>
+            <th>Speed Loss (L1)</th>
+            <th>評估</th>
+        </tr>
+
+        <tr>
+            <td>1</td>
+            <td>S21</td>
+            <td>1318</td>
+            <td>52.56</td>
+            <td>84.2%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>2</td>
+            <td>S12</td>
+            <td>1252</td>
+            <td>54.06</td>
+            <td>87.8%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>3</td>
+            <td>S8</td>
+            <td>1273</td>
+            <td>54.51</td>
+            <td>91.0%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>4</td>
+            <td>S2</td>
+            <td>1279</td>
+            <td>54.86</td>
+            <td>92.0%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>5</td>
+            <td>S7</td>
+            <td>1197</td>
+            <td>56.56</td>
+            <td>95.5%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>6</td>
+            <td>S1</td>
+            <td>1276</td>
+            <td>56.06</td>
+            <td>96.7%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>7</td>
+            <td>S6</td>
+            <td>1248</td>
+            <td>56.89</td>
+            <td>97.6%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>8</td>
+            <td>S9</td>
+            <td>1062</td>
+            <td>58.13</td>
+            <td>103.1%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>9</td>
+            <td>S4</td>
+            <td>1317</td>
+            <td>58.54</td>
+            <td>103.1%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>10</td>
+            <td>S23</td>
+            <td>1303</td>
+            <td>58.80</td>
+            <td>103.5%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>11</td>
+            <td>S3</td>
+            <td>1206</td>
+            <td>60.46</td>
+            <td>110.2%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>12</td>
+            <td>S10</td>
+            <td>1257</td>
+            <td>60.60</td>
+            <td>110.5%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>13</td>
+            <td>S22</td>
+            <td>1323</td>
+            <td>61.04</td>
+            <td>110.6%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>14</td>
+            <td>S11</td>
+            <td>1351</td>
+            <td>65.36</td>
+            <td>124.4%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+        <tr>
+            <td>15</td>
+            <td>S5</td>
+            <td>1325</td>
+            <td>65.82</td>
+            <td>125.0%</td>
+            <td><span class="critical">緊急</span></td>
+        </tr>
+
+    </table>
+
+    <h2>建議行動</h2>
+    <div class="box">
+        <h3>緊急維修</h3>
+        <ul>
+<li>S1 - 平均 Speed Loss：96.7%</li>
+<li>S22 - 平均 Speed Loss：110.6%</li>
+<li>S9 - 平均 Speed Loss：103.1%</li>
+<li>S23 - 平均 Speed Loss：103.5%</li>
+<li>S10 - 平均 Speed Loss：110.5%</li>
+<li>S11 - 平均 Speed Loss：124.4%</li>
+<li>S12 - 平均 Speed Loss：87.8%</li>
+<li>S2 - 平均 Speed Loss：92.0%</li>
+<li>S3 - 平均 Speed Loss：110.2%</li>
+<li>S4 - 平均 Speed Loss：103.1%</li>
+<li>S21 - 平均 Speed Loss：84.2%</li>
+<li>S5 - 平均 Speed Loss：125.0%</li>
+<li>S6 - 平均 Speed Loss：97.6%</li>
+<li>S7 - 平均 Speed Loss：95.5%</li>
+<li>S8 - 平均 Speed Loss：91.0%</li>
+
+        </ul>
+    </div>
+
+</body>
+</html>

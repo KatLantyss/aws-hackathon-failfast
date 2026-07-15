@@ -26,8 +26,8 @@ td = {
         {
             "name": "ship-api",
             "image": image,
-            "cpu": 512,
-            "memory": 1024,
+            "cpu": 2048,
+            "memoryReservation": 3584,
             "portMappings": [
                 {"containerPort": 8000, "hostPort": 8000, "protocol": "tcp"}
             ],
@@ -37,6 +37,7 @@ td = {
                 {"name": "VESSEL_TABLE",        "value": "ship-analysis-dev-vessel-data"},
                 {"name": "MAINT_TABLE",         "value": "ship-analysis-dev-maintenance-events"},
                 {"name": "FLEET_SUMMARY_TABLE", "value": "ship-analysis-dev-fleet-summary"},
+                {"name": "FUEL_ANOMALY_TABLE",  "value": "ship-analysis-dev-fuel-anomaly-cause"},
             ],
             "logConfiguration": {
                 "logDriver": "awslogs",
