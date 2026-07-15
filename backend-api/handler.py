@@ -54,6 +54,38 @@ PROP_POLISH_TYPES = {'DD', 'PP', 'UWI+PP', 'UWC+PP'}
 # Effective maintenance (any physical intervention, not pure inspection)
 EFFECTIVE_TYPES   = {'DD', 'UWC', 'PP', 'UWI+PP', 'UWC+PP'}
 
+# Fuel LCV constants (MJ/kg) — used to convert whichever fuel a day used into
+# a VLSFO-equivalent Daily FOC (competition-specified formula).
+FUEL_LCV = {
+    'ME_FULLSPEED_CONSUMP_HSHFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_ULSFO': 41.2,
+    'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
+    'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
+}
+LCV_VLSFO = 40.2
+FUEL_COLS = list(FUEL_LCV.keys())
+
+
+def get_daily_foc(r):
+    """Daily FOC (VLSFO-equivalent, normalized to 24h) for one noon-report
+    row, or (None, None) if the row doesn't qualify (not full-speed, no
+    valid fuel column)."""
+    hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
+    if hfs < 22:
+        return None, None
+    best_col, best_val = None, 0
+    for fc in FUEL_COLS:
+        v = safe_float(r.get(fc), 0)
+        if v > best_val:
+            best_val, best_col = v, fc
+    if best_col is None or best_val <= 0:
+        return None, None
+    lcv = FUEL_LCV.get(best_col, LCV_VLSFO)
+    vlsfo_equiv = best_val * lcv / LCV_VLSFO
+    daily_foc = vlsfo_equiv / hfs * 24.0
+    return round(daily_foc, 2), best_col.replace('ME_FULLSPEED_CONSUMP_', '')
+
 # ── DynamoDB setup ──────────────────────────────────────────────────────────
 REGION          = os.environ.get('AWS_REGION', 'us-east-1')
 VESSEL_TABLE         = os.environ.get('VESSEL_TABLE',        'ship-analysis-dev-vessel-data')
@@ -394,17 +426,6 @@ def get_speed_loss(vessel_id, event):
 
     maint = query_maintenance(vessel_id)
 
-    # ── Fuel LCV constants (MJ/kg) ───────────────────────────────────────
-    FUEL_LCV = {
-        'ME_FULLSPEED_CONSUMP_HSHFO': 40.2,
-        'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
-        'ME_FULLSPEED_CONSUMP_ULSFO': 41.2,
-        'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
-        'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
-    }
-    LCV_VLSFO = 40.2
-    FUEL_COLS = list(FUEL_LCV.keys())
-
     # W1 capacity ~110,000 DWT, W2 ~85,000 DWT — ballast threshold ~20%
     W1_BALLAST_THRESHOLD = 22000
     W2_BALLAST_THRESHOLD = 17000
@@ -428,35 +449,8 @@ def get_speed_loss(vessel_id, event):
         return idx
 
     # ── Filter rows: calm condition per competition spec ──────────────────
-    def get_daily_foc(r):
-        """Calculate Daily FOC in VLSFO equivalent, normalized to 24h."""
-        hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
-        if hfs < 22:
-            return None, None
-
-        # Find primary fuel (largest consumption value)
-        best_col = None
-        best_val = 0
-        for fc in FUEL_COLS:
-            v = safe_float(r.get(fc), 0)
-            if v > best_val:
-                best_val = v
-                best_col = fc
-
-        if best_col is None or best_val <= 0:
-            return None, None
-
-        # Convert to VLSFO equivalent via LCV
-        lcv = FUEL_LCV.get(best_col, LCV_VLSFO)
-        vlsfo_equiv = best_val * lcv / LCV_VLSFO
-
-        # Normalize to 24-hour basis (competition formula)
-        daily_foc = vlsfo_equiv / hfs * 24.0
-
-        # Fuel type short name
-        fuel_short = best_col.replace('ME_FULLSPEED_CONSUMP_', '')
-
-        return round(daily_foc, 2), fuel_short
+    # get_daily_foc is the module-level helper (shared with
+    # _fleet_degradation_rates / get_speed_loss_attribution).
 
     # Build filtered dataset
     calm_rows = []
@@ -679,8 +673,8 @@ def get_speed_loss(vessel_id, event):
 def _calm_slip_series(vessel_id):
     """FULL_SPD_STW_SLIP series filtered to calm/steady-state days (same
     criteria as get_speed_loss(): WIND_SCALE ≤ 4, HOURS_FULL_SPEED ≥ 22),
-    sorted by day. Shared by fleet calibration and per-vessel attribution so
-    both use the exact same "clean" dataset."""
+    sorted by day. This is a propeller-condition metric (theoretical vs.
+    actual advance per revolution) — used for the propeller channel."""
     recs = []
     for r in query_vessel(vessel_id):
         slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
@@ -696,6 +690,29 @@ def _calm_slip_series(vessel_id):
     return recs
 
 
+def _calm_foc_series(vessel_id):
+    """Daily FOC (VLSFO-equivalent, same as get_speed_loss()'s Layer 1)
+    filtered to calm/steady-state days. FOC is driven by total resistance —
+    hull fouling's actual physical signature (same RPM needs more fuel to
+    push through a dirtier hull) — used for the hull channel. FULL_SPD_STW_SLIP
+    is a propeller-advance-efficiency metric, not a hull-resistance metric,
+    so it's the wrong variable to calibrate hull degradation against even
+    though it was the one originally used here."""
+    recs = []
+    for r in query_vessel(vessel_id):
+        day = safe_float(r.get('NOON_UTC'))
+        ws  = safe_float(r.get('WIND_SCALE'))
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'))
+        if day is None or ws is None or hfs is None or ws > 4 or hfs < 22:
+            continue
+        foc, _fuel = get_daily_foc(r)
+        if foc is None or foc < 10:
+            continue
+        recs.append((day, foc))
+    recs.sort()
+    return recs
+
+
 def _cycle_index(day, boundaries):
     idx = 0
     for b in boundaries:
@@ -705,19 +722,26 @@ def _cycle_index(day, boundaries):
 
 
 def _fleet_degradation_rates():
-    """Fleet-calibrated hull / propeller degradation rate (%FULL_SPD_STW_SLIP
-    per 30 days), pooled across all 12 training vessels.
+    """Fleet-calibrated hull / propeller degradation rate, pooled across all
+    12 training vessels — hull uses Daily FOC (Speed-Loss-equivalent, %
+    relative to each cycle's own baseline), propeller uses FULL_SPD_STW_SLIP
+    (percentage points relative to baseline). Different metrics on purpose:
+    slip is a propeller-advance-efficiency indicator, FOC/resistance is the
+    hull-fouling signature — using slip for both would silently attribute
+    hull degradation to the wrong physical quantity.
 
     Why pooled instead of per-ship/per-event: a single ship's single
     maintenance cycle is dominated by day-to-day operational noise (R² ~0.07
-    fitting slip vs. days-since-cleaning per cycle — the trend is real but
-    weak relative to noise). Pooling ~3,000+ calm-condition records per
-    channel across the whole fleet turns that weak per-cycle signal into a
-    statistically solid population-level rate: hull ~0.088%/30d (t≈12),
-    propeller ~0.083%/30d (t≈6) — both far past the |t|>2 significance bar.
-    This is the number that actually answers "how much of speed loss is
-    attributable to hull vs. propeller fouling", not any single event's
-    noisy before/after snapshot.
+    fitting either metric vs. days-since-cleaning per cycle — the trend is
+    real but weak relative to noise). Pooling thousands of calm-condition
+    records per channel across the whole fleet turns that weak per-cycle
+    signal into a statistically solid population-level rate: hull
+    ~0.7%/30d (t≈8), propeller ~0.083%/30d (t≈6) — both far past the |t|>2
+    significance bar. (The hull figure lines up with the ~20%/severe-fouling
+    order of magnitude the competition brief itself cites for hull/propeller
+    over a multi-year neglected cycle.) This is the number that actually
+    answers "how much of speed loss is attributable to hull vs. propeller
+    fouling", not any single event's noisy before/after snapshot.
 
     Each cycle is centered on its own baseline (mean of its first ~15%)
     before pooling, so ship-to-ship absolute-level differences don't bias
@@ -731,18 +755,22 @@ def _fleet_degradation_rates():
 
     TRAIN_VESSELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12']
 
-    def pooled_rate(type_set):
+    def pooled_rate(type_set, series_fn, relative):
+        """relative=True: pool (value-baseline)/baseline*100 (FOC, cross-ship/
+        cross-fuel scale varies so normalize to % of baseline). relative=False:
+        pool value-baseline directly (slip is already a percentage, its own
+        scale is comparable across ships)."""
         pooled_x, pooled_y = [], []
         for vid in TRAIN_VESSELS:
-            recs  = _calm_slip_series(vid)
+            recs  = series_fn(vid)
             maint = query_maintenance(vid)
             boundaries = sorted(
                 safe_float(m.get('event_day'), 0)
                 for m in maint if str(m.get('event_type', '')) in type_set
             )
             cycles = defaultdict(list)
-            for day, slip in recs:
-                cycles[_cycle_index(day, boundaries)].append((day, slip))
+            for day, val in recs:
+                cycles[_cycle_index(day, boundaries)].append((day, val))
 
             for idx, cyc in cycles.items():
                 if idx == 0 or len(cyc) < 10:
@@ -750,10 +778,12 @@ def _fleet_degradation_rates():
                 cyc.sort()
                 start_day = boundaries[idx - 1]
                 n_base = max(3, len(cyc) // 7)
-                baseline = mean([s for _, s in cyc[:n_base]])
-                for d, s in cyc:
+                baseline = mean([v for _, v in cyc[:n_base]])
+                if relative and baseline == 0:
+                    continue
+                for d, v in cyc:
                     pooled_x.append(d - start_day)
-                    pooled_y.append(s - baseline)
+                    pooled_y.append((v - baseline) / baseline * 100 if relative else v - baseline)
 
         n = len(pooled_x)
         if n < 30:
@@ -779,10 +809,16 @@ def _fleet_degradation_rates():
         }
 
     result = {
-        'hull':                pooled_rate(HULL_CLEAN_TYPES),
-        'propeller':           pooled_rate(PROP_POLISH_TYPES),
+        'hull': {
+            **pooled_rate(HULL_CLEAN_TYPES, _calm_foc_series, relative=True),
+            'metric': 'speed_loss_pct_foc_relative_to_cycle_baseline',
+        },
+        'propeller': {
+            **pooled_rate(PROP_POLISH_TYPES, _calm_slip_series, relative=False),
+            'metric': 'full_spd_stw_slip_pct_points',
+        },
         'calibrated_on_vessels': len(TRAIN_VESSELS),
-        'method': 'pooled_linear_regression_calm_slip_vs_days_since_cleaning',
+        'method': 'pooled_linear_regression_vs_days_since_cleaning',
     }
     _cache_set(cache_key, result)
     return result
@@ -791,23 +827,36 @@ def _fleet_degradation_rates():
 def get_speed_loss_attribution(vessel_id, event):
     """
     Speed Loss 歸因分析：用「艦隊校準劣化速率」模型分開估算船殼與螺旋槳個別
-    對滑差(%)的貢獻，取代舊版「事件前後 ±30 天快照平均」的做法。
+    貢獻，取代舊版「事件前後 ±30 天快照平均」的做法。船殼、螺旋槳用不同物理量：
 
-    為什麼要換方法：單一事件、單一船的 before/after 快照比較，被短期操作雜訊
-    （天候、載重、清潔後試俥等）嚴重污染——實測過三種改法（天候篩選、RPM 配對、
-    週期邊界快照）,「清潔後效能反而變差」這種違反物理常識的比例都還停在 40-60%
-    區間。真正乾淨的訊號，是把全船隊的資料 pool 起來做迴歸（見
-    `_fleet_degradation_rates()`）：單一週期的 R² 只有 ~0.07（雜訊蓋過趨勢），
-    但 pool 起來後 n>3000，船殼/螺旋槳的劣化速率都達到統計顯著（|t|>2）。
+    - 船殼通道：Daily FOC（跟 get_speed_loss() Layer 1 同一套，VLSFO 當量）—
+      船殼阻力的直接訊號是「同轉速下要燒更多油」，不是滑差。
+    - 螺旋槳通道：FULL_SPD_STW_SLIP（螺旋槳理論前進 vs 實際前進的差）— 這才是
+      滑差真正對應的物理量。
+
+    （這兩個通道原本都用滑差校準，是錯的——滑差本質是螺旋槳效率指標，拿它去
+    估算船殼貢獻，物理上量錯東西了。）
+
+    為什麼要換方法（而不是原始事件前後直接比較）：單一事件、單一船的
+    before/after 快照比較，被短期操作雜訊（天候、載重、清潔後試俥等）嚴重
+    污染——實測過三種改法（天候篩選、RPM 配對、週期邊界快照），「清潔後效能
+    反而變差」這種違反物理常識的比例都還停在 40-60% 區間。真正乾淨的訊號，
+    是把全船隊的資料 pool 起來做迴歸（見 `_fleet_degradation_rates()`）：
+    單一週期的 R² 只有 ~0.07（雜訊蓋過趨勢），但 pool 起來後 n>3000，兩個
+    通道的劣化速率都達到統計顯著（|t|>2）。
 
     邏輯：
-    - 用 `_fleet_degradation_rates()` 算出的船隊平均速率（%/30天），乘上「這次
-      清潔距上次同通道清潔累積了幾天」，估算這次清潔前累積了多少滑差——這是
-      模型推論值，不是原始資料直接比較，所以不會再出現「清潔後變差」這種假訊號。
-    - `slip_after_pct`＝清潔後那個週期實際觀測到的 baseline（真實資料錨點）；
-      `slip_before_pct`＝該值加上模型估算的累積量；`slip_delta_pct`＝累積量本身。
-    - DD/UWC+PP → 船殼+螺旋槳速率都套用；UWC → 只套船殼；PP/UWI+PP → 只套螺旋槳；
-      UWI（純檢查）→ 不套用任何速率，維持「不該有改善」。
+    - 船殼：`slip_after_pct`（欄位名稱沿用舊 schema，實際代表 speed-loss %）
+      固定為 0（清潔後即為該週期自己的基準，定義上是 0%）；`slip_before_pct`＝
+      船隊船殼速率 × 這次清潔距上次船殼清潔累積的天數（模型推論的speed loss%）；
+      `slip_delta_pct` 等於 `slip_before_pct`。
+    - 螺旋槳：`slip_after_pct`＝清潔後新週期實際觀測到的滑差 baseline（真實
+      資料錨點）；`slip_before_pct`＝該值加上船隊螺旋槳速率 × 累積天數；
+      `slip_delta_pct`＝累積量。
+    - DD/UWC+PP → 船殼+螺旋槳速率都套用；UWC → 只套船殼；PP/UWI+PP → 只套
+      螺旋槳；UWI（純檢查）→ 不套用任何速率，維持「不該有改善」。
+    - 每筆額外回傳 `metric` 欄位標示這筆數字實際單位（船殼是 speed-loss %、
+      螺旋槳是 slip 百分點），避免誤讀成同一種量。
 
     weather：DIFF_STW_SOG_SLIP（洋流/天候代理），跟養護事件無關，維持原樣。
     """
@@ -821,47 +870,65 @@ def get_speed_loss_attribution(vessel_id, event):
     hull_rate = rates['hull']['slope_per_30d_pct']
     prop_rate = rates['propeller']['slope_per_30d_pct']
 
-    slip_series = _calm_slip_series(vessel_id)
+    hull_series = _calm_foc_series(vessel_id)
+    prop_series = _calm_slip_series(vessel_id)
 
     MIN_CYCLE_RECORDS = 6
 
-    def cycle_baselines(type_set):
-        """Observed post-clean baseline (mean of first ~15%) per cycle,
-        keyed by cycle index, plus the sorted trigger-event list."""
+    def cycle_events_and_boundaries(type_set):
         trigger_events = sorted(
             [m for m in maint if str(m.get('event_type', '')) in type_set],
             key=lambda x: safe_float(x.get('event_day'), 0),
         )
         boundaries = [safe_float(m.get('event_day'), 0) for m in trigger_events]
+        return trigger_events, boundaries
+
+    def observed_baselines(series, boundaries):
+        """Observed baseline (mean of first ~15%) per cycle, keyed by cycle index."""
         buckets = defaultdict(list)
-        for day, slip in slip_series:
-            buckets[_cycle_index(day, boundaries)].append((day, slip))
+        for day, val in series:
+            buckets[_cycle_index(day, boundaries)].append((day, val))
         baselines = {}
         for idx, records in buckets.items():
             if len(records) < MIN_CYCLE_RECORDS:
                 continue
             n_base = max(3, len(records) // 7)
-            baselines[idx] = round(mean([s for _, s in records[:n_base]]), 2)
-        return trigger_events, boundaries, baselines
+            baselines[idx] = mean([v for _, v in records[:n_base]])
+        return baselines
 
-    hull_events, hull_boundaries, hull_baselines = cycle_baselines(HULL_CLEAN_TYPES)
-    prop_events, prop_boundaries, prop_baselines = cycle_baselines(PROP_POLISH_TYPES)
+    hull_events, hull_boundaries = cycle_events_and_boundaries(HULL_CLEAN_TYPES)
+    prop_events, prop_boundaries = cycle_events_and_boundaries(PROP_POLISH_TYPES)
+    prop_baselines = observed_baselines(prop_series, prop_boundaries)
+    # Hull cycles only need to know which cycles have *enough* records to
+    # trust — the FOC baseline value itself isn't used (hull "after" is
+    # defined as 0%, its own cycle's baseline by construction).
+    hull_has_enough_data = set(observed_baselines(hull_series, hull_boundaries).keys())
 
-    def estimate(events, boundaries, baselines, rate, target_day):
-        """days-since-prior-same-channel-event × fleet rate = modeled
-        accumulated slip before this cleaning; after = observed post-clean
-        baseline of the cycle this event starts."""
-        idx = next((i for i, m in enumerate(events)
+    def estimate_hull(target_day):
+        """Hull: after = 0% (this cycle's own baseline, by definition);
+        before = fleet hull rate × days since prior hull-clean (modeled
+        Speed-Loss-% accumulated, FOC-based, not slip)."""
+        idx = next((i for i, m in enumerate(hull_events)
                     if safe_float(m.get('event_day'), 0) == target_day), None)
-        if idx is None or rate is None:
+        if idx is None or hull_rate is None or (idx + 1) not in hull_has_enough_data:
             return None, None
-        after = baselines.get(idx + 1)
+        days_accumulated = target_day - (hull_boundaries[idx - 1] if idx > 0 else 0.0)
+        before = round(hull_rate / 30.0 * days_accumulated, 2)
+        return before, 0.0
+
+    def estimate_propeller(target_day):
+        """Propeller: after = observed post-clean slip baseline (real data
+        anchor); before = after + fleet propeller rate × days accumulated."""
+        idx = next((i for i, m in enumerate(prop_events)
+                    if safe_float(m.get('event_day'), 0) == target_day), None)
+        if idx is None or prop_rate is None:
+            return None, None
+        after = prop_baselines.get(idx + 1)
         if after is None:
             return None, None
-        days_accumulated = target_day - (boundaries[idx - 1] if idx > 0 else 0.0)
-        accumulated_slip = round(rate / 30.0 * days_accumulated, 2)
-        before = round(after + accumulated_slip, 2)
-        return before, after
+        days_accumulated = target_day - (prop_boundaries[idx - 1] if idx > 0 else 0.0)
+        before = round(after + prop_rate / 30.0 * days_accumulated, 2)
+        return before, round(after, 2)
 
     # 養護事件歸因
     event_attributions = []
@@ -883,17 +950,19 @@ def get_speed_loss_attribution(vessel_id, event):
             category = 'other'
 
         if category in ('hull', 'hull+propeller'):
-            before, after = estimate(hull_events, hull_boundaries, hull_baselines, hull_rate, day)
+            before, after = estimate_hull(day)
+            metric = 'speed_loss_pct_foc'
         elif category == 'propeller':
-            before, after = estimate(prop_events, prop_boundaries, prop_baselines, prop_rate, day)
+            before, after = estimate_propeller(day)
+            metric = 'slip_pct_points'
         else:
-            before, after = None, None
+            before, after, metric = None, None, None
 
         if before is None or after is None:
             delta = None
             physical = False
         else:
-            delta    = round(before - after, 2)   # 正值 = 改善（滑差下降），模型推論恆非負
+            delta    = round(before - after, 2)   # 正值 = 改善，模型推論恆非負
             physical = category != 'inspection_only'
 
         event_attributions.append({
@@ -901,12 +970,13 @@ def get_speed_loss_attribution(vessel_id, event):
             'event_day':      day,
             'category':       category,
             'physical_intervention': physical,
+            'metric':          metric,
             'slip_before_pct': before,
             'slip_after_pct':  after,
             'slip_delta_pct':  delta,   # 正值 = 改善
             'notes': (
                 'No physical intervention expected' if etype == 'UWI'
-                else f'Fleet-rate-modeled improvement: {delta:+.2f}%' if delta is not None
+                else f'Fleet-rate-modeled improvement: {delta:+.2f}% ({metric})' if delta is not None
                 else 'Insufficient data (cycle too short/sparse, or first event with no prior anchor)'
             ),
         })

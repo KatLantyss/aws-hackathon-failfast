@@ -192,18 +192,27 @@ GET /api/v1/vessels/{vessel_id}/speed-loss
 GET /api/v1/vessels/{vessel_id}/speed-loss-attribution
 ```
 
-`method: "fleet_calibrated_degradation_rate"` — 用**艦隊校準的劣化速率**分開估算船殼、螺旋槳對滑差（`FULL_SPD_STW_SLIP`）的貢獻，取代早期「事件前後 ±30 天快照平均」的做法。
+`method: "fleet_calibrated_degradation_rate"` — 用**艦隊校準的劣化速率**分開估算船殼、螺旋槳的貢獻，取代早期「事件前後 ±30 天快照平均」的做法。
 
-**為什麼不是直接比較事件前後的原始資料**：單一事件、單一船的 before/after 快照，會被天候、載重、清潔後試俥等短期操作雜訊嚴重污染——實測過三種改法（天候篩選、RPM 配對、週期邊界快照），「清潔後效能反而變差」這種違反物理常識的比例都還停在 40–60% 區間。真正乾淨的訊號來自把全船隊資料 pool 起來做迴歸：單一船單一週期的 R² 只有 ~0.07（雜訊蓋過趨勢），但把所有訓練船（S1–S12）的資料一起 pool（n>3000）後，船殼、螺旋槳的滑差劣化速率都達到統計顯著。
+**為什麼不是直接比較事件前後的原始資料**：單一事件、單一船的 before/after 快照，會被天候、載重、清潔後試俥等短期操作雜訊嚴重污染——實測過三種改法（天候篩選、RPM 配對、週期邊界快照），「清潔後效能反而變差」這種違反物理常識的比例都還停在 40–60% 區間。真正乾淨的訊號來自把全船隊資料 pool 起來做迴歸：單一船單一週期的 R² 只有 ~0.07（雜訊蓋過趨勢），但把所有訓練船（S1–S12）的資料一起 pool（n>3000）後，兩個通道的劣化速率都達到統計顯著。
+
+**船殼跟螺旋槳用不同物理量，不是同一個滑差硬套兩種東西**：
+
+| 通道 | 指標 | 為什麼 |
+|---|---|---|
+| 船殼 | Daily FOC（跟 `/speed-loss` Layer 1 同一套，VLSFO 當量）| 船殼阻力的直接訊號是「同轉速下要燒更多油」|
+| 螺旋槳 | `FULL_SPD_STW_SLIP` | 滑差＝螺旋槳理論前進 vs 實際前進的差，本質就是螺旋槳效率指標 |
+
+（早期版本兩個通道都用滑差校準，物理上是錯的——滑差對船殼阻力只是間接、微弱的訊號。）
 
 **艦隊校準（`_fleet_degradation_rates()`，快取，啟動時預熱）：**
 
-1. 取 calm condition（`WIND_SCALE≤4`、`HOURS_FULL_SPEED≥22`）的 `FULL_SPD_STW_SLIP`
+1. 船殼：取 calm condition（`WIND_SCALE≤4`、`HOURS_FULL_SPEED≥22`）的 Daily FOC；螺旋槳：同條件的 `FULL_SPD_STW_SLIP`
 2. 依事件類型切出兩種獨立週期：船殼週期（邊界＝`DD`/`UWC`/`UWC+PP`）、螺旋槳週期（邊界＝`DD`/`PP`/`UWI+PP`/`UWC+PP`）
-3. 每個週期以自己的 baseline（前 ~15%）置中，把「週期內第幾天」vs「相對 baseline 的滑差」這兩個數列，跨全部訓練船 pool 起來做線性迴歸
-4. 斜率（%/30天）即為船隊平均劣化速率；目前實測約：船殼 **0.088%/30天**（t≈12）、螺旋槳 **0.083%/30天**（t≈6），兩者都遠超過 `|t|>2` 顯著性門檻
+3. 每個週期以自己的 baseline（前 ~15%）置中——船殼是「相對 baseline 的 % 變化」（跨船/跨燃料量級不同，正規化成相對值），螺旋槳是「相對 baseline 的百分點差」（滑差本身已經是 %，量級可比）——把「週期內第幾天」vs 置中後的值，跨全部訓練船 pool 起來做線性迴歸
+4. 斜率（%/30天）即為船隊平均劣化速率；目前實測約：船殼 **0.71%/30天**（t≈8，speed-loss %，換算成一個典型 ~28個月週期約 20%，跟命題簡報提到的「船殼嚴重時影響效能可能超過20%」量級吻合）、螺旋槳 **0.083%/30天**（t≈6，滑差百分點），兩者都遠超過 `|t|>2` 顯著性門檻
 
-**單船事件歸因**：`slip_after_pct` 是該次清潔後新週期的**實際觀測**baseline；`slip_delta_pct` = 艦隊劣化速率 × 這次清潔距上次同通道清潔累積的天數（模型推論值，非原始資料比較，因此恆為非負）；`slip_before_pct = slip_after_pct + slip_delta_pct`。`DD`/`UWC+PP` 套用船殼+螺旋槳（category `hull+propeller`）；`UWC` 只套船殼；`PP`/`UWI+PP` 只套螺旋槳；`UWI`（純檢查，無物理介入）不套用任何速率，`before`/`after`/`delta` 皆為 `null`。
+**單船事件歸因**：船殼——`slip_after_pct` 固定 `0.0`（清潔後即為該週期自己的基準，定義上是 0%），`slip_before_pct` = 船殼速率 × 距上次船殼清潔累積天數（模型推論的 speed-loss %）。螺旋槳——`slip_after_pct` 是清潔後新週期的**實際觀測**滑差 baseline，`slip_before_pct` = 該值 + 螺旋槳速率 × 累積天數。兩者 `slip_delta_pct = slip_before_pct - slip_after_pct`，恆為非負。`DD`/`UWC+PP` 套用船殼+螺旋槳（category `hull+propeller`）；`UWC` 只套船殼；`PP`/`UWI+PP` 只套螺旋槳；`UWI`（純檢查，無物理介入）不套用任何速率，`before`/`after`/`delta` 皆為 `null`。**`metric` 欄位標示這筆數字實際單位**（`speed_loss_pct_foc` 或 `slip_pct_points`），不要當成同一種量直接比較。
 
 **Response:**
 ```json
@@ -211,13 +220,15 @@ GET /api/v1/vessels/{vessel_id}/speed-loss-attribution
   "vessel_id": "S1",
   "method": "fleet_calibrated_degradation_rate",
   "fleet_calibration": {
-    "hull":      { "slope_per_30d_pct": 0.0877, "t_stat": 12.23, "n_records": 3402, "significant": true },
-    "propeller": { "slope_per_30d_pct": 0.0826, "t_stat": 5.94,  "n_records": 3645, "significant": true },
+    "hull":      { "slope_per_30d_pct": 0.7126, "t_stat": 7.84, "n_records": 3725, "significant": true,
+                    "metric": "speed_loss_pct_foc_relative_to_cycle_baseline" },
+    "propeller": { "slope_per_30d_pct": 0.0826, "t_stat": 5.94, "n_records": 3645, "significant": true,
+                    "metric": "full_spd_stw_slip_pct_points" },
     "calibrated_on_vessels": 12,
-    "method": "pooled_linear_regression_calm_slip_vs_days_since_cleaning"
+    "method": "pooled_linear_regression_vs_days_since_cleaning"
   },
   "summary": {
-    "hull+propeller": 2.87,
+    "hull+propeller": 23.3,
     "propeller": 0.57
   },
   "event_attributions": [
@@ -226,10 +237,22 @@ GET /api/v1/vessels/{vessel_id}/speed-loss-attribution
       "event_day": 981.0,
       "category": "hull+propeller",
       "physical_intervention": true,
-      "slip_before_pct": 10.15,
-      "slip_after_pct": 7.28,
-      "slip_delta_pct": 2.87,
-      "notes": "Fleet-rate-modeled improvement: +2.87%"
+      "metric": "speed_loss_pct_foc",
+      "slip_before_pct": 23.3,
+      "slip_after_pct": 0.0,
+      "slip_delta_pct": 23.3,
+      "notes": "Fleet-rate-modeled improvement: +23.30% (speed_loss_pct_foc)"
+    },
+    {
+      "event_type": "UWI+PP",
+      "event_day": 1386.0,
+      "category": "propeller",
+      "physical_intervention": true,
+      "metric": "slip_pct_points",
+      "slip_before_pct": 9.26,
+      "slip_after_pct": 8.14,
+      "slip_delta_pct": 1.12,
+      "notes": "Fleet-rate-modeled improvement: +1.12% (slip_pct_points)"
     }
   ],
   "weather_timeline": [
