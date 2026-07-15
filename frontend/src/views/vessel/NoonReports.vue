@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type { VesselSummary, NoonReportEntry } from '@/types/fleet'
 import type { DataSourceInfo } from '@/types/dataSource'
 import type { BackendFuelPredictionResult } from '@/services/backend'
@@ -107,6 +107,31 @@ function formatCellValue(value: any): string {
 // 本次工作階段新增的填報 — 純前端 state，不落地寫入後端。
 const localReports = ref<LocalNoonReportEntry[]>([])
 const combinedReports = computed<LocalNoonReportEntry[]>(() => [...(data.value?.reports ?? []), ...localReports.value])
+
+// Raw API records key their day index as noon_utc/noon_day; locally-added
+// entries (see submitReport) use `day` directly.
+function reportDay(r: FullNoonReport): number {
+  return Number(r.noon_utc ?? r.noon_day ?? r.day ?? 0)
+}
+
+// 起訖 (Day) 篩選 — 預設涵蓋整個資料範圍，資料載入後才知道範圍所以用 watch 設定初始值。
+const startDayInput = ref<number | null>(null)
+const endDayInput = ref<number | null>(null)
+
+watch(combinedReports, (reports) => {
+  if (!reports.length) return
+  const days = reports.map(reportDay)
+  if (startDayInput.value == null) startDayInput.value = Math.min(...days)
+  if (endDayInput.value == null) endDayInput.value = Math.max(...days)
+})
+
+const filteredReports = computed(() =>
+  combinedReports.value.filter((r) => {
+    const d = reportDay(r)
+    return (startDayInput.value == null || d >= startDayInput.value) && (endDayInput.value == null || d <= endDayInput.value)
+  }),
+)
+const visibleReports = combinedReports
 
 function exportCsv() {
   const rows = filteredReports.value.length ? filteredReports.value : visibleReports.value
