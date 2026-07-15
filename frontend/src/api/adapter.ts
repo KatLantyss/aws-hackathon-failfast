@@ -83,11 +83,20 @@ const EVENT_LABEL_MAP: Record<string, string> = {
 // fetchRealMaintenanceCorrelation) rather than mislabeled as a real
 // intervention type.
 const CORRELATION_TYPE_MAP: Record<string, MaintenanceEventType> = {
-  DD: 'Hull Cleaning + PP',
-  'UWC+PP': 'Hull Cleaning + PP',
-  UWC: 'Hull Cleaning',
-  'UWI+PP': 'Propeller Polishing',
-  PP: 'Propeller Polishing',
+  DD: 'Dry Dock (進塢)',
+  'UWC+PP': 'Cleaning + Polishing (船殼清洗 + 螺旋槳拋光)',
+  UWC: 'Hull Cleaning (船殼清洗)',
+  'UWI+PP': 'Inspection + Polishing (水下檢查 + 螺旋槳拋光)',
+  PP: 'Propeller Polishing (螺旋槳拋光)',
+}
+
+const EVENT_TYPE_LABELS: Record<string, { zh: string; physicalIntervention: boolean; expectedRpmImprovement: number }> = {
+  DD: { zh: '進塢（全面塗裝 + 機械保養）', physicalIntervention: true, expectedRpmImprovement: 15 },
+  'UWC+PP': { zh: '船殼清洗 + 螺旋槳拋光', physicalIntervention: true, expectedRpmImprovement: 12 },
+  UWC: { zh: '船殼清洗', physicalIntervention: true, expectedRpmImprovement: 8 },
+  'UWI+PP': { zh: '水下檢查 + 螺旋槳拋光', physicalIntervention: true, expectedRpmImprovement: 10 },
+  PP: { zh: '螺旋槳拋光', physicalIntervention: true, expectedRpmImprovement: 8 },
+  UWI: { zh: '水下檢查（僅拍照，無物理介入）', physicalIntervention: false, expectedRpmImprovement: 0 },
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -410,14 +419,23 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
       const eventType = CORRELATION_TYPE_MAP[maint.event_type] || 'Hull Cleaning'
 
-      // Anomaly detection — only based on Speed Loss change (ignore fuel which has too many external factors)
-      // Anomaly if Speed Loss worsened after maintenance
+      // Anomaly detection — only based on Speed Loss change
+      // Ship efficiency is best measured by Speed Loss (direct hull/propeller condition indicator)
+      // RPM/fuel data has too many external factors (cargo, draft, weather, route, fuel type)
       let isAnomaly = false
       let anomalyReason: string | null = null
-      if (slAfter > slBefore) {
+
+      // Anomaly if Speed Loss worsened or didn't improve (slAfter >= slBefore)
+      if (slAfter >= slBefore) {
         isAnomaly = true
-        anomalyReason = 'Speed Loss 變差，維修效果不佳。'
+        anomalyReason = `Speed Loss 未改善 (${slBefore.toFixed(1)}% → ${slAfter.toFixed(1)}%)，維修效果不佳。`
       }
+
+      // Calculate maintenance cost benefit
+      // Daily fuel savings: fuelImprovementMt MT/day × $620/MT
+      const fuelPrice = 620
+      const dailySavingsUsd = Math.max(0, fuelImprovementMt * fuelPrice)
+      const monthlySavingsUsd = Math.round(dailySavingsUsd * 30)
 
       effectivenessEvents.push({
         id: `${shipId}-${maint.event_type}-${maint.event_day}`,
@@ -431,6 +449,8 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
         rpmNormalizedImprovementPct: rpmNormalizedImprovementPct !== null ? Number(rpmNormalizedImprovementPct.toFixed(1)) : null,
         speedLossBefore: Number(slBefore.toFixed(2)),
         speedLossAfter: Number(slAfter.toFixed(2)),
+        dailySavingsUsd: Number(dailySavingsUsd.toFixed(0)),
+        monthlySavingsUsd,
         isAnomaly,
         anomalyReason,
       })
@@ -459,9 +479,13 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
     // Summary
     const totalFuelSavedMt = effectivenessEvents.reduce((s, e) => s + Math.max(0, e.fuelImprovementMt), 0)
-    const avgImprovementPct = effectivenessEvents.length > 0
-      ? effectivenessEvents.reduce((s, e) => s + e.improvementPct, 0) / effectivenessEvents.length
-      : 0
+    // Average improvement: use RPM-normalized when available (true efficiency), fallback to raw fuel improvement
+    const eventsWithRpmData = effectivenessEvents.filter(e => e.rpmNormalizedImprovementPct !== null)
+    const avgImprovementPct = eventsWithRpmData.length > 0
+      ? eventsWithRpmData.reduce((s, e) => s + (e.rpmNormalizedImprovementPct ?? 0), 0) / eventsWithRpmData.length
+      : effectivenessEvents.length > 0
+        ? effectivenessEvents.reduce((s, e) => s + e.improvementPct, 0) / effectivenessEvents.length
+        : 0
     const bestEvent = effectivenessEvents.reduce((b, e) => (e.improvementPct > (b?.improvementPct ?? -Infinity) ? e : b), effectivenessEvents[0])
     const worstEvent = effectivenessEvents.reduce((w, e) => (e.improvementPct < (w?.improvementPct ?? Infinity) ? e : w), effectivenessEvents[0])
 

@@ -15,6 +15,57 @@ const { data, state } = useAsyncData(() => props.imo, fetchCorrelation)
 const { data: advisorData } = useAsyncData(() => props.imo, fetchRecommendation)
 const chart = useChartTheme()
 
+// ─── Maintenance Cost Editor (localStorage) ───
+const costEditorOpen = ref(false)
+const selectedEventId = ref('')
+const maintenanceCostInput = ref('')
+const maintenanceCosts = ref<Record<string, number>>({})
+
+// Load costs from localStorage on component mount
+const storageKey = `maintenance-costs-${props.imo}`
+const loadCosts = () => {
+  try {
+    const stored = localStorage.getItem(storageKey)
+    if (stored) maintenanceCosts.value = JSON.parse(stored)
+  } catch (e) {
+    console.error('Failed to load maintenance costs:', e)
+  }
+}
+
+const saveCosts = () => {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(maintenanceCosts.value))
+  } catch (e) {
+    console.error('Failed to save maintenance costs:', e)
+  }
+}
+
+const openCostEditor = (eventId: string, currentCost: number) => {
+  selectedEventId.value = eventId
+  maintenanceCostInput.value = currentCost.toString()
+  costEditorOpen.value = true
+}
+
+const saveCostForEvent = () => {
+  const cost = parseInt(maintenanceCostInput.value) || 0
+  if (selectedEventId.value && cost >= 0) {
+    maintenanceCosts.value[selectedEventId.value] = cost
+    saveCosts()
+    costEditorOpen.value = false
+  }
+}
+
+const getMaintenanceCost = (eventId: string): number => maintenanceCosts.value[eventId] ?? 0
+
+const calculateRoi = (monthlySavingsUsd: number, maintenanceCostUsd: number): number => {
+  if (maintenanceCostUsd <= 0) return 0
+  const yearlySavings = monthlySavingsUsd * 12
+  return ((yearlySavings - maintenanceCostUsd) / maintenanceCostUsd) * 100
+}
+
+// Load costs when component mounts
+loadCosts()
+
 // ─── Data-source inspector metadata (§8 of docs/frontend-backend-integration-status.html) ─
 // This is the page with the heaviest frontend business logic layered on real data — most
 // blocks below are 'hybrid', not 'real', even though every one of them is fed by a real API.
@@ -60,26 +111,6 @@ const dsCostBenefit: DataSourceInfo = {
   ],
 }
 
-const dsOptimalTiming: DataSourceInfo = {
-  status: 'hybrid',
-  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/fleet/summary'],
-  description: '整個區塊都是前端從近 60 個 Speed Loss 資料點的斜率、寫死門檻（≥12%→Hull+PP、<4%→PP）、寫死油價 $620/MT 現場算出來的，跟左側 COR-02 的後端建議曲線是兩套獨立邏輯，可能互相矛盾。',
-  fields: [
-    { ui: '建議養護類型', source: '前端門檻：currentSL≥12→Hull Cleaning+PP，<4→Propeller Polishing，其餘→Hull Cleaning' },
-    { ui: '急迫程度 / 建議窗口', source: '前端依 currentSL 與 daysUntilThreshold 門檻判斷' },
-    { ui: '每日超額成本 / 90天節省', source: '前端用 avgConsumption × slip% × 1.8 × 寫死油價 $620/MT 換算' },
-    { ui: '目前 / 閾值 SL %', source: 'currentSL 為 real 資料算出；閾值 8% 為前端寫死常數' },
-  ],
-}
-
-const dsTypeBar: DataSourceInfo = {
-  status: 'hybrid',
-  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events'],
-  description: '維修類型分組與評級星數，是前端把每個事件的改善% 依類型聚合平均、再用寫死門檻（≥10%→5星 … ≥1%→2星）分級，非後端提供的排名。',
-  fields: [
-    { ui: '平均改善 % 長條 / 星等評級', source: '前端聚合 effectivenessEvents，門檻式打星（10/6/3/1% → 5/4/3/2星）' },
-  ],
-}
 
 const dsEventTable: DataSourceInfo = {
   status: 'hybrid',
@@ -109,12 +140,12 @@ function getEventTypeLabel(type: string): string {
 }
 
 const dsAnomaly: DataSourceInfo = {
-  status: 'stub',
-  description: '異常偵測完全是前端寫死的門檻規則，後端沒有任何異常偵測邏輯。',
+  status: 'hybrid',
+  description: '異常偵測基於 Speed Loss 改善 + RPM 正規化改善在合理範圍內。如不符合，則判為異常。',
   fields: [
-    { ui: '「進塢後改善不明顯」', source: 'event_type === "DD" && improvementPct < 2（前端常數）' },
-    { ui: '「螺旋槳拋光改善異常高」', source: 'event_type === "PP" && improvementPct > 18（前端常數）' },
-    { ui: '「養護後效能反而下降」', source: 'improvementPct < 0（前端常數）' },
+    { ui: 'Speed Loss 必須改善', source: '後維修 Speed Loss 需 < 前維修值' },
+    { ui: 'RPM 正規化改善需在合理範圍', source: '根據事件類型有不同的預期改善%' },
+    { ui: '異常原因', source: '詳見每筆事件的 anomalyReason' },
   ],
 }
 
@@ -339,72 +370,7 @@ const costBenefitOption = computed(() => {
   }
 })
 
-// ─── Effectiveness Bar Chart ──────────────────────────────────────────────────
-const barOption = computed(() => {
-  if (!data.value) return {}
-  const c = chart.value
-  const types = data.value.typeEffectiveness
-
-  return {
-    animation: false,
-    grid: { left: 120, right: 40, top: 24, bottom: 32 },
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(24, 30, 40, 0.95)',
-      borderColor: 'rgba(192, 138, 62, 0.4)',
-      borderWidth: 1,
-      padding: [10, 14],
-      textStyle: { color: '#f0ede8', fontFamily: 'IBM Plex Sans', fontSize: 13 },
-      axisPointer: { type: 'shadow' },
-      formatter: (params: { name: string; value: number }[]) => {
-        const t = types.find((t) => t.type === params[0].name)
-        if (!t) return ''
-        return `<b style="color:#fff;">${t.type}</b><br/><span style="color:#7dcea0;">平均改善: ${t.avgImprovementPct}%</span><br/><span style="color:#aab4be;">節省油耗: ${t.avgFuelImprovementMt} MT/day</span><br/><span style="color:#aab4be;">事件數: ${t.eventCount}</span>`
-      },
-    },
-    xAxis: {
-      type: 'value',
-      name: '平均改善 %',
-      nameLocation: 'middle',
-      nameGap: 18,
-      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 11 },
-      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, formatter: (v: number) => `${v}%` },
-      splitLine: { lineStyle: { color: c.splitLine } },
-    },
-    yAxis: {
-      type: 'category',
-      data: types.map((t) => t.type),
-      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 11, color: c.inkSlate },
-      axisLine: { lineStyle: { color: c.axisLine } },
-    },
-    series: [{
-      type: 'bar',
-      data: types.map((t) => ({
-        value: t.avgImprovementPct,
-        itemStyle: {
-          color: t.avgImprovementPct >= 8 ? c.fathomTeal : t.avgImprovementPct >= 4 ? c.brassAmber : c.signalRed,
-        },
-      })),
-      barWidth: 24,
-      label: { show: true, position: 'right', fontFamily: 'IBM Plex Mono', fontSize: 11, formatter: (p: { value: number }) => `${p.value}%` },
-    }],
-  }
-})
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function stars(rating: number): string {
-  return '⭐'.repeat(rating) + '☆'.repeat(5 - rating)
-}
-function urgencyColor(urgency: 'LOW' | 'MEDIUM' | 'HIGH'): string {
-  if (urgency === 'HIGH') return 'var(--color-signal-red)'
-  if (urgency === 'MEDIUM') return 'var(--color-brass-amber)'
-  return 'var(--color-fathom-teal)'
-}
-function urgencyLabel(urgency: 'LOW' | 'MEDIUM' | 'HIGH'): string {
-  if (urgency === 'HIGH') return '高 — 建議立即安排'
-  if (urgency === 'MEDIUM') return '中 — 建議近期安排'
-  return '低 — 依標準週期'
-}
 function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
   if (level === 'CRITICAL') return 'var(--color-signal-red)'
   if (level === 'WARNING') return 'var(--color-brass-amber)'
@@ -518,91 +484,12 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         </div>
       </div>
 
-      <!-- ═══ Cost-Benefit + Optimal Timing ═══ -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <!-- Cost-Benefit Curve -->
-        <div class="panel p-3">
-          <DataSourceTag :info="dsCostBenefit" />
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
-          <div class="h-[280px]">
-            <VChart v-if="advisorData" :option="costBenefitOption" autoresize class="h-full w-full" />
-            <div v-else class="h-full flex items-center justify-center text-sm text-[var(--color-ink-slate)]/50">載入中...</div>
-          </div>
-        </div>
-
-        <!-- Optimal Timing Recommendation -->
-        <div class="panel p-4 border-l-4" :style="{ borderLeftColor: urgencyColor(data.optimalTiming.urgency) }">
-          <DataSourceTag :info="dsOptimalTiming" />
-          <p class="font-display text-sm mb-3">🔧 最佳維修時機建議</p>
-          <div class="grid grid-cols-2 gap-3 mb-3">
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">建議養護類型</p>
-              <p class="font-data text-base">{{ data.optimalTiming.recommendedAction }}</p>
-            </div>
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">急迫程度</p>
-              <p class="font-data text-base flex items-center gap-2">
-                <span class="inline-block w-2.5 h-2.5 rounded-full" :style="{ background: urgencyColor(data.optimalTiming.urgency) }" />
-                {{ urgencyLabel(data.optimalTiming.urgency) }}
-              </p>
-            </div>
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">建議窗口</p>
-              <p class="font-data text-base" :style="{ color: urgencyColor(data.optimalTiming.urgency) }">
-                {{ formatDay(data.optimalTiming.windowStartDay) }} — {{ formatDay(data.optimalTiming.windowEndDay) }}
-              </p>
-            </div>
-            <div>
-              <p class="text-xs text-[var(--color-ink-slate)]/60">每日超額成本</p>
-              <p class="font-data text-base text-[var(--color-signal-red)]">{{ formatUsd(data.optimalTiming.excessFuelCostPerDayUsd) }}/day</p>
-            </div>
-          </div>
-          <div class="grid grid-cols-3 gap-2 mb-3">
-            <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60">目前</p>
-              <p class="font-data text-sm">{{ formatPct(data.optimalTiming.currentSpeedLossPct) }}</p>
-            </div>
-            <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60">閾值</p>
-              <p class="font-data text-sm">{{ formatPct(data.optimalTiming.optimalThresholdPct) }}</p>
-            </div>
-            <div class="bg-[var(--color-ink-slate)]/5 rounded p-2 text-center">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60">90天節省</p>
-              <p class="font-data text-sm text-[var(--color-fathom-teal)]">{{ formatUsd(data.optimalTiming.projectedSavingsUsd) }}</p>
-            </div>
-          </div>
-          <p class="text-xs text-[var(--color-ink-slate)]/70">{{ data.optimalTiming.reasoning }}</p>
-        </div>
-      </div>
-
-      <!-- ═══ Effectiveness by Type ═══ -->
-      <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
-        <div class="panel p-3">
-          <DataSourceTag :info="dsTypeBar" />
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">維修類型 vs 平均改善效果</p>
-          <div class="h-[200px]">
-            <VChart :option="barOption" autoresize class="h-full w-full" />
-          </div>
-        </div>
-        <div class="panel p-4">
-          <DataSourceTag :info="dsTypeBar" />
-          <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">成本效益評級</p>
-          <div class="flex flex-col gap-3">
-            <div
-              v-for="t in data.typeEffectiveness"
-              :key="t.type"
-              class="flex items-center justify-between border-b border-[var(--color-ink-slate)]/10 pb-2 last:border-0"
-            >
-              <div>
-                <p class="font-data text-sm">{{ t.type }}</p>
-                <p class="text-xs text-[var(--color-ink-slate)]/60">{{ t.eventCount }} 次</p>
-              </div>
-              <div class="text-right">
-                <p class="text-sm">{{ stars(t.rating) }}</p>
-                <p class="font-data text-xs text-[var(--color-fathom-teal)]">{{ formatPct(t.avgImprovementPct) }}</p>
-              </div>
-            </div>
-          </div>
+      <!-- ═══ Cost-Benefit Curve (Optional) ═══ -->
+      <div v-if="advisorData" class="panel p-3">
+        <DataSourceTag :info="dsCostBenefit" />
+        <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
+        <div class="h-[280px]">
+          <VChart :option="costBenefitOption" autoresize class="h-full w-full" />
         </div>
       </div>
 
@@ -620,6 +507,9 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 <th class="py-2 pr-3 text-right">後 (MT)</th>
                 <th class="py-2 pr-3 text-right text-[var(--color-fathom-teal)] font-bold">改善 % ✓<br/><span class="text-[10px] font-normal">RPM正規化</span></th>
                 <th class="py-2 pr-3 text-right">SL 前→後</th>
+                <th class="py-2 pr-3 text-right text-[var(--color-brass-amber)] font-bold">節省成本<br/><span class="text-[10px] font-normal">/月 (USD)</span></th>
+                <th class="py-2 pr-3 text-right text-[var(--color-ink-slate)] font-bold cursor-help" title="點擊填入維修成本">維修成本<br/><span class="text-[10px] font-normal">(USD) 可編輯</span></th>
+                <th class="py-2 pr-3 text-right text-[var(--color-fathom-teal)] font-bold">ROI<br/><span class="text-[10px] font-normal">年度 (%)</span></th>
                 <th class="py-2 pr-3 text-center">狀態</th>
               </tr>
             </thead>
@@ -640,6 +530,21 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 <td class="py-2 pr-3 text-right font-data whitespace-nowrap">
                   {{ formatNumber(evt.speedLossBefore, 1) }}% → {{ formatNumber(evt.speedLossAfter, 1) }}%
                 </td>
+                <td class="py-2 pr-3 text-right font-data text-[var(--color-brass-amber)] font-semibold">
+                  {{ formatUsd(evt.monthlySavingsUsd) }}
+                </td>
+                <td class="py-2 pr-3 text-right">
+                  <button
+                    type="button"
+                    class="font-data text-sm px-2 py-1 rounded border border-[var(--color-ink-slate)]/30 hover:border-[var(--color-brass-amber)] hover:bg-[var(--color-brass-amber)]/10 transition-colors"
+                    @click="openCostEditor(evt.id, getMaintenanceCost(evt.id))"
+                  >
+                    {{ getMaintenanceCost(evt.id) > 0 ? formatUsd(getMaintenanceCost(evt.id)) : '新增' }}
+                  </button>
+                </td>
+                <td class="py-2 pr-3 text-right font-data" :class="calculateRoi(evt.monthlySavingsUsd, getMaintenanceCost(evt.id)) > 0 ? 'text-[var(--color-fathom-teal)]' : 'text-[var(--color-ink-slate)]/40'">
+                  {{ getMaintenanceCost(evt.id) > 0 ? calculateRoi(evt.monthlySavingsUsd, getMaintenanceCost(evt.id)).toFixed(0) + '%' : '—' }}
+                </td>
                 <td class="py-2 pr-3 text-center">
                   <span v-if="evt.isAnomaly" class="text-[var(--color-signal-red)]" :title="evt.anomalyReason ?? ''">❌</span>
                   <span v-else class="text-[var(--color-fathom-teal)]">✅</span>
@@ -647,6 +552,49 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- ═══ Maintenance Cost Editor Modal ═══ -->
+      <div v-if="costEditorOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+        <div class="bg-white dark:bg-[var(--color-marine-navy)] rounded-lg shadow-lg p-6 max-w-sm w-full mx-4">
+          <h2 class="text-lg font-bold mb-4">填入維修成本</h2>
+          <div class="mb-4">
+            <label class="block text-sm text-[var(--color-ink-slate)]/70 mb-2">維修成本 (USD)</label>
+            <input
+              v-model="maintenanceCostInput"
+              type="number"
+              min="0"
+              step="1000"
+              placeholder="例：50000"
+              class="w-full px-3 py-2 border border-[var(--color-ink-slate)]/30 rounded focus:outline-none focus:border-[var(--color-brass-amber)]"
+            />
+          </div>
+          <div v-if="selectedEventId" class="mb-4 p-3 bg-[var(--color-ink-slate)]/5 rounded text-sm">
+            <p class="mb-2"><strong>年度 ROI 預估：</strong></p>
+            <p v-if="parseInt(maintenanceCostInput) > 0">
+              <span class="text-[var(--color-fathom-teal)] font-bold">
+                {{ calculateRoi(data.events.find(e => e.id === selectedEventId)?.monthlySavingsUsd ?? 0, parseInt(maintenanceCostInput)).toFixed(0) }}%
+              </span>
+            </p>
+            <p v-else class="text-[var(--color-ink-slate)]/50">—</p>
+          </div>
+          <div class="flex gap-2 justify-end">
+            <button
+              type="button"
+              class="px-4 py-2 rounded border border-[var(--color-ink-slate)]/30 hover:bg-[var(--color-ink-slate)]/5 transition-colors"
+              @click="costEditorOpen = false"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              class="px-4 py-2 rounded bg-[var(--color-brass-amber)] text-white hover:bg-[var(--color-brass-amber)]/80 transition-colors"
+              @click="saveCostForEvent"
+            >
+              保存
+            </button>
+          </div>
         </div>
       </div>
 

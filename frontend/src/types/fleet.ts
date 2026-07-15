@@ -182,6 +182,10 @@ export interface MaintenanceEffectivenessEvent {
   speedLossBefore: number
   /** Speed loss % after maintenance */
   speedLossAfter: number
+  /** Estimated daily fuel cost savings (USD/day) from this maintenance */
+  dailySavingsUsd: number
+  /** Estimated monthly fuel cost savings (USD/month) from this maintenance */
+  monthlySavingsUsd: number
   /** Whether the result is anomalous (e.g. no improvement after DD) */
   isAnomaly: boolean
   /** Anomaly explanation if applicable */
