@@ -99,7 +99,8 @@ export interface NoonReportEntry {
 
 export interface SpeedLossEvent {
   day: number
-  type: 'hull_cleaning' | 'propeller_polishing' | 'drydock'
+  /** 'inspection' = UWI only — no physical work performed, must not be treated as a cleaning/polishing cycle boundary */
+  type: 'hull_cleaning' | 'propeller_polishing' | 'drydock' | 'inspection'
   label: string
 }
 

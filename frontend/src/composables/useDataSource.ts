@@ -51,17 +51,13 @@ export async function fetchVessels(): Promise<VesselSummary[]> {
   return fetchRealFleetVessels()
 }
 
-/** Fetch fuel attribution — not yet backed by real API, returns null */
+/**
+ * Fetch fuel attribution for the voice/chat assistant's fuel_attribution
+ * card (useChatOrchestrator.ts) — still a stub returning null. Unlike the
+ * web page at /vessels/:imo/fuel-attribution (which calls the real
+ * speed-loss-attribution endpoint via services/backend.ts directly), this
+ * chat-card code path was never wired to that endpoint.
+ */
 export async function fetchFuelAttr(_imo: string): Promise<FuelAttributionResponse | null> {
   return null
-}
-
-/** Fetch noon reports — returns null (backend has the data but we haven't wired the display yet) */
-export async function fetchNoonReportsData(_imo: string): Promise<null> {
-  return null
-}
-
-/** Fetch inspections — returns empty array (no UWI detail data in competition dataset) */
-export async function fetchInspectionsData(_imo: string): Promise<never[]> {
-  return []
 }

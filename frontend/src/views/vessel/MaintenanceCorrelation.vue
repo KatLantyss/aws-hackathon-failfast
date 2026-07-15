@@ -2,17 +2,116 @@
 import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 import { fetchCorrelation, fetchRecommendation } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import { useChartTheme } from '@/composables/useChartTheme'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatDay, formatUsd, formatNumber, formatPct } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, fetchCorrelation)
 const { data: advisorData } = useAsyncData(() => props.imo, fetchRecommendation)
 const chart = useChartTheme()
+
+// ─── Data-source inspector metadata (§8 of docs/frontend-backend-integration-status.html) ─
+// This is the page with the heaviest frontend business logic layered on real data — most
+// blocks below are 'hybrid', not 'real', even though every one of them is fed by a real API.
+const FUEL_FORMULA_NOTE = '前端固定用 fuel = avgConsumption × (1 + slip%/100 × 1.8) 換算，1.8 係數是寫死常數，非模型或後端算出來的'
+
+const dsAlert: DataSourceInfo = {
+  status: 'stub',
+  description: '「⚡ 預警門檻設定」滑桿是純前端 UI 狀態（ref），拖動只會即時重算下方 alertStatus 文字，不會呼叫任何 API 或存到後端 —— 重新整理頁面就重置，是互動式模擬器而非持久化設定。',
+  fields: [
+    { ui: 'Speed Loss 門檻 / 提前天數滑桿', source: '純前端 ref，無對應後端欄位' },
+    { ui: '🚨/⚠️/✅ 狀態文字', source: '前端拿 data.optimalTiming（本身已是 hybrid 計算值，見 COR-03）再套滑桿門檻二次判斷' },
+  ],
+}
+
+const dsSummaryKpis: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events', 'GET /api/v1/fleet/summary'],
+  description: '4 張卡混合了純後端值與前端聚合值。',
+  fields: [
+    { ui: '養護事件數 / 平均效能改善', source: '前端從 effectivenessEvents 陣列算 length / 平均 improvementPct', note: FUEL_FORMULA_NOTE },
+    { ui: '目前超額成本（USD/天）', source: 'vessel.excessFuelCostUsdMtd（fleet/summary，真正的後端值）' },
+    { ui: '異常事件數', source: '前端門檻判斷（見下方 COR-07）' },
+  ],
+}
+
+const dsTimeline: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events'],
+  description: 'Speed Loss % 曲線是後端原始資料；日油耗曲線是前端換算值，speed-loss 端點本身沒有逐日油耗欄位。',
+  fields: [
+    { ui: 'Speed Loss % 曲線', source: 'iso_timeline / slip_timeline（real）' },
+    { ui: '日油耗 (MT) 曲線', source: FUEL_FORMULA_NOTE },
+    { ui: '◆ 養護事件 / ▲ 異常事件標記', source: 'maintenance-events（real）+ 前端異常門檻判斷（hybrid，見 COR-07）' },
+  ],
+}
+
+const dsCostBenefit: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'GET /api/v1/vessels/{vessel_id}/maintenance-recommendation',
+  description: '成本效益模擬曲線是後端 maintenance-recommendation 端點算好的 curve[]，前端只負責繪圖，沒有二次加工。注意：右側 COR-03「最佳維修時機建議」是另一套完全獨立的前端邏輯，兩者可能給出不一致的結論。',
+  fields: [
+    { ui: '曲線 X/Y 座標', source: 'curve[].deferral_days / cumulative_excess_fuel_cost_usd' },
+  ],
+}
+
+const dsOptimalTiming: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/fleet/summary'],
+  description: '整個區塊都是前端從近 60 個 Speed Loss 資料點的斜率、寫死門檻（≥12%→Hull+PP、<4%→PP）、寫死油價 $620/MT 現場算出來的，跟左側 COR-02 的後端建議曲線是兩套獨立邏輯，可能互相矛盾。',
+  fields: [
+    { ui: '建議養護類型', source: '前端門檻：currentSL≥12→Hull Cleaning+PP，<4→Propeller Polishing，其餘→Hull Cleaning' },
+    { ui: '急迫程度 / 建議窗口', source: '前端依 currentSL 與 daysUntilThreshold 門檻判斷' },
+    { ui: '每日超額成本 / 90天節省', source: '前端用 avgConsumption × slip% × 1.8 × 寫死油價 $620/MT 換算' },
+    { ui: '目前 / 閾值 SL %', source: 'currentSL 為 real 資料算出；閾值 8% 為前端寫死常數' },
+  ],
+}
+
+const dsTypeBar: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events'],
+  description: '維修類型分組與評級星數，是前端把每個事件的改善% 依類型聚合平均、再用寫死門檻（≥10%→5星 … ≥1%→2星）分級，非後端提供的排名。',
+  fields: [
+    { ui: '平均改善 % 長條 / 星等評級', source: '前端聚合 effectivenessEvents，門檻式打星（10/6/3/1% → 5/4/3/2星）' },
+  ],
+}
+
+const dsEventTable: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events'],
+  description: '事件明細表的 Speed Loss 前/後值是後端真實資料算出的區間平均；油耗前/後值與改善% 是前端固定公式換算。',
+  fields: [
+    { ui: 'SL 前→後', source: '前端對事件前後 14 天視窗的 iso_timeline/slip_timeline 取平均（real 資料，前端聚合）' },
+    { ui: '前/後油耗 (MT) / 改善%', source: FUEL_FORMULA_NOTE },
+    { ui: '港口', source: '無對應欄位，固定顯示 "—"' },
+    { ui: '❌/✅ 狀態', source: '前端異常門檻判斷（見下方 COR-07）' },
+  ],
+}
+
+const dsAnomaly: DataSourceInfo = {
+  status: 'stub',
+  description: '異常偵測完全是前端寫死的門檻規則，後端沒有任何異常偵測邏輯。',
+  fields: [
+    { ui: '「進塢後改善不明顯」', source: 'event_type === "DD" && improvementPct < 2（前端常數）' },
+    { ui: '「螺旋槳拋光改善異常高」', source: 'event_type === "PP" && improvementPct > 18（前端常數）' },
+    { ui: '「養護後效能反而下降」', source: 'improvementPct < 0（前端常數）' },
+  ],
+}
+
+const dsInsight: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/fleet/summary'],
+  description: 'AI 分析摘要是純前端字串模板（非真的呼叫 LLM），把 summary（hybrid）與 vessel（real）欄位代入固定句型組出來的文字。',
+  fields: [
+    { ui: '摘要文字', source: '前端模板字串代入 data.summary.* / vessel.avgSlipPct / vessel.speedLossPct / vessel.slipTrend' },
+  ],
+}
 
 // ─── Alert Threshold Settings ─────────────────────────────────────────────────
 const alertThresholdPct = ref(8) // Speed Loss % threshold
@@ -287,6 +386,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
 
       <!-- ═══ Alert Threshold Settings + Status ═══ -->
       <div class="panel p-4">
+        <DataSourceTag :info="dsAlert" />
         <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div class="flex items-center gap-2">
             <PanelTag code="ALT-01" />
@@ -348,7 +448,8 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       </div>
 
       <!-- ═══ Summary KPIs ═══ -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="relative grid grid-cols-2 md:grid-cols-4 gap-3">
+        <DataSourceTag :info="dsSummaryKpis" />
         <div class="panel p-3 text-center">
           <p class="text-xs text-[var(--color-ink-slate)]/60">養護事件數</p>
           <p class="font-data text-2xl">{{ data.summary.totalEvents }}</p>
@@ -372,6 +473,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
 
       <!-- ═══ Timeline Chart ═══ -->
       <div class="panel p-3">
+        <DataSourceTag :info="dsTimeline" />
         <PanelTag code="COR-01" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
           效能時序圖 — ◆ 養護事件 / ▲ 異常事件
@@ -385,6 +487,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <!-- Cost-Benefit Curve -->
         <div class="panel p-3">
+          <DataSourceTag :info="dsCostBenefit" />
           <PanelTag code="COR-02" class="mb-2" />
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
           <div class="h-[280px]">
@@ -395,6 +498,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
 
         <!-- Optimal Timing Recommendation -->
         <div class="panel p-4 border-l-4" :style="{ borderLeftColor: urgencyColor(data.optimalTiming.urgency) }">
+          <DataSourceTag :info="dsOptimalTiming" />
           <PanelTag code="COR-03" class="mb-2" />
           <p class="font-display text-sm mb-3">🔧 最佳維修時機建議</p>
           <div class="grid grid-cols-2 gap-3 mb-3">
@@ -441,6 +545,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <!-- ═══ Effectiveness by Type ═══ -->
       <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <div class="panel p-3">
+          <DataSourceTag :info="dsTypeBar" />
           <PanelTag code="COR-04" class="mb-2" />
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">維修類型 vs 平均改善效果</p>
           <div class="h-[200px]">
@@ -448,6 +553,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
           </div>
         </div>
         <div class="panel p-4">
+          <DataSourceTag :info="dsTypeBar" />
           <PanelTag code="COR-05" class="mb-2" />
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">成本效益評級</p>
           <div class="flex flex-col gap-3">
@@ -471,6 +577,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
 
       <!-- ═══ Event Details Table ═══ -->
       <div class="panel p-4">
+        <DataSourceTag :info="dsEventTable" />
         <PanelTag code="COR-06" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">養護事件效益驗證明細</p>
         <div class="overflow-x-auto">
@@ -517,6 +624,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
 
       <!-- ═══ Anomaly Alerts ═══ -->
       <div v-if="data.events.some((e) => e.isAnomaly)" class="panel p-4 border-l-4" style="border-left-color: var(--color-signal-red)">
+        <DataSourceTag :info="dsAnomaly" />
         <PanelTag code="COR-07" class="mb-2" />
         <p class="font-display text-sm mb-2 text-[var(--color-signal-red)]">異常預警</p>
         <ul class="flex flex-col gap-2 text-sm">
@@ -531,6 +639,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
 
       <!-- ═══ AI Insight ═══ -->
       <div class="panel p-4 border-l-4" style="border-left-color: var(--color-fathom-teal)">
+        <DataSourceTag :info="dsInsight" />
         <PanelTag code="COR-08" class="mb-2" />
         <p class="font-display text-sm mb-2">AI 分析摘要</p>
         <div class="text-sm text-[var(--color-ink-slate)]/80 flex flex-col gap-2">

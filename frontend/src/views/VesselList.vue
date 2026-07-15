@@ -5,11 +5,28 @@ import { fetchVessels } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import FathometerGauge from '@/components/FathometerGauge.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
 import type { VesselSummary } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 import { speedLossColor, URGENCY_LABEL, URGENCY_COLOR, formatUsd } from '@/utils/format'
 
 const router = useRouter()
 const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
+
+const dsTable: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'GET /api/v1/fleet/summary',
+  description: '整張表格與展開列全部來自單一 fleet/summary 呼叫（per_vessel 陣列），沒有額外前端計算——盤點的 9 個頁面中還原度最高的一頁。',
+  fields: [
+    { ui: '船型', source: 'ship_class', note: '缺值時才 fallback 用前端寫死的 W1_SHIPS/W2_SHIPS 陣列猜測' },
+    { ui: 'Speed Loss % / 趨勢', source: 'recent_90d_slip_pct（或 avg_slip_pct）/ slip_trend' },
+    { ui: '平均油耗 / RPM / SFOC / 負載率', source: 'avg_consumption_mt / avg_rpm / avg_sfoc / avg_load_pct' },
+    { ui: '距上次清洗 / 拋光 (天)', source: 'days_since_hull_clean / days_since_prop_polish' },
+    { ui: '超額成本 (USD/天)', source: 'excess_fuel_cost_usd_per_day' },
+    { ui: '急迫度', source: 'urgency' },
+    { ui: 'TEU 容量 / 建造年份 / 船旗 / 主機型號', source: '無對應欄位，資料集不含船舶靜態規格，型別上保留但畫面未渲染' },
+  ],
+}
 
 // ── Filters ───────────────────────────────────────────────────────────────────
 const typeFilter = ref('all')
@@ -139,6 +156,7 @@ function cleanDayColor(days: number): string {
     <StateDisplay v-if="state !== 'success'" :state="state === 'error' ? 'error' : 'loading'" />
 
     <div v-else class="panel panel--accent overflow-x-auto">
+      <DataSourceTag :info="dsTable" />
       <table class="w-full text-sm" style="min-width: 1160px">
         <!-- ── Header ── -->
         <thead>

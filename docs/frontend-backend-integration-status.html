@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>前後端整合現況盤點 — YangMing Fleet Dashboard</title>
+<style>
+  :root {
+    --navy: #0f2438;
+    --ink: #1b2a38;
+    --ink-muted: #5b6b7a;
+    --paper: #fbfaf7;
+    --paper-hi: #ffffff;
+    --line: #d8dde2;
+    --amber: #c8952e;
+    --red: #b5433d;
+    --teal: #2f7a6e;
+    --blue: #2b6cb0;
+    --gray: #8a97a3;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Noto Sans TC', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 100px; }
+  header.doc-head {
+    border-bottom: 3px solid var(--navy);
+    padding-bottom: 24px;
+    margin-bottom: 32px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--amber);
+    font-weight: 700;
+    margin: 0 0 8px;
+  }
+  h1 { font-size: 1.9rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--ink-muted); font-size: 0.95rem; margin: 0; }
+  .meta-row { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--ink-muted); }
+  .meta-row span b { color: var(--ink); }
+
+  h2 {
+    font-size: 1.25rem;
+    margin: 48px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2 .num { font-family: var(--mono); font-size: 0.75rem; color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); padding: 2px 7px; border-radius: 3px; }
+  h3 { font-size: 1.02rem; margin: 28px 0 10px; }
+  p { color: var(--ink); }
+  code, .mono { font-family: var(--mono); font-size: 0.86em; }
+  code { background: color-mix(in srgb, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 3px; }
+
+  /* legend badges */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    line-height: 1.5;
+  }
+  .b-real   { background: color-mix(in srgb, var(--teal) 14%, transparent); color: var(--teal); }
+  .b-hybrid { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+  .b-mock   { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+  .b-dead   { background: color-mix(in srgb, var(--gray) 18%, transparent); color: var(--ink-muted); }
+
+  .legend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 10px;
+    background: var(--paper-hi);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .legend-grid .item { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--ink-muted); }
+  .legend-grid .item .badge { margin-top: 1px; }
+
+  /* architecture */
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    align-items: stretch;
+    margin: 18px 0;
+  }
+  .flow .box {
+    background: var(--paper-hi);
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--navy);
+    border-radius: 4px;
+    padding: 12px 16px;
+    flex: 1;
+    min-width: 190px;
+  }
+  .flow .box h4 { margin: 0 0 6px; font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--navy); }
+  .flow .box p { margin: 0; font-size: 12.5px; color: var(--ink-muted); }
+  .flow .arrow { display: flex; align-items: center; justify-content: center; padding: 0 10px; color: var(--gray); font-size: 20px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 13.5px; background: var(--paper-hi); }
+  table.wide { min-width: 720px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); background: color-mix(in srgb, var(--navy) 4%, transparent); }
+  tr:hover td { background: color-mix(in srgb, var(--navy) 2%, transparent); }
+  .tbl-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .tbl-scroll table { margin: 0; border: none; }
+  .tbl-scroll th:first-child, .tbl-scroll td:first-child { padding-left: 14px; }
+
+  .page-card {
+    background: var(--paper-hi);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 20px 22px;
+    margin-bottom: 22px;
+  }
+  .page-card .route {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+  }
+  .page-card .route .url { font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--navy); }
+  .page-card .route .file { font-family: var(--mono); font-size: 11.5px; color: var(--gray); }
+  .page-card .desc { color: var(--ink-muted); font-size: 13.5px; margin: 4px 0 14px; }
+
+  .block-row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 4px 16px;
+    padding: 10px 0;
+    border-top: 1px solid var(--line);
+    font-size: 13.5px;
+  }
+  .block-row:first-of-type { border-top: none; }
+  .block-row .b-label { font-weight: 600; color: var(--ink); }
+  .block-row .b-detail { color: var(--ink-muted); }
+  .block-row .b-detail code { color: var(--ink); }
+  .block-row .b-badge { grid-column: 1; margin-top: 2px; }
+
+  .note-box {
+    border-left: 3px solid var(--amber);
+    background: color-mix(in srgb, var(--amber) 8%, transparent);
+    padding: 10px 14px;
+    border-radius: 0 4px 4px 0;
+    font-size: 13px;
+    color: var(--ink);
+    margin: 10px 0;
+  }
+  .note-box.danger { border-left-color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+  .note-box.info { border-left-color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, transparent); }
+
+  ul.issues { padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; }
+  ul.issues li {
+    background: var(--paper-hi);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-size: 13.5px;
+  }
+  ul.issues li .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--red);
+    display: block;
+    margin-bottom: 4px;
+    font-weight: 700;
+  }
+
+  footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--gray); font-size: 12px; font-family: var(--mono); }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --navy: #7fb0d8;
+      --ink: #e6e9ec;
+      --ink-muted: #9aa7b3;
+      --paper: #12181f;
+      --paper-hi: #1a222b;
+      --line: #2c3742;
+      --amber: #dcab4e;
+      --red: #e0776f;
+      --teal: #56b4a3;
+      --blue: #6fa8dc;
+      --gray: #6b7784;
+    }
+    th { background: color-mix(in srgb, #000 20%, transparent); }
+    code { background: color-mix(in srgb, #fff 10%, transparent); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="doc-head">
+    <p class="eyebrow">INTEGRATION-AUDIT · 2026-07-15 · 修訂 2026-07-15b</p>
+    <h1>前後端整合現況盤點</h1>
+    <p class="subtitle">frontend/ ⇄ backend-api/ — 逐頁、逐區塊確認資料來源是真實 API、前端衍生計算，還是尚未串接的固定值。</p>
+    <div class="note-box info" style="margin-top:14px">
+      <b>本次修訂：</b>已根據 §7 清單與 <code>docs/main-requirement.md</code> 主需求完成一輪修整，詳見新增的 <a href="#s8">§8 本輪修整記錄</a>。§3/§4/§6/§7 內文已同步更新為修整後現況；未特別註記的項目維持修整前的盤點結果。
+    </div>
+    <div class="meta-row">
+      <span>Frontend：<b>Vue 3 + Vite</b>（frontend/src）</span>
+      <span>Backend：<b>FastAPI + XGBoost</b>（backend-api/app.py → handler.py → DynamoDB）</span>
+      <span>資料集：<b>S1–S12</b>（訓練船，5年歷史）／<b>S21–S23</b>（預測船）</span>
+    </div>
+  </header>
+
+  <h2><span class="num">§1</span> 圖例</h2>
+  <div class="legend-grid">
+    <div class="item"><span class="badge b-real">🟢 REAL</span> 直接呼叫 Backend API，欄位原樣顯示，無前端造假。</div>
+    <div class="item"><span class="badge b-hybrid">🟡 HYBRID</span> 有打真實 API，但顯示值是前端用固定公式／門檻值再加工出來的（不是後端回傳的原始數字）。</div>
+    <div class="item"><span class="badge b-mock">🔴 STUB</span> 完全沒打 API，寫死常數、空陣列或 <code>null</code>。</div>
+    <div class="item"><span class="badge b-dead">⚪ UNREACHABLE</span> 程式碼與 API 串接都做好了，但沒有掛在 router 上，使用者從網址進不去。</div>
+  </div>
+
+  <h2><span class="num">§2</span> 資料流總覽</h2>
+  <p>目前專案裡其實有<strong>兩條並存、沒有互相呼叫的 API client 路徑</strong>，這是後續開發最容易搞混的地方：</p>
+
+  <div class="flow">
+    <div class="box">
+      <h4>Vue Views</h4>
+      <p>views/*.vue、views/vessel/*.vue</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="box">
+      <h4>路徑 A：適配層</h4>
+      <p><code>composables/useDataSource.ts</code> → <code>api/adapter.ts</code> → <code>api/client.ts</code><br/>回傳 <code>types/fleet.ts</code> 的完整 VesselSummary 等前端型別</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="box">
+      <h4>路徑 B：直連層</h4>
+      <p><code>services/backend.ts</code><br/>薄封裝，直接回傳後端 snake_case 原始 JSON 型別</p>
+    </div>
+    <div class="arrow">→</div>
+    <div class="box">
+      <h4>FastAPI</h4>
+      <p><code>backend-api/app.py</code> → <code>handler.py</code> → DynamoDB<br/>本機：<code>localhost:8000</code>／雲端：CloudFront</p>
+    </div>
+  </div>
+
+  <div class="note-box info">
+    <b>路徑 A 用在：</b> 船隊總覽、船隊列表、Speed Loss、維修效能分析、跨船隊分析、船舶總覽卡片（都需要「整艘船的完整摘要」）。<br/>
+    <b>路徑 B 用在：</b> Noon Reports、水下檢查、油耗歸因、燃油預測（都是「單一 API 端點的原始資料」，不需要整合摘要）。<br/>
+    兩邊各自定義了一份幾乎重複的 TypeScript 型別（<code>ApiVesselDetail</code> vs <code>BackendVesselDetail</code> 等），維護時容易改一邊漏一邊。
+  </div>
+
+  <div class="note-box danger">
+    <b>環境變數行為不一致：</b> <code>api/client.ts</code> 若沒設定 <code>VITE_BACKEND_BASE_URL</code> 會直接 <code>throw</code>；<code>services/backend.ts</code> 則靜默 fallback 成空字串（呼叫相對路徑）。目前 <code>.env</code> 設的是 <code>http://localhost:8000</code>，正式環境對應 CloudFront domain。
+  </div>
+
+  <h3>Backend 端點總表（app.py 實際掛載的 11 條路由）</h3>
+  <div class="tbl-scroll">
+  <table class="wide">
+    <thead><tr><th>Method / Path</th><th>用途</th><th>被哪個前端頁面用到</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">GET /health</td><td>健康檢查</td><td class="mono">（部署腳本用，前端未呼叫）</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels</td><td>船舶清單（含 training/prediction 分類）</td><td class="mono">未在盤點的 9 頁中直接使用</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels/{id}</td><td>單船統計摘要</td><td class="mono">/fleet-analytics 的 fallback、adapter fallback</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels/{id}/noon-reports</td><td>逐日航行日報</td><td class="mono">/vessels/:id/noon-reports</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels/{id}/speed-loss</td><td>Speed Loss 時序（iso/slip 兩種算法）</td><td class="mono">/speed-loss、/maintenance-correlation、/fleet-analytics 疊圖</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels/{id}/speed-loss-attribution</td><td>速損歸因（船殼/螺旋槳/其他）</td><td class="mono">/fuel-attribution</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels/{id}/maintenance-events</td><td>養護事件紀錄</td><td class="mono">/overview、/inspections、/maintenance-correlation</td></tr>
+      <tr><td class="mono">GET /api/v1/vessels/{id}/maintenance-recommendation</td><td>維修建議＋成本效益曲線</td><td class="mono">/maintenance-correlation（曲線圖）、孤兒頁 MaintenanceAdvisor</td></tr>
+      <tr><td class="mono">GET /api/v1/fleet/ranking</td><td>船隊 speed loss 排名</td><td class="mono">adapter fallback 用，主要頁面已改用 fleet/summary</td></tr>
+      <tr><td class="mono">GET /api/v1/fleet/summary</td><td>船隊彙總（每艘船 30+ 欄位一次回傳）</td><td class="mono">/、/vessels、/fleet-analytics、船舶摘要來源</td></tr>
+      <tr><td class="mono">POST /api/v1/predict/fuel-consumption</td><td>XGBoost 油耗預測＋反事實模擬</td><td class="mono">孤兒頁 FuelPrediction（未掛路由）</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:12.5px;color:var(--ink-muted)">
+    <code>backend-api/API.md</code> 這份文件本身跟目前部署的行為有落差（<code>api/client.ts</code> 檔頭已註記：speed-loss、speed-loss-attribution、fleet/ranking 的實際回傳結構跟文件不同），且 API.md 完全沒收錄 <code>/api/v1/fleet/summary</code>。<strong>要看真實回傳格式，請以 <code>frontend/src/api/client.ts</code> 和 <code>frontend/src/services/backend.ts</code> 裡的 TypeScript interface 為準，不要只看 API.md。</strong>
+  </p>
+
+  <h2><span class="num">§3</span> 逐頁盤點</h2>
+
+  <!-- ============ PAGE 1 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/</span><span class="file">views/FleetOverview.vue</span></div>
+    <p class="desc">船隊總覽 Dashboard — KPI 卡、船隊地圖、優先處理排行</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">3 張 KPI 卡（船隊總數／待安排維修船數／超額燃油成本）</div>
+      <div></div>
+      <div class="b-detail"><code>fetchKpis()</code> → <code>GET /api/v1/fleet/summary</code>，取 <code>total_vessels</code>、<code>pending_maintenance</code>、<code>total_excess_fuel_cost_usd_per_day</code>。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">船隊地圖 + 「需優先處理」排行清單</div>
+      <div></div>
+      <div class="b-detail"><code>fetchVessels()</code> → 同一支 <code>/api/v1/fleet/summary</code>（per_vessel 陣列），依 speedLossPct 排序取前 6 艘。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-mock">🔴 STUB</span></div>
+      <div class="b-label">KPI-02／KPI-03（在航中／在港中船數）</div>
+      <div></div>
+      <div class="b-detail">程式碼裡沒有渲染這兩張卡（模板只放了 3 張），但 <code>adapter.ts</code> 的 <code>fetchRealFleetKpis()</code> 仍把 <code>underway</code>、<code>inPort</code> 寫死回傳 <code>0</code> — 是尚未清理的殘留欄位，不影響目前畫面。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">地圖上的船舶座標／航向／航速</div>
+      <div></div>
+      <div class="b-detail">來自 <code>fleet/summary</code> 的 <code>lat/lon/heading_deg/speed_kt</code> — 這些欄位是 DynamoDB 裡存的值（非隨機造假），但船位資料集本質是「歷史 Noon Report 推算」而非即時 AIS 定位，畫面呈現成「即時位置」時要留意用語落差。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-mock">🔴 STUB</span></div>
+      <div class="b-label">船舶狀態 status / 目前港口 / 目的港</div>
+      <div></div>
+      <div class="b-detail"><code>adapter.ts</code> 裡固定寫 <code>status: 'underway'</code>、<code>currentPort: null</code>、<code>destinationPort: null</code>，後端沒有這些欄位。</div>
+    </div>
+  </div>
+
+  <!-- ============ PAGE 2 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels</span><span class="file">views/VesselList.vue</span></div>
+    <p class="desc">船隊列表 — 全船隊排序表格，可展開查看單船詳情</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">全部 13 欄（Speed Loss、趨勢、油耗、RPM、距上次清洗/拋光天數、超額成本、急迫度…）</div>
+      <div></div>
+      <div class="b-detail">同樣是單一 <code>GET /api/v1/fleet/summary</code> 呼叫，<code>per_vessel</code> 內近 30 個欄位直接映射到表格與展開列。這是 9 個頁面中「還原度最高」的一頁。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-mock">🔴 STUB</span></div>
+      <div class="b-label">「船型」欄位的 fallback、TEU 容量、建造年份、船旗、主機型號、航線</div>
+      <div></div>
+      <div class="b-detail">後端回傳 <code>ship_class</code> 時直接顯示；若缺值才 fallback 用前端寫死的 <code>W1_SHIPS</code>/<code>W2_SHIPS</code> 陣列猜測。<code>teuCapacity</code>／<code>builtYear</code>／<code>flag</code>／<code>mainEngineModel</code> 在 <code>VesselSummary</code> 型別上仍保留欄位，但 <code>adapter.ts</code> 一律填 <code>0</code>／空字串 ——這批「船舶靜態規格」資料集裡本來就沒有，純粹是舊 mock 時代留下的型別殼子，目前沒有任何頁面渲染它們。</div>
+    </div>
+  </div>
+
+  <!-- ============ PAGE 3 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels/S11/overview</span><span class="file">views/vessel/VesselOverview.vue</span></div>
+    <p class="desc">單船總覽 — 規格卡、Speed Loss 量表、KPI、位置圖、最近養護事件、快速連結</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">規格卡、Speed Loss 量表（Fathometer）、KPI 兩列、急迫度標籤</div>
+      <div></div>
+      <div class="b-detail">全部來自 <code>VesselLayout.vue</code> 往下傳的 <code>vessel</code> prop（<code>fetchVesselData</code> → <code>/api/v1/fleet/summary</code>，同 §page1/2 的資料源）。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">「最近養護事件」清單</div>
+      <div></div>
+      <div class="b-detail"><code>getMaintenanceEvents(imo)</code>（services/backend.ts）→ <code>GET /api/v1/vessels/{id}/maintenance-events</code>，取最新 6 筆。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">「目前位置」聚焦地圖</div>
+      <div></div>
+      <div class="b-detail">同 §page1 的位置資料說明 — 是 DynamoDB 真實欄位，但語意上是歷史航行推算值，非即時 GPS。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 FIXED</span></div>
+      <div class="b-label">「快速連結」（已修正，見 §8）</div>
+      <div></div>
+      <div class="b-detail">原本連到未註冊的 <code>/maintenance-advisor</code>（死連結）；已移除，改為新增「油耗預測」連結（連到新掛上路由的 <code>/fuel-prediction</code>），「維修效能分析」原本就指向真正實作該功能的 <code>maintenance-correlation</code>。</div>
+    </div>
+  </div>
+
+  <!-- ============ PAGE 4 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels/S11/noon-reports</span><span class="file">views/vessel/NoonReports.vue</span></div>
+    <p class="desc">逐日 Noon Report 表格，可依 Day 區間篩選、匯出 CSV</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">整張表格（航速、STW、油耗、海況、吃水、Laden/Ballast 標籤）</div>
+      <div></div>
+      <div class="b-detail"><code>getNoonReports(imo, { limit: 5000 })</code> → <code>GET /api/v1/vessels/{id}/noon-reports</code>，逐筆映射，不經過 adapter 加工。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-mock">🔴 STUB</span></div>
+      <div class="b-label">「位置」欄</div>
+      <div></div>
+      <div class="b-detail">整欄固定顯示 <code>—</code>。Noon Report 端點本身沒有回傳經緯度（型別裡 <code>lat/lon</code> 也是前端硬填 0），這是資料集本身的限制，不是前端偷懶。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">Laden / Ballast 狀態判斷</div>
+      <div></div>
+      <div class="b-detail">後端沒有直接給「載況」欄位，前端用 <code>cargo_on_board &gt; 1000 ? laden : ballast</code> 這條簡單門檻猜測，不是後端定義的分類。</div>
+    </div>
+  </div>
+
+  <!-- ============ PAGE 5 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels/S11/inspections</span><span class="file">views/vessel/Inspections.vue</span></div>
+    <p class="desc">水下檢查／養護事件時間軸（UWI-01）</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">整頁時間軸（事件類型、螺旋槳狀態、船殼污損、塗裝、吃水…）</div>
+      <div></div>
+      <div class="b-detail"><code>getMaintenanceEvents(imo)</code> → 與 overview 頁同一支 <code>GET /api/v1/vessels/{id}/maintenance-events</code>，只是換一種時間軸式排版。依 API.md 範例，<code>propeller_condition</code>／<code>cavitation_found</code> 等細節欄位常為 <code>null</code>（原始資料集本身缺值，非前端問題）。</div>
+    </div>
+    <div class="note-box">
+      舊的 <code>composables/useDataSource.ts</code> 裡還留著一個 <code>fetchInspectionsData()</code>，寫死回傳空陣列 <code>[]</code> —— 但這個函式<strong>目前沒有任何頁面呼叫它</strong>，真正的 Inspections 頁已經改用上面這支真實端點。屬於待清理的死程式碼，不影響畫面。
+    </div>
+  </div>
+
+  <!-- ============ PAGE 6 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels/S11/speed-loss</span><span class="file">views/vessel/SpeedLoss.vue</span></div>
+    <p class="desc">Speed Loss 散布圖＋污損趨勢回歸線＋清洗週期比較</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">散布圖資料點（Ballast/Laden）、事件標記線、全期/近90天 avg slip、超額成本</div>
+      <div></div>
+      <div class="b-detail"><code>fetchSpeedLossData(imo)</code> 平行呼叫 <code>GET /api/v1/vessels/{id}/speed-loss</code>（iso_timeline 優先，slip_timeline 為 fallback）＋ <code>GET /api/v1/vessels/{id}/maintenance-events</code>（事件標記）。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">污損趨勢擬合線、污損增長速率（%/月）</div>
+      <div></div>
+      <div class="b-detail">前端對「目前清洗週期」內的點做簡單線性回歸（<code>linearRegression()</code>），純前端計算，後端沒有提供斜率或趨勢欄位。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">「建議下次清洗窗口」</div>
+      <div></div>
+      <div class="b-detail">= <code>day_range_max + 30</code> 到 <code>+60</code>，是前端固定加 30/60 天算出來的，並非後端 <code>maintenance-recommendation</code> 端點的建議值（那支端點在這頁沒被呼叫，只在 maintenance-correlation 頁用到）。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 FIXED</span></div>
+      <div class="b-label">tooltip 曾顯示假的「油耗 0.0 MT/日」（已移除，見 §8）</div>
+      <div></div>
+      <div class="b-detail">Speed Loss 端點不含油耗欄位，該行文字已直接移除，不再顯示看似真實但永遠是 0 的數字。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 FIXED</span></div>
+      <div class="b-label">「清洗週期」切分邏輯曾把 UWI（純檢查）誤判為船體清洗（已修正，見 §8）</div>
+      <div></div>
+      <div class="b-detail"><code>adapter.ts</code> 的 <code>EVENT_TYPE_MAP</code> 曾把 <code>UWI</code> 對應到 <code>'hull_cleaning'</code>，導致 <code>cleaningDays</code>／目前清洗週期起點／「比較上次清洗週期」功能，都可能被一次沒有實際清洗的純檢查事件錯誤切分週期邊界。已改為獨立的 <code>'inspection'</code> 型別，且 DD 現在也正確納入清洗週期邊界（比對後端 <code>HULL_CLEAN_TYPES</code>）。</div>
+    </div>
+  </div>
+
+  <!-- ============ PAGE 7 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels/S11/fuel-attribution</span><span class="file">views/vessel/FuelAttribution.vue</span></div>
+    <p class="desc">導覽列已改標「速損歸因」，對齊 ISO 19030 主需求 ②（原「油耗歸因」為誤標，見 §8）</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">分類卡（船殼/螺旋槳平均改善）、事件前後 Slip 差值長條圖、事件明細表、天候代理指標時序圖</div>
+      <div></div>
+      <div class="b-detail"><code>getSpeedLossAttribution(imo)</code> → <code>GET /api/v1/vessels/{id}/speed-loss-attribution</code>，全部欄位原樣使用，沒有前端加工。</div>
+    </div>
+    <div class="note-box info">
+      <b>命名落差已修正（見 §8）：</b> 這支後端端點做的是「養護事件對 <em>Speed Loss（滑失率）</em> 的改善量」，並非燃油消耗來源拆解（沒有風阻／興波／推進效率等真正的燃油 waterfall）。<code>docs/main-requirement.md</code> 的主需求 ② 明確要求的正是「船體 vs 螺旋槳的 Speed Loss 歸因」——也就是這支端點本來就在做的事，所以正確的修法是<strong>把導覽列標籤從「油耗歸因」改成「速損歸因」</strong>去對齊實際內容與主需求，而不是照 §7 原建議去開發一支全新的燃油拆解後端（那會偏離主需求，做出題目根本沒要求的東西）。這是「建議清單跟主需求衝突時以主需求為主」的具體案例。
+    </div>
+  </div>
+
+  <!-- ============ PAGE 8 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/vessels/S11/maintenance-correlation</span><span class="file">views/vessel/MaintenanceCorrelation.vue</span></div>
+    <p class="desc">全站「前端加工程度最高」的一頁 — 真實資料進來後，大量業務邏輯在前端二次計算</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">時序圖的油耗/Speed Loss 原始序列、事件標記、成本效益曲線圖（COR-02）</div>
+      <div></div>
+      <div class="b-detail"><code>fetchCorrelation(imo)</code> 底層抓 <code>speed-loss</code> + <code>maintenance-events</code> + <code>/api/v1/vessels/{id}</code>；<code>fetchRecommendation(imo)</code> 另外抓 <code>GET /api/v1/vessels/{id}/maintenance-recommendation</code>（曲線圖 <code>curve</code> 欄位是後端算好的，直接畫）。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">每個養護事件的「油耗改善量」「改善 %」</div>
+      <div></div>
+      <div class="b-detail">後端 speed-loss 端點只給 slip%，<strong>沒有給油耗前後值</strong>。前端用固定公式換算：<code>fuel = avg_consumption × (1 + slip%/100 × 1.8)</code>（程式碼註解自稱是「立方律近似」），1.8 這個係數是寫死的，不是模型算出來的。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">「異常事件」偵測（❌ 標記與原因文字）</div>
+      <div></div>
+      <div class="b-detail">純前端門檻規則：DD 改善 &lt;2% 或 PP 改善 &gt;18% 或改善 &lt;0 就標異常。這些門檻數字是寫在元件裡的常數，後端沒有異常偵測邏輯。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-hybrid">🟡 HYBRID</span></div>
+      <div class="b-label">「最佳維修時機建議」整個區塊（COR-03：建議類型/急迫度/建議窗口/每日超額成本/90天節省）</div>
+      <div></div>
+      <div class="b-detail">全部由前端從近 60 個資料點的斜率、寫死的門檻（≥12%→Hull+PP、&lt;4%→PP）、寫死油價 <code>$620/MT</code> 現場計算出來，<strong>跟旁邊 COR-02 的後端 <code>maintenance-recommendation</code> 曲線是兩套獨立邏輯</strong>，可能給出不完全一致的結論，使用時要注意兩者是不同來源。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-mock">🔴 STUB</span></div>
+      <div class="b-label">「⚡ 預警門檻設定」（ALT-01：Speed Loss 門檻滑桿、提前天數滑桿）</div>
+      <div></div>
+      <div class="b-detail">純前端 UI 狀態（<code>ref</code>），拖動只是即時重算上面 §hybrid 的門檻，不會存到後端，重新整理頁面就重置。是一個互動式模擬器，不是持久化設定。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 FIXED</span></div>
+      <div class="b-label">效能改善評分曾把 UWI（純檢查）誤判為有養護效果（已修正，見 §8）</div>
+      <div></div>
+      <div class="b-detail"><code>CORRELATION_TYPE_MAP</code> 曾把 <code>UWI</code> 對應到 <code>'Propeller Polishing'</code>，且前後對比迴圈會對所有 <code>maintenance-events</code>（包含純檢查）計算「改善%」與星等，直接違反 <code>docs/main-requirement.md</code> 明講的「純檢查、無實體介入的事件不應被當成有效能改善」。已改為在迴圈開頭直接 <code>continue</code> 跳過 <code>event_type === 'UWI'</code> 的事件，行為對齊後端 <code>speed-loss-attribution</code> 端點自己的 <code>physical_intervention</code> / <code>category: 'inspection_only'</code> 邏輯。</div>
+    </div>
+  </div>
+
+  <!-- ============ PAGE 9 ============ -->
+  <div class="page-card">
+    <div class="route"><span class="url">/fleet-analytics</span><span class="file">views/FleetAnalytics.vue</span></div>
+    <p class="desc">跨船隊分析 — Speed Loss 疊圖 + 可排序排行表</p>
+
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">排行表全部欄位</div>
+      <div></div>
+      <div class="b-detail"><code>fetchVessels()</code> → 同 §page1/2 的 <code>/api/v1/fleet/summary</code>。</div>
+    </div>
+    <div class="block-row">
+      <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+      <div class="b-label">疊圖（每艘船最近 180 筆 Speed Loss 曲線）</div>
+      <div></div>
+      <div class="b-detail">拿到船隊清單後，對<strong>每一艘船</strong>各自呼叫一次 <code>fetchSpeedLossData()</code>（= <code>speed-loss</code> + <code>maintenance-events</code>），15 艘船等於一次頁面載入發出 ~30 個 API request。資料是真的，但屬於 N+1 呼叫模式，船隊變多時載入會變慢，值得之後優化成後端批次端點。</div>
+    </div>
+  </div>
+
+  <h2><span class="num">§4</span> 額外發現：程式碼寫好了、但網址進不去的頁面</h2>
+  <p>修整前，<code>router/index.ts</code> 的 <code>/vessels/:imo</code> 只註冊了 6 個子路由，但 <code>views/vessel/</code> 資料夾裡實際有 8 個檔案，多出的 2 個是完整功能但沒掛路由。<code>FuelPrediction.vue</code> 已於本輪修整掛上路由（見 §8），<code>MaintenanceAdvisor.vue</code> 維持不掛路由（功能與 maintenance-correlation 頁重疊，見下方說明）：</p>
+
+  <div class="tbl-scroll">
+  <table class="wide">
+    <thead><tr><th>檔案</th><th>功能</th><th>資料串接狀態</th><th>現況</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="mono">MaintenanceAdvisor.vue</td>
+        <td>維修建議卡＋成本效益曲線（跟 maintenance-correlation 頁的 COR-02/03 是同一批邏輯的早期獨立版本）</td>
+        <td><span class="badge b-real">🟢 REAL</span> <code>fetchRecommendation()</code> 已接真實 API</td>
+        <td><span class="badge b-dead">⚪ 維持不掛路由</span> 功能已完整涵蓋在 <code>maintenance-correlation</code> 頁的 COR-02/03，避免上線一個重複頁面；VesselOverview 原本指向它的死連結已改連到 <code>maintenance-correlation</code>（§8）。</td>
+      </tr>
+      <tr>
+        <td class="mono">FuelPrediction.vue</td>
+        <td>互動式「what-if」油耗預測器 — 輸入速度/吃水/風浪，呼叫 XGBoost 模型即時預測油耗，並算出執行 UWC+PP 的反事實節省金額。這正是 <code>docs/main-requirement.md</code> 主需求「油耗預測模型」明講的核心產出（含 UWC/PP 反事實推論）。</td>
+        <td><span class="badge b-real">🟢 REAL（已修正串接）</span></td>
+        <td><span class="badge b-real">🟢 已掛路由</span> <code>/vessels/{id}/fuel-prediction</code>，導覽列標籤「油耗預測」。原始程式碼的 request/response 欄位名稱其實跟後端不符（見 §8），是「不只沒掛路由，接上去也會壞」的個案 — 已一併修正。</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note-box info">
+    <code>predict/fuel-consumption</code> 是唯一跑機器學習模型（XGBoost v3, 29 特徵）並提供反事實模擬的端點，也是主需求「油耗預測模型」的核心體現，現已在導覽列可直接使用。詳見 §8 的修正細節。
+  </div>
+
+  <h2><span class="num">§5</span> 全站疊加功能：語音／聊天助手</h2>
+  <p>
+    <code>App.vue</code> 在每一頁都會掛載 <code>VoiceBotOverlay.vue</code>（全螢幕語音助手，非嵌入式聊天框），由 <code>useChatOrchestrator.ts</code> 驅動，走 Claude 做意圖分類、但<strong>所有數字都從真實後端抓</strong>（程式碼註解明確寫「the LLM never supplies the final numbers」）。
+  </p>
+  <div class="block-row" style="grid-template-columns:200px 1fr">
+    <div class="b-badge"><span class="badge b-real">🟢 REAL</span></div>
+    <div class="b-label">「目前狀況」「優先排行」「污損比較」「快速查詢」意圖</div>
+    <div></div>
+    <div class="b-detail">底層呼叫 <code>fetchVesselData</code>／<code>fetchVessels</code>／<code>fetchSpeedLossData</code>，即 §2 路徑 A，資料來源與一般頁面一致。</div>
+  </div>
+  <div class="block-row" style="grid-template-columns:200px 1fr">
+    <div class="b-badge"><span class="badge b-mock">🔴 STUB</span></div>
+    <div class="b-label">「油耗歸因」意圖（fuel_attribution card）</div>
+    <div></div>
+    <div class="b-detail">呼叫 <code>fetchFuelAttr()</code>，這支函式在 <code>useDataSource.ts</code> 裡直接寫死回傳 <code>null</code>。同一個「油耗歸因」概念在網頁版（§page7）已經接了真實的 speed-loss-attribution 端點，但聊天助手裡的對應卡片還沒接上、永遠回不出資料。</div>
+  </div>
+
+  <h2><span class="num">§6</span> 一眼看懂：9 頁資料狀態矩陣</h2>
+  <div class="tbl-scroll">
+  <table class="wide">
+    <thead><tr><th>頁面</th><th>整體評級</th><th>需要留意的區塊</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">/</td><td><span class="badge b-real">🟢 REAL</span></td><td>地圖位置語意（歷史推算非即時）；未渲染的 underway/inPort 殘留欄位</td></tr>
+      <tr><td class="mono">/vessels</td><td><span class="badge b-real">🟢 REAL</span></td><td>船舶靜態規格（TEU/建造年/船旗）型別存在但無資料，目前未顯示</td></tr>
+      <tr><td class="mono">/vessels/S11/overview</td><td><span class="badge b-real">🟢 REAL</span></td><td>快速連結已修正（§8）；新增「油耗預測」連結</td></tr>
+      <tr><td class="mono">/vessels/S11/noon-reports</td><td><span class="badge b-real">🟢 REAL</span></td><td>位置欄固定 —；Laden/Ballast 為前端猜測門檻</td></tr>
+      <tr><td class="mono">/vessels/S11/inspections</td><td><span class="badge b-real">🟢 REAL</span></td><td>細節欄位常見 null 是資料集本身限制</td></tr>
+      <tr><td class="mono">/vessels/S11/speed-loss</td><td><span class="badge b-hybrid">🟡 HYBRID</span></td><td>回歸線／建議窗口為前端計算；tooltip 假油耗值與 UWI 清洗週期誤判已修正（§8）</td></tr>
+      <tr><td class="mono">/vessels/S11/fuel-attribution</td><td><span class="badge b-real">🟢 REAL</span></td><td>已改標「速損歸因」對齊 ISO 19030 主需求（§8），不再誤導</td></tr>
+      <tr><td class="mono">/vessels/S11/fuel-prediction</td><td><span class="badge b-real">🟢 REAL（新掛上路由）</span></td><td>XGBoost 油耗預測 + UWC/PP 反事實模擬；原 request/response 欄位與後端不符，已修正（§8）</td></tr>
+      <tr><td class="mono">/vessels/S11/maintenance-correlation</td><td><span class="badge b-hybrid">🟡 HYBRID（重度）</span></td><td>異常偵測、最佳時機建議、油耗改善量仍為前端公式／門檻（未動，見 §7 剩餘項目）；UWI 誤判為有效養護已修正（§8）</td></tr>
+      <tr><td class="mono">/fleet-analytics</td><td><span class="badge b-real">🟢 REAL</span></td><td>疊圖為 N+1 呼叫模式，船隊擴大時效能需留意（未動，見 §7 剩餘項目）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2><span class="num">§7</span> 建議的後續處理清單</h2>
+  <p style="font-size:12.5px;color:var(--ink-muted)">狀態標記依 <a href="#s8">§8</a> 的修整結果更新——✅ 已修 / ⏳ 仍待處理。</p>
+  <ul class="issues">
+    <li><span class="tag" style="color:var(--teal)">✅ 已修</span>死連結：VesselOverview 的「維修建議」快速連結指向不存在的路由。已改連到已有等價功能的 <code>maintenance-correlation</code> 頁，並新增「油耗預測」連結。</li>
+    <li><span class="tag" style="color:var(--teal)">✅ 已修</span>未使用的完整功能：<code>FuelPrediction.vue</code>（XGBoost 油耗預測 + 反事實模擬）已完工但完全無法從 UI 到達。已補路由與導覽連結；過程中發現它原本的 request/response 欄位跟後端不符（見 §8），已一併修正，否則接上去會直接壞掉。</li>
+    <li><span class="tag" style="color:var(--teal)">✅ 已修（改標籤，非改後端）</span>命名／範疇落差：「油耗歸因」頁面實際做的是「速損歸因」。<strong>本次判斷跟主需求衝突，以主需求為主</strong>——<code>main-requirement.md</code> 明講要的正是「船體 vs 螺旋槳的 Speed Loss 歸因」，所以不需要新後端邏輯，只需把導覽標籤改成「速損歸因」對齊實際內容與主需求（詳見 §8、PAGE 7）。</li>
+    <li><span class="tag">⏳ 仍待處理</span>重複的 API Client 層：<code>api/client.ts</code>＋<code>api/adapter.ts</code> 與 <code>services/backend.ts</code> 各自定義一份重疊的型別、各自處理環境變數缺失的方式也不同。建議後續統一成一層，避免改後端回傳格式時要同步改兩份 TS 型別。</li>
+    <li><span class="tag" style="color:var(--teal)">✅ 部分已修</span>前端二次計算過多：maintenance-correlation 頁把 UWI（純檢查）誤判為有效養護的部分已修正（§8，直接違反主需求）。<strong>異常偵測門檻、油耗換算係數（1.8）、油價（$620/MT）、最佳時機建議邏輯本身仍全部寫在元件內部常數</strong>，與後端 <code>maintenance-recommendation</code> 的建議仍可能互相矛盾——這部分本輪未動，建議未來把這類「業務規則」搬到後端。</li>
+    <li><span class="tag">⏳ 仍待處理</span>效能：<code>/fleet-analytics</code> 疊圖對每艘船各自呼叫 speed-loss + maintenance-events，屬 N+1 模式；可考慮讓後端提供批次端點。</li>
+    <li><span class="tag" style="color:var(--teal)">✅ 已修</span>誤導性顯示：Speed Loss 頁圖表 tooltip 曾永遠顯示「油耗 0.0 MT/日」（資料被硬填 0）。已直接移除該行。</li>
+    <li><span class="tag">⏳ 仍待處理</span>文件落差：<code>backend-api/API.md</code> 未收錄 <code>/api/v1/fleet/summary</code>，且部分端點回傳結構與文件描述不同。建議更新 API.md，或直接讓 <code>api/client.ts</code>／<code>services/backend.ts</code> 的型別檔案成為唯一事實來源並加註解說明。</li>
+    <li><span class="tag" style="color:var(--teal)">✅ 已修</span>死程式碼：<code>useDataSource.ts</code> 裡的 <code>fetchInspectionsData()</code>／<code>fetchNoonReportsData()</code> 已無任何頁面呼叫，已刪除（<code>fetchFuelAttr()</code> 仍被語音助手使用，保留）。</li>
+  </ul>
+
+  <h2 id="s8"><span class="num">§8</span> 本輪修整記錄（2026-07-15b）</h2>
+  <p>依 §7 清單執行，遇到跟 <code>docs/main-requirement.md</code> 主需求衝突時以主需求為主。過程中另外發現 2 個原始清單沒列到、但直接違反主需求的正確性 bug，優先修正。</p>
+
+  <h3>發現的正確性 bug（比 §7 原清單更貼近主需求核心）</h3>
+  <div class="note-box danger">
+    <b>UWI（純檢查）被誤判為有養護效果：</b> <code>main-requirement.md</code> 明講「資料中有一類事件屬於『純檢查、無實體介入』……聰明的模型應能辨識出這類事件不應帶來效能改善」。但 <code>frontend/src/api/adapter.ts</code> 有兩處違反這條規則：
+    <ul style="margin:8px 0 0; padding-left:20px">
+      <li><code>EVENT_TYPE_MAP.UWI</code> 曾對應到 <code>'hull_cleaning'</code>，導致 <b>SpeedLoss.vue</b> 的「清洗週期」切分（<code>cleaningDays</code>）把一次沒有實際清洗的檢查事件當成週期邊界，連帶影響污損趨勢回歸的擬合窗口與「比較上次清洗週期」功能。</li>
+      <li><code>CORRELATION_TYPE_MAP.UWI</code> 曾對應到 <code>'Propeller Polishing'</code>，且 <b>MaintenanceCorrelation.vue</b> 的前後對比迴圈會對所有事件（含純檢查）計算「改善%」與星等評級，等於把一次沒有效果的檢查算成有效養護。</li>
+    </ul>
+    已修正為：新增 <code>SpeedLossEvent['type']</code> 的 <code>'inspection'</code> 型別給 UWI 專用；效能分析迴圈對 <code>event_type === 'UWI'</code> 直接 <code>continue</code> 跳過。行為現在對齊後端 <code>speed-loss-attribution</code> 端點自己的 <code>physical_intervention</code> / <code>category: 'inspection_only'</code> 邏輯（<code>handler.py</code> 裡本來就正確處理了這個規則，問題只出在前端另外寫的 <code>maintenance-correlation</code> 分析邏輯沒有沿用）。附帶修正：<code>cleaningDays</code> 原本也漏了把 DD（乾塢）算進清洗週期邊界，一併補上（對應後端 <code>HULL_CLEAN_TYPES</code>）。
+  </div>
+  <div class="note-box danger">
+    <b>FuelPrediction.vue 不只沒掛路由，接上去也會壞：</b> 補路由前先核對了 request/response 契約，發現 <code>services/backend.ts</code> 的 <code>predictFuelConsumption()</code> 送出的欄位（<code>speed_kn</code>／<code>draft_fwd</code>／<code>draft_aft</code>／<code>cargo_on_board</code>／<code>wind_scale</code>／<code>sea_height</code>，且不帶 <code>noon_day</code>）跟 <code>handler.py</code> 實際讀取的欄位（大寫 A 類欄位 <code>AVG_SPEED</code>／<code>FORE_DRAFT</code>／<code>AFTER_DRAFT</code>／<code>WIND_SCALE</code>／<code>SEA_HEIGHT</code>，沒有 <code>cargo_on_board</code> 對應欄位）完全不符，且回應型別假設的 <code>counterfactual.slow_by_1kn_speed</code>（降速情境）在真實回應裡根本不存在——後端只提供 <code>counterfactual_uwc_pp</code>（執行 UWC+PP 的節省估算）。實測會發生：POST 仍回 200（因為 <code>vessel_id</code> 有給、<code>noon_day</code> 非必填不會 400），但大部分 what-if 欄位因為欄位名不符被後端悄悄忽略、改用後端內建預設值；接著前端讀取 <code>result.counterfactual.fuel_saving_mt</code> 等欄位會是 <code>undefined</code>，在 <code>.toFixed()</code> 時直接 throw，被 catch 後顯示「預測失敗」。已修正 <code>BackendFuelPredictionInput</code>／<code>BackendFuelPredictionResult</code> 型別與 <code>FuelPrediction.vue</code> 的欄位對應，改用 <code>noon_day</code>（預設取該船最新一筆日報 <code>vessel.dataDayMax</code>）+ 大寫 override 欄位，並移除完全無效的「貨載量」輸入欄。
+  </div>
+
+  <h3>依 §7 清單完成的其餘修整</h3>
+  <ul class="issues">
+    <li><span class="tag" style="color:var(--teal)">死連結</span>VesselOverview 快速連結移除死連結 <code>/maintenance-advisor</code>，新增指向已掛路由的 <code>/fuel-prediction</code>。</li>
+    <li><span class="tag" style="color:var(--teal)">路由</span><code>router/index.ts</code> 新增 <code>vessel-fuel-prediction</code> 子路由；<code>VesselLayout.vue</code> 導覽分頁新增「油耗預測」。</li>
+    <li><span class="tag" style="color:var(--teal)">命名對齊</span><code>VesselLayout.vue</code> 導覽分頁「油耗歸因」改標「速損歸因」，對齊 ISO 19030 主需求 ②；<code>FuelAttribution.vue</code> 內的說明文字同步更新。</li>
+    <li><span class="tag" style="color:var(--teal)">死程式碼</span>刪除 <code>useDataSource.ts</code> 裡無人呼叫的 <code>fetchInspectionsData()</code>／<code>fetchNoonReportsData()</code>（<code>fetchFuelAttr()</code> 仍被語音助手使用，保留為 stub）。</li>
+    <li><span class="tag" style="color:var(--teal)">誤導性顯示</span>移除 Speed Loss 頁圖表 tooltip 永遠顯示 0 的假油耗行。</li>
+  </ul>
+
+  <h3>未動的項目（刻意暫緩，非main requirement強制要求，風險/效益考量後留給下一輪）</h3>
+  <ul class="issues">
+    <li><span class="tag">暫緩</span>重複的 API Client 層（<code>api/client.ts</code>+<code>adapter.ts</code> vs <code>services/backend.ts</code>）——屬架構重構，跟主需求無關，風險/效益比不划算放在同一輪一起動。</li>
+    <li><span class="tag">暫緩</span>maintenance-correlation 頁其餘的前端寫死業務規則（異常偵測門檻、1.8 係數、$620/MT 油價、COR-03 最佳時機邏輯）——UWI 誤判部分已修，其餘門檻值本身沒有違反主需求（是「合理但可改進」的簡化），優先度低於已修的正確性 bug。</li>
+    <li><span class="tag">暫緩</span><code>/fleet-analytics</code> 疊圖 N+1 呼叫、<code>backend-api/API.md</code> 文件更新——效能與文件債，非功能正確性問題。</li>
+  </ul>
+
+  <footer>
+    產出方式：靜態走讀 frontend/src 全部 views／composables／api／services 檔案，對照 backend-api/app.py 與 handler.py 實際掛載的路由。未執行任何網路請求，也未讀取 .env 內的金鑰內容。§8 修整已通過 <code>vue-tsc -b --noEmit</code> 全量型別檢查，僅剩修整前就存在、與本次改動無關的既有警告。
+  </footer>
+
+</div>
+</body>
+</html>

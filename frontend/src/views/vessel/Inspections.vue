@@ -1,13 +1,28 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import type { VesselSummary } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 import { getMaintenanceEvents } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, getMaintenanceEvents)
+
+const dsInspect: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'GET /api/v1/vessels/{vessel_id}/maintenance-events',
+  description: '整頁時間軸都是同一支 maintenance-events 端點（跟 overview 頁的「最近養護事件」共用），只是換成展開式時間軸排版。細節欄位常見 null 是原始資料集本身缺值，非前端問題。',
+  fields: [
+    { ui: '事件類型 / Day', source: 'event_type / event_day' },
+    { ui: '螺旋槳狀態', source: 'propeller_condition', note: '資料集裡常為 null' },
+    { ui: '船殼污損類型 / 塗裝狀態', source: 'hull_fouling_type / hull_coating_condition' },
+    { ui: '空蝕發現', source: 'cavitation_found' },
+    { ui: '前吃水 / 後吃水', source: 'draft_fwd_m / draft_aft_m' },
+  ],
+}
 
 const expandedDay = ref<number | null>(null)
 function toggle(day: number) {
@@ -34,6 +49,7 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
 
 <template>
   <div class="panel p-4 flex flex-col gap-3">
+    <DataSourceTag :info="dsInspect" />
     <div class="flex items-center gap-2">
       <PanelTag code="UWI-01" />
       <span v-if="data" class="text-xs text-[var(--color-ink-slate)]/50 font-data">共 {{ data.total.toLocaleString() }} 筆</span>

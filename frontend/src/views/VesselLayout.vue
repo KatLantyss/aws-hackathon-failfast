@@ -13,9 +13,14 @@ const { data: vessel, state } = useAsyncData(() => props.imo, fetchVesselData)
 const tabs = computed(() => [
   { to: `/vessels/${props.imo}/overview`, label: '總覽', name: 'vessel-overview' },
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
-  { to: `/vessels/${props.imo}/inspections`, label: '水下檢查', name: 'vessel-inspections' },
+  { to: `/vessels/${props.imo}/inspections`, label: '維護紀錄', name: 'vessel-inspections' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
-  { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因', name: 'vessel-fuel-attribution' },
+  // Renamed from "油耗歸因": the underlying endpoint attributes SPEED LOSS
+  // (slip%) to hull vs propeller, not fuel consumption — matches
+  // main-requirement.md's ISO 19030 ask "② 船體 vs 螺旋槳歸因", not a real
+  // fuel waterfall. See docs/frontend-backend-integration-status.html §7.
+  { to: `/vessels/${props.imo}/fuel-attribution`, label: '速損歸因', name: 'vessel-fuel-attribution' },
+  { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
   { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析', name: 'vessel-maintenance-correlation' },
 ])
 </script>

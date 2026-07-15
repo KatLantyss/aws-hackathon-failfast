@@ -2,24 +2,31 @@
 import { computed, reactive, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 import type { BackendFuelPredictionResult } from '@/services/backend'
 import { predictFuelConsumption } from '@/services/backend'
 import PanelTag from '@/components/PanelTag.vue'
 import KpiCard from '@/components/KpiCard.vue'
 import StateDisplay from '@/components/StateDisplay.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatUsd } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const chart = useChartTheme()
 
+// Baseline noon_day: the vessel's most recent day of real data, so
+// days_since_hull_clean / days_since_prop_polish and every non-overridden
+// feature come from the actual DynamoDB row (API.md "使用方式一：noon_day
+// lookup（推薦）") instead of the endpoint's hardcoded defaults.
+const baselineNoonDay = computed(() => props.vessel.dataDayMax ?? undefined)
+
 const form = reactive({
-  speedKn: (props.vessel.avgSpeedKn ?? 15) - 1,
-  draftFwd: 14,
-  draftAft: 14,
-  cargoOnBoard: 80000,
-  windScale: 3,
-  seaHeight: 1,
+  speedKn: Number((props.vessel.avgSpeedKn ?? 15).toFixed(1)),
+  foreDraft: props.vessel.avgForeDraftM ?? 13.5,
+  aftDraft: props.vessel.avgAftDraftM ?? 13.5,
+  windScale: props.vessel.avgWindScale ?? 3,
+  seaHeight: props.vessel.avgSeaHeightM ?? 1,
 })
 
 const result = ref<BackendFuelPredictionResult | null>(null)
@@ -27,7 +34,26 @@ const sweep = ref<{ speedKn: number; predictedMt: number }[]>([])
 const status = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
 const errorMessage = ref<string | null>(null)
 
-const fuelPriceUsdPerMt = 620
+const dsForm: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'POST /api/v1/predict/fuel-consumption',
+  description: 'XGBoost v3 Hybrid 模型（600 棵樹、29 特徵），以 noon_day 為基準抓真實歷史資料，再套用下方 what-if 欄位覆蓋。',
+  fields: [
+    { ui: '航速 / 前吃水 / 後吃水 / 蒲福風級 / 浪高', source: 'AVG_SPEED / FORE_DRAFT / AFTER_DRAFT / WIND_SCALE / SEA_HEIGHT（override 欄位）' },
+    { ui: '基準日 (noon_day)', source: 'vessel.dataDayMax（該船最新一筆日報的 Day）' },
+  ],
+}
+const dsResult: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'POST /api/v1/predict/fuel-consumption',
+  description: '預測油耗、UWC+PP 反事實節省與航速掃描曲線皆為後端 XGBoost 模型輸出，前端只做顯示，年化節省金額直接採用後端算好的 est_annual_saving_usd。',
+  fields: [
+    { ui: '預測主機油耗', source: 'predicted_consumption_mt' },
+    { ui: '執行 UWC+PP 可省油耗 / 節省 %', source: 'counterfactual_uwc_pp.fuel_saving_mt_per_day / saving_pct' },
+    { ui: '年化節省金額估計', source: 'counterfactual_uwc_pp.est_annual_saving_usd（後端以 300 海上天/年 × $600/MT 估算）' },
+    { ui: '航速 vs. 預測油耗掃描曲線', source: '前端對 AVG_SPEED 做 ±3kt 掃描，每個點各呼叫一次同一支端點' },
+  ],
+}
 
 async function runPrediction() {
   status.value = 'loading'
@@ -36,28 +62,28 @@ async function runPrediction() {
     const [primary, ...curve] = await Promise.all([
       predictFuelConsumption({
         vessel_id: props.imo,
-        speed_kn: form.speedKn,
-        draft_fwd: form.draftFwd,
-        draft_aft: form.draftAft,
-        cargo_on_board: form.cargoOnBoard,
-        wind_scale: form.windScale,
-        sea_height: form.seaHeight,
+        noon_day: baselineNoonDay.value,
+        AVG_SPEED: form.speedKn,
+        FORE_DRAFT: form.foreDraft,
+        AFTER_DRAFT: form.aftDraft,
+        WIND_SCALE: form.windScale,
+        SEA_HEIGHT: form.seaHeight,
       }),
       ...[-3, -2, -1, 0, 1, 2, 3].map((delta) =>
         predictFuelConsumption({
           vessel_id: props.imo,
-          speed_kn: Math.max(6, form.speedKn + delta),
-          draft_fwd: form.draftFwd,
-          draft_aft: form.draftAft,
-          cargo_on_board: form.cargoOnBoard,
-          wind_scale: form.windScale,
-          sea_height: form.seaHeight,
+          noon_day: baselineNoonDay.value,
+          AVG_SPEED: Math.max(6, form.speedKn + delta),
+          FORE_DRAFT: form.foreDraft,
+          AFTER_DRAFT: form.aftDraft,
+          WIND_SCALE: form.windScale,
+          SEA_HEIGHT: form.seaHeight,
         }),
       ),
     ])
     result.value = primary
     sweep.value = curve
-      .map((r) => ({ speedKn: r.input.speed_kn, predictedMt: r.predicted_consumption_mt }))
+      .map((r) => ({ speedKn: r.input_used.avg_speed_kn, predictedMt: r.predicted_consumption_mt }))
       .sort((a, b) => a.speedKn - b.speedKn)
     status.value = 'success'
   } catch (e) {
@@ -67,11 +93,6 @@ async function runPrediction() {
 }
 
 watch(() => props.imo, runPrediction, { immediate: true })
-
-const annualSavingUsd = computed(() => {
-  if (!result.value) return 0
-  return Math.round(result.value.counterfactual.fuel_saving_mt * fuelPriceUsdPerMt * 365)
-})
 
 const sweepOption = computed(() => {
   const c = chart.value
@@ -119,7 +140,7 @@ const sweepOption = computed(() => {
               type: 'scatter' as const,
               symbolSize: 12,
               itemStyle: { color: c.signalRed },
-              data: [[result.value.input.speed_kn, result.value.predicted_consumption_mt]],
+              data: [[result.value.input_used.avg_speed_kn, result.value.predicted_consumption_mt]],
             },
           ]
         : []),
@@ -133,8 +154,12 @@ const sweepOption = computed(() => {
     <div class="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-4">
       <!-- input form -->
       <div class="panel p-4 flex flex-col gap-3">
+        <DataSourceTag :info="dsForm" />
         <PanelTag code="FUEL-P1" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">航行條件輸入</p>
+        <p v-if="baselineNoonDay != null" class="text-[11px] text-[var(--color-ink-slate)]/50">
+          基準日：Day {{ baselineNoonDay }}（該船最新一筆日報，未覆蓋的欄位會用這天的真實資料）
+        </p>
         <label class="flex flex-col gap-1 text-sm">
           <span class="text-xs text-[var(--color-ink-slate)]/60">航速 (kt)</span>
           <input v-model.number="form.speedKn" type="number" step="0.1" class="field font-data" />
@@ -142,17 +167,13 @@ const sweepOption = computed(() => {
         <div class="grid grid-cols-2 gap-2">
           <label class="flex flex-col gap-1 text-sm">
             <span class="text-xs text-[var(--color-ink-slate)]/60">前吃水 (m)</span>
-            <input v-model.number="form.draftFwd" type="number" step="0.1" class="field font-data" />
+            <input v-model.number="form.foreDraft" type="number" step="0.1" class="field font-data" />
           </label>
           <label class="flex flex-col gap-1 text-sm">
             <span class="text-xs text-[var(--color-ink-slate)]/60">後吃水 (m)</span>
-            <input v-model.number="form.draftAft" type="number" step="0.1" class="field font-data" />
+            <input v-model.number="form.aftDraft" type="number" step="0.1" class="field font-data" />
           </label>
         </div>
-        <label class="flex flex-col gap-1 text-sm">
-          <span class="text-xs text-[var(--color-ink-slate)]/60">貨載量 (MT)</span>
-          <input v-model.number="form.cargoOnBoard" type="number" step="1000" class="field font-data" />
-        </label>
         <div class="grid grid-cols-2 gap-2">
           <label class="flex flex-col gap-1 text-sm">
             <span class="text-xs text-[var(--color-ink-slate)]/60">蒲福風級</span>
@@ -171,7 +192,7 @@ const sweepOption = computed(() => {
           {{ status === 'loading' ? '預測中…' : '重新預測' }}
         </button>
         <p class="text-[11px] text-[var(--color-ink-slate)]/50">
-          模型：{{ result?.model ?? 'cubic_speed_lsq' }}（以本船歷史 SPEED_THROUGH_WATER / ME_CONSUMPTION 最小平方擬合，加海況修正項）
+          模型：{{ result?.model ?? 'xgboost_v3_hybrid' }}（XGBoost，29 特徵，含船體/螺旋槳污損退化與物理油耗基線）
         </p>
       </div>
 
@@ -179,22 +200,23 @@ const sweepOption = computed(() => {
       <div class="flex flex-col gap-4">
         <StateDisplay v-if="status === 'error'" state="error" :error-message="errorMessage" />
         <template v-else-if="result">
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="relative grid grid-cols-1 md:grid-cols-3 gap-3">
+            <DataSourceTag :info="dsResult" />
             <KpiCard code="FUEL-P2" label="預測主機油耗" :value="result.predicted_consumption_mt" :formatter="(n) => `${n.toFixed(2)} MT/日`" tone="amber" />
             <KpiCard
               code="FUEL-P3"
-              label="降速 1kt 可省油耗"
-              :value="result.counterfactual.fuel_saving_mt"
-              :formatter="(n) => `${n.toFixed(2)} MT/日 (${result!.counterfactual.saving_pct.toFixed(1)}%)`"
+              label="執行 UWC+PP 可省油耗"
+              :value="result.counterfactual_uwc_pp.fuel_saving_mt_per_day"
+              :formatter="(n) => `${n.toFixed(2)} MT/日 (${result?.counterfactual_uwc_pp.saving_pct.toFixed(1)}%)`"
               tone="teal"
             />
-            <KpiCard code="FUEL-P4" label="年化節省金額估計" :value="annualSavingUsd" :formatter="formatUsd" tone="red" />
+            <KpiCard code="FUEL-P4" label="年化節省金額估計" :value="result.counterfactual_uwc_pp.est_annual_saving_usd" :formatter="formatUsd" tone="red" />
           </div>
 
           <div class="panel p-3">
             <PanelTag code="FUEL-P5" class="mb-2" />
             <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
-              航速 vs. 預測油耗（反事實推論：以目前輸入條件為基準，掃描 ±3 kt）
+              航速 vs. 預測油耗（以目前輸入條件為基準，對 AVG_SPEED 掃描 ±3 kt）
             </p>
             <div class="h-[300px]">
               <VChart :option="sweepOption" autoresize class="h-full w-full" />
@@ -202,13 +224,15 @@ const sweepOption = computed(() => {
           </div>
 
           <div class="panel p-4 text-sm text-[var(--color-ink-slate)]/80">
-            以目前輸入條件（{{ result.input.speed_kn.toFixed(1) }} kt、風級 {{ result.input.wind_scale }}、浪高 {{ result.input.sea_height }}m）預測，
+            以目前輸入條件（{{ result.input_used.avg_speed_kn.toFixed(1) }} kt、風級 {{ result.input_used.wind_scale }}、浪高 {{ result.input_used.sea_height }}m、距上次船體清洗
+            {{ Math.round(result.input_used.days_since_hull_clean) }} 天、距上次螺旋槳拋光 {{ Math.round(result.input_used.days_since_prop_polish) }} 天）預測，
             主機日耗油約 <strong class="font-data">{{ result.predicted_consumption_mt.toFixed(2) }} MT</strong>。
-            若降速至 <strong class="font-data">{{ result.counterfactual.slow_by_1kn_speed.toFixed(1) }} kt</strong>，
-            預測日耗油降為 <strong class="font-data">{{ result.counterfactual.predicted_consumption_mt.toFixed(2) }} MT</strong>，
-            每日可省 <strong class="font-data text-[var(--color-fathom-teal)]">{{ result.counterfactual.fuel_saving_mt.toFixed(2) }} MT</strong>
-            （約 {{ result.counterfactual.saving_pct.toFixed(1) }}%），以燃油單價 ${{ fuelPriceUsdPerMt }}/MT 估算，年化約可節省
-            <strong class="font-data text-[var(--color-signal-red)]">{{ formatUsd(annualSavingUsd) }}</strong>。
+            {{ result.counterfactual_uwc_pp.description }}：預測日耗油降為
+            <strong class="font-data">{{ result.counterfactual_uwc_pp.predicted_consumption_mt.toFixed(2) }} MT</strong>，
+            每日可省 <strong class="font-data text-[var(--color-fathom-teal)]">{{ result.counterfactual_uwc_pp.fuel_saving_mt_per_day.toFixed(2) }} MT</strong>
+            （約 {{ result.counterfactual_uwc_pp.saving_pct.toFixed(1) }}%），後端估算年化約可節省
+            <strong class="font-data text-[var(--color-signal-red)]">{{ formatUsd(result.counterfactual_uwc_pp.est_annual_saving_usd) }}</strong>
+            （{{ result.counterfactual_uwc_pp.est_annual_saving_mt.toFixed(0) }} MT/年）。
           </div>
         </template>
         <StateDisplay v-else state="loading" />

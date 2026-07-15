@@ -45,14 +45,22 @@ const W2_SHIPS = ['S9', 'S10', 'S11', 'S12', 'S22', 'S23']
 const ALL_SHIPS = [...W1_SHIPS, ...W2_SHIPS]
 
 
-// Maintenance event type mapping
+// Maintenance event type mapping.
+// UWI (pure underwater inspection) does no cleaning or polishing — mirrors
+// backend handler.py's own physical_intervention / category logic for
+// speed-loss-attribution, where plain 'UWI' is the only event_type that is
+// NOT a physical intervention and gets category 'inspection_only'. It must
+// never be mapped to hull_cleaning/propeller_polishing here, or downstream
+// consumers (SpeedLoss.vue's cleaningDays cycle-boundary filter,
+// fetchRealMaintenanceCorrelation's effectiveness scoring below) will treat
+// a no-op inspection as if it restored performance.
 const EVENT_TYPE_MAP: Record<string, SpeedLossEvent['type']> = {
   PP: 'propeller_polishing',
   'UWI+PP': 'propeller_polishing',
   UWC: 'hull_cleaning',
   'UWC+PP': 'hull_cleaning',
   DD: 'drydock',
-  UWI: 'hull_cleaning',
+  UWI: 'inspection',
 }
 const EVENT_LABEL_MAP: Record<string, string> = {
   PP: '螺旋槳拋光',
@@ -62,13 +70,16 @@ const EVENT_LABEL_MAP: Record<string, string> = {
   DD: '進塢',
   UWI: '水下檢查',
 }
+// No 'UWI' entry: plain inspections are excluded before this map is
+// consulted (see the `continue` at the top of the loop in
+// fetchRealMaintenanceCorrelation) rather than mislabeled as a real
+// intervention type.
 const CORRELATION_TYPE_MAP: Record<string, MaintenanceEventType> = {
   DD: 'Hull Cleaning + PP',
   'UWC+PP': 'Hull Cleaning + PP',
   UWC: 'Hull Cleaning',
   'UWI+PP': 'Propeller Polishing',
   PP: 'Propeller Polishing',
-  UWI: 'Propeller Polishing',
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -269,6 +280,13 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
     const effectivenessEvents: MaintenanceEffectivenessEvent[] = []
 
     for (const maint of maintResp.events) {
+      // Pure inspection (UWI) performs no physical work — mirrors backend's
+      // physical_intervention=false / category='inspection_only' for this
+      // exact event_type. Scoring it here would misrepresent a no-op as a
+      // real fuel/speed-loss improvement, which the dataset's own event
+      // semantics explicitly rule out.
+      if (maint.event_type === 'UWI') continue
+
       const before = primaryData.filter(
         (p) => p.noon_day >= maint.event_day - WINDOW_DAYS && p.noon_day < maint.event_day
       )

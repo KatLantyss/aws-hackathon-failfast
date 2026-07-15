@@ -6,13 +6,34 @@ import { fetchVessels, fetchSpeedLossData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatUsd, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 import type { SpeedLossSeries } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 
 const router = useRouter()
 const { data: vessels, state } = useAsyncData(() => true, fetchVessels)
 const chart = useChartTheme()
+
+const dsOverlay: DataSourceInfo = {
+  status: 'real',
+  endpoint: ['GET /api/v1/fleet/summary', 'GET /api/v1/vessels/{vessel_id}/speed-loss ×N'],
+  description: '每艘船的曲線都是真實資料，但實作上是對「每一艘船」各自呼叫一次 speed-loss（+maintenance-events），15 艘船 = 一次載入約 30 個 request（N+1 模式）。船隊變多時載入會變慢，值得之後改成後端批次端點。',
+  fields: [
+    { ui: '每條曲線的 (Day, Slip%) 點', source: 'per-vessel iso_timeline / slip_timeline，取最近 180 筆' },
+  ],
+}
+
+const dsRanking: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'GET /api/v1/fleet/summary',
+  description: '排行表全部欄位直接來自 fleet/summary，跟 /vessels 頁是同一份資料，只是排序 UI 不同。',
+  fields: [
+    { ui: 'Speed Loss % / 趨勢 / 平均油耗 / 平均 RPM', source: 'recent_90d_slip_pct(或avg_slip_pct) / slip_trend / avg_consumption_mt / avg_rpm' },
+    { ui: '距上次清洗 (天) / 超額成本 / 急迫度', source: 'days_since_hull_clean / excess_fuel_cost_usd_per_day / urgency' },
+  ],
+}
 
 type SortKey = 'speedLossPct' | 'excessFuelCostUsdMtd' | 'urgency' | 'avgConsumptionMt' | 'daysSinceHullClean'
 const sortKey = ref<SortKey>('speedLossPct')
@@ -125,6 +146,7 @@ function goToVessel(imo: string) {
     <template v-else>
       <!-- Speed Loss overlay chart -->
       <div class="panel p-3">
+        <DataSourceTag :info="dsOverlay" />
         <PanelTag code="OVL-01" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
           全船隊 Speed Loss 趨勢疊圖（最近 180 筆 Noon Report calm condition）
@@ -137,6 +159,7 @@ function goToVessel(imo: string) {
 
       <!-- Ranking table -->
       <div class="panel p-3">
+        <DataSourceTag :info="dsRanking" />
         <div class="flex items-center justify-between mb-3">
           <PanelTag code="RANK-02" />
           <label class="flex items-center gap-2 text-xs">

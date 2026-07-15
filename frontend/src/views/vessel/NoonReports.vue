@@ -1,10 +1,25 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { VesselSummary, NoonReportEntry } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 import { getNoonReports } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
+
+const dsNoon: DataSourceInfo = {
+  status: 'real',
+  endpoint: 'GET /api/v1/vessels/{vessel_id}/noon-reports',
+  description: '整張表格直接映射端點回傳欄位，不經過 adapter 加工；只有「位置」欄不是後端原始資料。',
+  fields: [
+    { ui: '航速(觀測) / 航速(修正後)', source: 'avg_speed_kn / speed_through_water' },
+    { ui: '油耗 MT/日', source: 'me_consumption' },
+    { ui: '海況(BF)', source: 'wind_scale' },
+    { ui: '吃水(F/A)', source: 'fore_draft / aft_draft' },
+    { ui: '位置', source: '無對應欄位，端點未回傳經緯度，固定顯示 —' },
+  ],
+}
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
@@ -68,6 +83,7 @@ function exportCsv() {
 
 <template>
   <div class="panel p-4 flex flex-col gap-3">
+    <DataSourceTag :info="dsNoon" />
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-2">
         <PanelTag code="NR-01" />
@@ -115,7 +131,6 @@ function exportCsv() {
             <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">油耗 MT/日</th>
             <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">海況(BF)</th>
             <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">吃水(F/A)</th>
-            <th class="text-left font-display text-xs uppercase tracking-wide px-3 py-2">狀態</th>
           </tr>
         </thead>
         <tbody>
@@ -131,14 +146,6 @@ function exportCsv() {
             <td class="px-3 py-1.5 font-data text-right">{{ r.fuelConsumptionMt.toFixed(1) }}</td>
             <td class="px-3 py-1.5 font-data text-right">{{ r.beaufort }}</td>
             <td class="px-3 py-1.5 font-data text-right">{{ r.draftFwd.toFixed(1) }}/{{ r.draftAft.toFixed(1) }}</td>
-            <td class="px-3 py-1.5">
-              <span
-                class="text-xs px-1.5 py-0.5 rounded-[2px] border font-body"
-                :class="r.loadCondition === 'laden' ? 'border-[var(--color-ink-slate)]/40' : 'border-[var(--color-brass-amber)]/60 text-[var(--color-brass-amber)]'"
-              >
-                {{ r.loadCondition === 'laden' ? 'Laden' : 'Ballast' }}
-              </span>
-            </td>
           </tr>
         </tbody>
       </table>

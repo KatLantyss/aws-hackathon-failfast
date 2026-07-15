@@ -167,26 +167,57 @@ export interface BackendFleetRanking {
   total: number
 }
 
+// Field names below are exactly what handler.py's predict_fuel() reads from
+// the request body (backend-api/handler.py ~line 1141-1155) — UPPERCASE
+// A-class column names from vt_fd.csv, not the frontend's usual snake_case.
+// `noon_day` (recommended usage) makes the backend look up a real DynamoDB
+// row for every field not explicitly overridden here; without it, unlisted
+// features fall back to hardcoded defaults (e.g. WIND_SCALE=3.0), and
+// days_since_hull_clean/days_since_prop_polish can't be computed from real
+// maintenance history at all.
 export interface BackendFuelPredictionInput {
-  vessel_id?: string
-  speed_kn?: number
-  draft_fwd?: number
-  draft_aft?: number
-  cargo_on_board?: number
-  wind_scale?: number
-  sea_height?: number
+  vessel_id: string
+  noon_day?: number
+  AVG_SPEED?: number
+  SPEED_THROUGH_WATER?: number
+  WIND_SCALE?: number
+  WIND_SPEED?: number
+  SEA_HEIGHT?: number
+  SWELL_HEIGHT?: number
+  SEA_WATER_TEMP?: number
+  WATER_DEPTH?: number
+  FORE_DRAFT?: number
+  AFTER_DRAFT?: number
+  MID_DRAFT?: number
+  HOURS_FULL_SPEED?: number
+  DIFF_STW_SOG_SLIP?: number
+  FULL_SPD_STW_SLIP?: number
 }
 
 export interface BackendFuelPredictionResult {
   vessel_id: string
-  input: Required<Omit<BackendFuelPredictionInput, 'vessel_id'>>
-  predicted_consumption_mt: number
+  noon_day: number | null
   model: string
-  counterfactual: {
-    slow_by_1kn_speed: number
+  input_used: {
+    avg_speed_kn: number
+    stw_kn: number
+    wind_scale: number
+    sea_height: number
+    fore_draft: number
+    aft_draft: number
+    hours_full_speed: number
+    days_since_hull_clean: number
+    days_since_prop_polish: number
+  }
+  predicted_consumption_mt: number
+  /** Reflects performing UWC+PP (hull cleaning + propeller polish) right now (days_since=0) — not a speed change. */
+  counterfactual_uwc_pp: {
+    description: string
     predicted_consumption_mt: number
-    fuel_saving_mt: number
+    fuel_saving_mt_per_day: number
     saving_pct: number
+    est_annual_saving_mt: number
+    est_annual_saving_usd: number
   }
 }
 

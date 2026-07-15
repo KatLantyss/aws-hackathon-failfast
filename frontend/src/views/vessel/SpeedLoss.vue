@@ -2,16 +2,51 @@
 import { computed, ref, watch } from 'vue'
 import VChart from 'vue-echarts'
 import type { VesselSummary, NoonReportEntry } from '@/types/fleet'
+import type { DataSourceInfo } from '@/types/dataSource'
 import { fetchSpeedLossData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
 import PanelTag from '@/components/PanelTag.vue'
+import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatUsd, formatDay } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 const { data, state } = useAsyncData(() => props.imo, fetchSpeedLossData)
 const chart = useChartTheme()
+
+const dsChart: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events'],
+  description: '散布點與事件標記是後端原始資料；污損趨勢擬合線是前端現場算的線性回歸，後端沒有提供斜率欄位。',
+  fields: [
+    { ui: 'Ballast / Laden 散布點', source: 'iso_timeline[].stw / ref_stw（slip_timeline 為 fallback）' },
+    { ui: '事件標記線', source: 'maintenance-events[].event_day / event_type' },
+    { ui: '污損趨勢擬合線（紅色虛線）', source: '前端 linearRegression()', note: '純前端計算，非後端欄位' },
+    { ui: '乾淨船體基準線', source: '固定 y=0 markLine，僅示意，無對應資料' },
+  ],
+}
+
+const dsStats: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: 'GET /api/v1/vessels/{vessel_id}/speed-loss + fleet/summary',
+  description: '篩選區間平均與污損增長速率是前端對目前篩選後的資料點現場計算；全期/近90天數值與超額成本則是 fleet/summary 的後端原始欄位。',
+  fields: [
+    { ui: '篩選區間平均 Speed Loss', source: '前端對 filteredReports 取平均', note: '來源資料點是 real，但平均值本身是前端算的' },
+    { ui: '全期 avg slip / 近90天', source: 'vessel.avgSlipPct / vessel.speedLossPct（fleet/summary）' },
+    { ui: '超額燃油成本（USD/天）', source: 'vessel.excessFuelCostUsdMtd × 篩選筆數', note: '前端相乘，非後端提供的「區間成本」' },
+    { ui: '污損增長速率（%/月）', source: '前端回歸 slope × 30', note: '純前端計算' },
+  ],
+}
+
+const dsRec: DataSourceInfo = {
+  status: 'hybrid',
+  endpoint: 'GET /api/v1/fleet/summary',
+  description: '「建議下次清洗窗口」= day_range_max + 30 ~ +60，是前端固定加 30/60 天推算，不是後端 maintenance-recommendation 端點的建議值（那支端點只在維修效能分析頁被使用）。',
+  fields: [
+    { ui: '建議下次清洗窗口', source: 'vessel.nextRecommendedWindow = day_range_max + 30 / +60', note: '前端固定天數推算' },
+  ],
+}
 
 // --- interactive controls ---------------------------------------------
 // dayFrom/dayTo filter on the raw day-index (the dataset has no calendar date).
@@ -34,7 +69,13 @@ watch(data, (v) => {
   }
 })
 
-const cleaningDays = computed(() => (data.value?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.day) ?? []).sort((a, b) => a - b))
+// Drydock resets the hull too (backend's HULL_CLEAN_TYPES includes DD), and
+// 'inspection' (pure UWI) must never count as a cycle boundary — it performs
+// no physical work, per the dataset's "inspection-only events don't restore
+// performance" rule.
+const cleaningDays = computed(() =>
+  (data.value?.events.filter((e) => e.type === 'hull_cleaning' || e.type === 'drydock').map((e) => e.day) ?? []).sort((a, b) => a - b),
+)
 
 const currentCycleStart = computed(() => {
   const days = cleaningDays.value.filter((d) => d <= (dayTo.value ?? Infinity))
@@ -153,9 +194,13 @@ const chartOption = computed(() => {
       formatter: (p: any) => {
         if (p.seriesName === 'Ballast' || p.seriesName === 'Laden') {
           const r: NoonReportEntry = p.data[2]
+          // No fuel figure here: the speed-loss endpoint this chart is built
+          // from doesn't return consumption, so there's nothing real to show
+          // (a hardcoded 0 was previously displayed here, which looked real
+          // but wasn't — see docs/frontend-backend-integration-status.html §7).
           return `<b>Day ${r.day}</b><br/>Speed Loss ${r.speedLossPct.toFixed(1)}%<br/>海況 BF${r.beaufort} · ${
             r.loadCondition === 'laden' ? '滿載' : '壓載'
-          }<br/>油耗 ${r.fuelConsumptionMt.toFixed(1)} MT/日`
+          }`
         }
         return `${p.seriesName}: ${Array.isArray(p.value) ? Number(p.value[1]).toFixed(2) : p.value}%`
       },
@@ -306,6 +351,7 @@ const chartOption = computed(() => {
     />
     <div v-else class="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4">
       <div class="panel p-3">
+        <DataSourceTag :info="dsChart" />
         <div class="h-[440px]" :class="chartReady ? 'animate-scan' : 'opacity-0'">
           <VChart :option="chartOption" autoresize class="h-full w-full" />
         </div>
@@ -313,6 +359,7 @@ const chartOption = computed(() => {
 
       <div class="flex flex-col gap-3">
         <div class="panel p-4" v-if="stats">
+          <DataSourceTag :info="dsStats" />
           <PanelTag code="STAT-01" class="mb-2" />
           <dl class="flex flex-col gap-3 text-sm">
             <div>
@@ -348,6 +395,7 @@ const chartOption = computed(() => {
         </div>
 
         <div class="panel p-4 border-l-4" style="border-left-color: var(--color-brass-amber)">
+          <DataSourceTag :info="dsRec" />
           <PanelTag code="REC-01" class="mb-2" />
           <p class="font-display text-sm mb-1">建議下次清洗窗口</p>
           <p class="font-data text-base text-[var(--color-brass-amber)]">
