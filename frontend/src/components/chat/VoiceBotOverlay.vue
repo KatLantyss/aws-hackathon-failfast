@@ -196,7 +196,7 @@ async function handleSubmit(text: string) {
                 <p class="self-end max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--color-fathom-teal)]/20 px-3 py-2 text-sm text-[var(--color-on-navy)] whitespace-pre-line">
                   {{ turn.userText }}
                 </p>
-                <p class="self-start max-w-[90%] font-display text-base text-[var(--color-on-navy)] whitespace-pre-line">
+                <p class="self-start max-w-[90%] font-body text-base text-[var(--color-on-navy)] whitespace-pre-line">
                   {{ turn.replyText }}
                 </p>
               </article>

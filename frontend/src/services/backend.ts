@@ -62,6 +62,8 @@ export interface BackendNoonReport {
   total_consump: number | null
   sfoc: number | null
   me_slip: number | null
+  /** Needed to select a v5 steady-state baseline (must be >= 22 hours). */
+  hours_full_speed: number | null
 }
 
 export interface BackendNoonReportsResponse {
@@ -175,6 +177,8 @@ export interface BackendFleetRanking {
 // features fall back to hardcoded defaults (e.g. WIND_SCALE=3.0), and
 // days_since_hull_clean/days_since_prop_polish can't be computed from real
 // maintenance history at all.
+export type BackendFuelType = 'ME_FULLSPEED_CONSUMP_HSHFO' | 'ME_FULLSPEED_CONSUMP_VLSFO' | 'ME_FULLSPEED_CONSUMP_ULSFO' | 'ME_FULLSPEED_CONSUMP_LSMGO' | 'ME_FULLSPEED_CONSUMP_BIO_HSFO'
+
 export interface BackendFuelPredictionInput {
   vessel_id: string
   noon_day?: number
@@ -192,6 +196,7 @@ export interface BackendFuelPredictionInput {
   HOURS_FULL_SPEED?: number
   DIFF_STW_SOG_SLIP?: number
   FULL_SPD_STW_SLIP?: number
+  fuel_type?: BackendFuelType
 }
 
 export interface BackendFuelPredictionResult {
@@ -206,8 +211,21 @@ export interface BackendFuelPredictionResult {
     fore_draft: number
     aft_draft: number
     hours_full_speed: number
-    days_since_hull_clean: number
-    days_since_prop_polish: number
+    days_since_hull_clean: number | null
+    days_since_prop_polish: number | null
+    /** Source fuel matching the NOON Report prediction target. */
+    fuel_type: BackendFuelType | 'MIXED'
+    fuel_type_source: 'request' | 'noon_report_predict_target' | 'noon_report' | 'weighted_noon_report' | 'default_vlsfo'
+    effective_fuel_lcv_mj_per_kg: number
+    /** Public MT output matches the source fuel consumed during this day's full-speed period. */
+    prediction_basis: 'source_fuel_full_speed_period'
+    /** v5 model's internal VLSFO-equivalent, 24-hour-normalized output for auditability. */
+    normalized_vlsfo_equivalent_mt_24h: number
+    model_basis: 'VLSFO_equivalent_24h'
+    model_applicability: {
+      wind_scale_max: number
+      hours_full_speed_min: number
+    }
   }
   predicted_consumption_mt: number
   /** Reflects performing UWC+PP (hull cleaning + propeller polish) right now (days_since=0) — not a speed change. */
@@ -215,9 +233,36 @@ export interface BackendFuelPredictionResult {
     description: string
     predicted_consumption_mt: number
     fuel_saving_mt_per_day: number
-    saving_pct: number
+    raw_fuel_delta_mt_per_day: number
+    benefit_available: boolean
+    saving_pct: number | null
     est_annual_saving_mt: number
-    est_annual_saving_usd: number
+    energy_pricing: {
+      currency: 'USD'
+      fuel_type: BackendFuelType | 'MIXED'
+      source_lcv_mj_per_kg: number
+      normalized_energy_gj_per_day: number
+      diesel_equivalent_l_per_day: number
+      /** CPC retail diesel price retained as the transparent TWD source input. */
+      price_twd_per_litre: number
+      daily_saving_usd: number
+      annual_saving_usd: number
+      sea_days_per_year: number
+      price_source: {
+        name: string
+        url: string
+        effective_date: string | null
+        status: 'fetched' | 'fallback'
+        basis: string
+      }
+      exchange_rate: {
+        twd_per_usd: number
+        effective_date: string | null
+        name: string
+        url: string
+        status: 'fetched' | 'fallback'
+      }
+    }
   }
 }
 

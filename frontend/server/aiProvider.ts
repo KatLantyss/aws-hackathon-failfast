@@ -74,7 +74,18 @@ function buildSystemPrompt(sessionMemory?: ChatSessionMemory): string {
 - 一定要呼叫 emit_answer 工具回答，不要輸出其他文字。`
 }
 
-function assertNluResult(value: unknown): NluResult {
+function extractKnownShips(message: string): Array<{ imo: string; name: string }> {
+  const matches = [...message.matchAll(/\bS\s*(\d{1,2})\b/gi)]
+  const seen = new Set<string>()
+  return matches.flatMap((match) => {
+    const imo = `S${match[1]}`
+    if (!REAL_SHIPS.includes(imo as typeof REAL_SHIPS[number]) || seen.has(imo)) return []
+    seen.add(imo)
+    return [{ imo, name: imo }]
+  })
+}
+
+export function assertNluResult(value: unknown, userMessage: string): NluResult {
   if (!value || typeof value !== 'object') throw new Error('AI provider returned an empty structured result')
   const raw = value as Partial<NluResult>
   // Bedrock models may omit fields whose values can be safely inferred from a
@@ -96,10 +107,15 @@ function assertNluResult(value: unknown): NluResult {
         return [{ imo, name: typeof candidate.name === 'string' ? candidate.name : imo }]
       })
     : []
+  // An explicit, valid vessel ID in the user's text is authoritative. This
+  // prevents an NLU tool-call hallucination such as marking S23 "not found"
+  // even though it is a real fleet vessel.
+  const explicitVessels = extractKnownShips(userMessage)
+  const resolvedVessels = explicitVessels.length ? explicitVessels : vessels
   const result = {
     ...raw,
-    vessels,
-    vesselNotFound: raw.vesselNotFound === true || raw.vesselNotFound === 'true',
+    vessels: resolvedVessels,
+    vesselNotFound: explicitVessels.length ? false : raw.vesselNotFound === true || raw.vesselNotFound === 'true',
     vesselGuess: typeof raw.vesselGuess === 'string' ? raw.vesselGuess : null,
     factType: typeof raw.factType === 'string' && FACT_TYPES.has(raw.factType) ? raw.factType : null,
     clarifyingNote: typeof raw.clarifyingNote === 'string' ? raw.clarifyingNote : '已解析船隊查詢',
@@ -140,7 +156,7 @@ async function invokeBedrock(body: NluRequestBody, env: AiProviderEnv): Promise<
   const toolUse = (response.output?.message?.content ?? [])
     .find((block) => block.toolUse?.name === EMIT_ANSWER_TOOL.name)?.toolUse
   if (!toolUse) throw new Error('Bedrock did not return the required emit_answer tool call')
-  return assertNluResult(toolUse.input)
+  return assertNluResult(toolUse.input, body.message)
 }
 
 async function invokeAgentCore(body: NluRequestBody, env: AiProviderEnv): Promise<NluResult> {
@@ -162,7 +178,7 @@ async function invokeAgentCore(body: NluRequestBody, env: AiProviderEnv): Promis
     })),
   }))
   if (!response.response) throw new Error('AgentCore returned no response stream')
-  return assertNluResult(JSON.parse(await response.response.transformToString()))
+  return assertNluResult(JSON.parse(await response.response.transformToString()), body.message)
 }
 
 export async function classifyWithAwsAi(body: NluRequestBody, env: AiProviderEnv): Promise<NluResult> {

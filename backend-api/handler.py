@@ -6,9 +6,11 @@ import json
 import os
 import math
 import pickle
+import ssl
 import sys
 import time
 import threading
+import urllib.request
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -22,20 +24,26 @@ if _vendor not in sys.path:
 
 import boto3
 from boto3.dynamodb.conditions import Key
+import lightgbm  # Required to deserialize the v5 LightGBM ensemble member.
 import numpy as np
+import pandas as pd
 
 # ── Model loading (module-level: loaded once per Lambda container) ────────────
 _MODEL_BUNDLE = None
 
+
 def _load_model():
+    """Load the v5 VLSFO-equivalent 24-hour ensemble artifact once."""
     global _MODEL_BUNDLE
     if _MODEL_BUNDLE is not None:
         return _MODEL_BUNDLE
-    model_path = os.path.join(os.path.dirname(__file__), 'model', 'model_v3.pkl')
+    model_path = os.path.join(os.path.dirname(__file__), 'model', 'model_v5_final.pkl')
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         with open(model_path, 'rb') as f:
             _MODEL_BUNDLE = pickle.load(f)
+    if _MODEL_BUNDLE.get('version') != 'v5_final':
+        raise ValueError('Expected v5_final model artifact')
     return _MODEL_BUNDLE
 
 # Ship type mapping (W1=0: S1-S8, S21 / W2=1: S9-S12, S22, S23)
@@ -302,9 +310,12 @@ def get_vessel_detail(vessel_id, event):
     if not rows:
         return err(404, f'Vessel {vessel_id} not found')
 
-    speeds   = [safe_float(r.get('AVG_SPEED'))          for r in rows if r.get('AVG_SPEED')]
-    consump  = [safe_float(r.get('ME_CONSUMPTION'))      for r in rows if r.get('ME_CONSUMPTION')]
-    stw_list = [safe_float(r.get('SPEED_THROUGH_WATER')) for r in rows if r.get('SPEED_THROUGH_WATER')]
+    def numeric_values(field):
+        return [value for r in rows if (value := safe_float(r.get(field))) is not None]
+
+    speeds = numeric_values('AVG_SPEED')
+    consump = numeric_values('ME_CONSUMPTION')
+    stw_list = numeric_values('SPEED_THROUGH_WATER')
 
     return resp(200, {
         'vessel_id':       vessel_id,
@@ -351,6 +362,9 @@ def get_noon_reports(vessel_id, event):
             'total_consump':       safe_float(r.get('TOTAL_CONSUMP')),
             'sfoc':                safe_float(r.get('SFOC')),
             'me_slip':             safe_float(r.get('ME_SLIP')),
+            # Required by the v5 model applicability gate. Expose it so the
+            # frontend can select a real, steady-state baseline report.
+            'hours_full_speed':     safe_float(r.get('HOURS_FULL_SPEED')),
         })
 
     return resp(200, {
@@ -804,13 +818,16 @@ def get_maintenance_recommendation(vessel_id, event):
 
     # Last 90 days of data (last 90 noon_day records)
     recent = rows_sorted[-90:]
-    slips  = [safe_float(r.get('ME_SLIP')) for r in recent if r.get('ME_SLIP')]
+    def recent_numeric(records, field):
+        return [value for r in records if (value := safe_float(r.get(field))) is not None]
+
+    slips = recent_numeric(recent, 'ME_SLIP')
     avg_slip = round(mean(slips), 2) if slips else None
 
     # Prior 90-day window, same recent-vs-prior methodology as slip_trend in
     # build_fleet_summary.py, to get a real degradation rate (not a guess).
     prior = rows_sorted[-180:-90] if len(rows_sorted) > 90 else []
-    prior_slips = [safe_float(r.get('ME_SLIP')) for r in prior if r.get('ME_SLIP')]
+    prior_slips = recent_numeric(prior, 'ME_SLIP')
     avg_prior_slip = round(mean(prior_slips), 2) if prior_slips else None
     degradation_rate_pct_per_day = (
         round((avg_slip - avg_prior_slip) / 90, 5)
@@ -823,7 +840,7 @@ def get_maintenance_recommendation(vessel_id, event):
     # cumulative excess-fuel-cost curve if maintenance is deferred — no
     # per-event cleaning/opportunity cost is included since that data doesn't
     # exist anywhere in the dataset.
-    cons_list = [safe_float(r.get('ME_CONSUMPTION')) for r in recent if r.get('ME_CONSUMPTION')]
+    cons_list = recent_numeric(recent, 'ME_CONSUMPTION')
     avg_consumption_mt = round(mean(cons_list), 2) if cons_list else None
 
     FUEL_PRICE = 620
@@ -1296,30 +1313,282 @@ def _build_features(vessel_id, speed_kn, stw, wind_scale, wind_speed,
     return np.array([row], dtype=np.float32)
 
 
+V5_MAINTENANCE_TYPES = {'PP': 1, 'UWI': 2, 'UWI+PP': 3, 'UWC': 4, 'UWC+PP': 5, 'DD': 6}
+V5_FEATURE_DEFAULTS = {
+    'SEA_SPEED_DISTANCE': 0.0, 'TOTAL_DISTANCE': 0.0, 'ME_AVG_RPM': 1.0,
+    'PROPELLER_SPEED': 0.0, 'HOURS_TOTAL': 24.0, 'FORE_DRAFT': 13.0,
+    'AFTER_DRAFT': 13.0, 'MID_DRAFT': 13.0, 'DISPLACEMENT': 1.0,
+    'CARGO_ON_BOARD': 0.0, 'AVG_SPEED': 0.0, 'SPEED_THROUGH_WATER': 1.0,
+    'DIFF_STW_SOG_SLIP': 0.0, 'FULL_SPD_STW_SLIP': 0.0, 'WIND_SCALE': 0.0,
+    'WIND_SPEED': 0.0, 'WIND_DIRECTION': 0.0, 'SEA_HEIGHT': 0.0,
+    'SEA_DIRECTION': 0.0, 'SWELL_HEIGHT': 0.0, 'SWELL_DIRECTION': 0.0,
+    'SEA_WATER_TEMP': 20.0, 'WATER_DEPTH': 100.0,
+}
+
+
+def _v5_speed_loss_pct(vessel_id, noon_day):
+    """Read the existing ISO 19030 FOC speed-loss value for v5's feature contract."""
+    cache_key = f'v5:speed-loss:{vessel_id}'
+    timeline = _cache_get(cache_key)
+    if timeline is None:
+        response = get_speed_loss(vessel_id, {})
+        if response.get('statusCode') != 200:
+            return 0.0
+        try:
+            timeline = json.loads(response['body']).get('foc_timeline', [])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return 0.0
+        _cache_set(cache_key, timeline)
+    for point in timeline:
+        if abs(safe_float(point.get('noon_day'), -1) - noon_day) < 0.5:
+            return safe_float(point.get('speed_loss_pct'), 0.0)
+    return 0.0
+
+
+def _v5_maintenance_features(maint_rows, noon_day, counterfactual=False):
+    """Match v5's DAYS_SINCE_LAST_MAINT and LAST_MAINT_TYPE training features."""
+    if counterfactual:
+        return 0.0, float(V5_MAINTENANCE_TYPES['UWC+PP'])
+    prior = [m for m in maint_rows if safe_float(m.get('event_day'), -1) <= noon_day]
+    if not prior:
+        return float(noon_day), np.nan
+    last = max(prior, key=lambda m: safe_float(m.get('event_day'), -1))
+    return max(0.0, noon_day - safe_float(last.get('event_day'), noon_day)), float(
+        V5_MAINTENANCE_TYPES.get(str(last.get('event_type', '')), np.nan)
+    )
+
+
+def _build_v5_features(vessel_id, row_data, body, maint_rows, noon_day, counterfactual=False):
+    """Build the exact 30-feature DataFrame expected by model_v5_final.pkl."""
+    bundle = _load_model()
+
+    def get(field):
+        if field in body and body[field] is not None:
+            return float(body[field])
+        return safe_float(row_data.get(field), V5_FEATURE_DEFAULTS.get(field, 0.0))
+
+    days_since_maint, last_maint_type = _v5_maintenance_features(
+        maint_rows, noon_day, counterfactual=counterfactual,
+    )
+    rpm = max(get('ME_AVG_RPM'), 1.0)
+    stw = max(get('SPEED_THROUGH_WATER'), 1.0)
+    speed_loss_pct = 0.0 if counterfactual else _v5_speed_loss_pct(vessel_id, noon_day)
+    raw = {feature: get(feature) for feature in bundle['features']}
+    raw.update({
+        'DAYS_SINCE_LAST_MAINT': days_since_maint,
+        'LAST_MAINT_TYPE': last_maint_type,
+        'speed_loss_pct': speed_loss_pct,
+        'RPM_CUBED': (rpm / 100.0) ** 3,
+        'POWER_SPEED_RATIO': (rpm / 100.0) ** 3 / (stw / 10.0) ** 3,
+        'DAYS_SINCE_MAINT_SQRT': math.sqrt(days_since_maint),
+        'NOON_UTC_NORM': noon_day / 1825.0,
+    })
+    return pd.DataFrame([{feature: raw[feature] for feature in bundle['features']}])
+
+
+def _predict_v5(features):
+    """Predict VLSFO-equivalent 24-hour Daily FOC with the persisted 50/50 ensemble."""
+    bundle = _load_model()
+    weights = bundle['ensemble_weights']
+    prediction = (
+        weights['xgb'] * float(bundle['xgb_model'].predict(features)[0])
+        + weights['lgbm'] * float(bundle['lgbm_model'].predict(features)[0])
+    )
+    return max(0.0, prediction)
+
+
+def _v5_to_source_fuel_mt(vlsfo_equivalent_mt_24h, source_lcv_mj_per_kg, hours_full_speed):
+    """Convert v5's normalized target back to the NOON Report fuel-period target."""
+    return vlsfo_equivalent_mt_24h * (40.2 / source_lcv_mj_per_kg) * (hours_full_speed / 24.0)
+
+
+FUEL_LCV_MJ_PER_KG = {
+    'ME_FULLSPEED_CONSUMP_HSHFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_ULSFO': 41.2,
+    'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
+    'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
+}
+DEFAULT_FUEL_TYPE = 'ME_FULLSPEED_CONSUMP_VLSFO'
+CPC_PRICE_URL = 'https://www.cpc.com.tw/GetOilPriceJson.aspx?type=TodayOilPriceString'
+USD_TWD_EXCHANGE_RATE_URL = 'https://open.er-api.com/v6/latest/USD'
+DIESEL_LCV_MJ_PER_KG = 42.7
+DIESEL_DENSITY_KG_PER_L = 0.84
+SEA_DAYS_PER_YEAR = 300
+
+
+_external_price_lock = threading.Lock()
+
+
+def _resolve_fuel_basis(body, row_data):
+    requested = body.get('fuel_type')
+    if requested is not None:
+        if requested not in FUEL_LCV_MJ_PER_KG:
+            raise ValueError(f'Unsupported fuel_type: {requested}')
+        return requested, 'request', FUEL_LCV_MJ_PER_KG[requested]
+
+    predicted_types = [fuel_type for fuel_type in FUEL_LCV_MJ_PER_KG if row_data.get(fuel_type) == 'PREDICT']
+    if len(predicted_types) == 1:
+        fuel_type = predicted_types[0]
+        return fuel_type, 'noon_report_predict_target', FUEL_LCV_MJ_PER_KG[fuel_type]
+
+    quantities = {
+        fuel_type: safe_float(row_data.get(fuel_type))
+        for fuel_type in FUEL_LCV_MJ_PER_KG
+        if safe_float(row_data.get(fuel_type)) is not None and safe_float(row_data.get(fuel_type)) > 0
+    }
+    if quantities:
+        total_mt = sum(quantities.values())
+        weighted_lcv = sum(FUEL_LCV_MJ_PER_KG[fuel_type] * mt for fuel_type, mt in quantities.items()) / total_mt
+        if len(quantities) == 1:
+            fuel_type = next(iter(quantities))
+            return fuel_type, 'noon_report', weighted_lcv
+        return 'MIXED', 'weighted_noon_report', weighted_lcv
+    return DEFAULT_FUEL_TYPE, 'default_vlsfo', FUEL_LCV_MJ_PER_KG[DEFAULT_FUEL_TYPE]
+
+
+def _get_cpc_diesel_price():
+    """Return CPC public diesel retail price metadata without failing inference."""
+    cache_key = 'external:cpc-diesel-price'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    with _external_price_lock:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            fallback_price = float(os.environ.get('FUEL_PRICE_FALLBACK_TWD_PER_L', '28.8'))
+            if not math.isfinite(fallback_price) or fallback_price <= 0:
+                raise ValueError('fallback price must be finite and positive')
+        except (TypeError, ValueError):
+            fallback_price = 28.8
+        fallback = {
+            'twd_per_litre': fallback_price,
+            'effective_date': None,
+            'source_name': 'Taiwan CPC public retail diesel price',
+            'source_url': CPC_PRICE_URL,
+            'status': 'fallback',
+        }
+        try:
+            request = urllib.request.Request(CPC_PRICE_URL, headers={'User-Agent': 'ship-analysis-roi/1.0'})
+            # Python 3.14 enables OpenSSL strict X.509 checks that reject CPC's
+            # otherwise CA/hostname-valid chain for a missing Subject Key Identifier.
+            # Disable only strict-chain extras; certificate and hostname verification remain enabled.
+            ssl_context = ssl.create_default_context()
+            ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            with urllib.request.urlopen(request, timeout=3, context=ssl_context) as response:
+                payload = json.loads(response.read().decode('utf-8'))
+            price = safe_float(payload.get('sPrice5'))
+            if price is None or price <= 0:
+                raise ValueError('CPC response did not contain a valid diesel price')
+            result = {
+                **fallback,
+                'twd_per_litre': price,
+                'effective_date': payload.get('PriceUpdate'),
+                'status': 'fetched',
+            }
+        except Exception:
+            result = fallback
+        _cache_set(cache_key, result)
+        return result
+
+
+def _get_usd_twd_exchange_rate():
+    """Return public TWD per USD rate with a safe fallback for cost display."""
+    cache_key = 'external:usd-twd-exchange-rate'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    with _external_price_lock:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            fallback_rate = float(os.environ.get('USD_TWD_FALLBACK_RATE', '32.0'))
+            if not math.isfinite(fallback_rate) or fallback_rate <= 0:
+                raise ValueError('fallback rate must be finite and positive')
+        except (TypeError, ValueError):
+            fallback_rate = 32.0
+        fallback = {
+            'twd_per_usd': fallback_rate,
+            'effective_date': None,
+            'source_name': 'ExchangeRate-API open access USD rates',
+            'source_url': USD_TWD_EXCHANGE_RATE_URL,
+            'status': 'fallback',
+        }
+        try:
+            request = urllib.request.Request(USD_TWD_EXCHANGE_RATE_URL, headers={'User-Agent': 'ship-analysis-roi/1.0'})
+            with urllib.request.urlopen(request, timeout=3) as response:
+                payload = json.loads(response.read().decode('utf-8'))
+            rate = safe_float((payload.get('rates') or {}).get('TWD'))
+            if rate is None or rate <= 0:
+                raise ValueError('exchange-rate response did not contain a valid TWD rate')
+            result = {
+                **fallback,
+                'twd_per_usd': rate,
+                'effective_date': payload.get('time_last_update_utc'),
+                'status': 'fetched',
+            }
+        except Exception:
+            result = fallback
+        _cache_set(cache_key, result)
+        return result
+
+
+def _calculate_energy_pricing(fuel_saving_mt_per_day, fuel_type, source_lcv):
+    """Normalize fuel mass to energy, then show its cost delta consistently in USD."""
+    saving_gj_per_day = max(0.0, fuel_saving_mt_per_day) * source_lcv
+    diesel_equivalent_l_per_day = (
+        saving_gj_per_day * 1000 / DIESEL_LCV_MJ_PER_KG / DIESEL_DENSITY_KG_PER_L
+    )
+    price = _get_cpc_diesel_price()
+    exchange_rate = _get_usd_twd_exchange_rate()
+    daily_saving_twd = diesel_equivalent_l_per_day * price['twd_per_litre']
+    daily_saving_usd = daily_saving_twd / exchange_rate['twd_per_usd']
+    return {
+        'currency': 'USD',
+        'fuel_type': fuel_type,
+        'source_lcv_mj_per_kg': source_lcv,
+        'normalized_energy_gj_per_day': round(saving_gj_per_day, 2),
+        'diesel_equivalent_l_per_day': round(diesel_equivalent_l_per_day, 2),
+        'price_twd_per_litre': price['twd_per_litre'],
+        'daily_saving_usd': round(daily_saving_usd, 2),
+        'annual_saving_usd': round(daily_saving_usd * SEA_DAYS_PER_YEAR, 0),
+        'sea_days_per_year': SEA_DAYS_PER_YEAR,
+        'price_source': {
+            'name': price['source_name'],
+            'url': price['source_url'],
+            'effective_date': price['effective_date'],
+            'status': price['status'],
+            'basis': 'CPC super diesel retail price is an open-data energy-price proxy, not a bunker spot quote.',
+        },
+        'exchange_rate': {
+            'twd_per_usd': exchange_rate['twd_per_usd'],
+            'effective_date': exchange_rate['effective_date'],
+            'name': exchange_rate['source_name'],
+            'url': exchange_rate['source_url'],
+            'status': exchange_rate['status'],
+        },
+    }
+
+
 def predict_fuel(event):
     """
-    XGBoost fuel consumption prediction using model_v3.pkl.
+    v5 ensemble fuel prediction in VLSFO-equivalent, 24-hour-normalized MT/day.
 
-    Mode 1 — noon_day lookup (recommended):
-      Pass vessel_id + noon_day → handler fetches that day's row from DynamoDB
-      and computes all features automatically.
+    The model is only applicable to its trained steady-state envelope:
+    WIND_SCALE ≤ 4 and HOURS_FULL_SPEED ≥ 22.  A noon-day lookup supplies the
+    remaining voyage and maintenance features; request fields can override any
+    raw report feature for what-if analysis.
 
-      POST { "vessel_id": "S21", "noon_day": 136 }
-
-    Mode 2 — manual override (optional, for what-if scenarios):
-      Any A-class field can be overridden by including it in the request body.
-      Useful for simulating different conditions on a known day.
-
-      POST {
-        "vessel_id": "S21",
-        "noon_day":  136,
-        "wind_scale": 6       ← override just this field
-      }
-
-    Counterfactual (UWC+PP):
-      The response always includes a counterfactual prediction showing
-      how much fuel would be saved if UWC+PP were performed right now
-      (days_since_hull_clean = 0, days_since_prop_polish = 0).
+    The counterfactual sets the v5 maintenance state to UWC+PP performed now
+    and resets FOC-based speed loss to zero, matching the clean-state scenario
+    used for this UI estimate.
     """
     try:
         body = json.loads(event.get('body') or '{}')
@@ -1343,6 +1612,11 @@ def predict_fuel(event):
         if not matched:
             return err(404, f'No data found for vessel {vessel_id} on noon_day {noon_day}')
         row_data = matched[0]
+
+    try:
+        fuel_type, fuel_type_source, effective_fuel_lcv = _resolve_fuel_basis(body, row_data)
+    except ValueError as exc:
+        return err(400, str(exc))
 
     # ── Resolve feature values (DynamoDB row → override with body if provided) ─
     def get(field, default=None):
@@ -1368,6 +1642,11 @@ def predict_fuel(event):
     aft_draft         = get('AFTER_DRAFT',           13.5)
     mid_draft         = get('MID_DRAFT',             (fore_draft + aft_draft) / 2)
 
+    if noon_day is None:
+        return err(400, 'noon_day is required for v5 feature construction')
+    if wind_scale > 4 or hours_full_speed < 22:
+        return err(422, 'v5 model is applicable only when WIND_SCALE <= 4 and HOURS_FULL_SPEED >= 22')
+
     # ── Load maintenance history (events up to noon_day only) ────────────────
     maint_rows = query_maintenance(vessel_id)
     maint_rows_sorted = sorted(
@@ -1377,40 +1656,31 @@ def predict_fuel(event):
     )
 
     try:
-        bundle = _load_model()
-        model  = bundle['model']
+        _load_model()
+        X = _build_v5_features(vessel_id, row_data, body, maint_rows_sorted, noon_day)
+        X_cf = _build_v5_features(
+            vessel_id, row_data, body, maint_rows_sorted, noon_day, counterfactual=True,
+        )
+        predicted_vlsfo_equivalent = _predict_v5(X)
+        predicted_cf_vlsfo_equivalent = _predict_v5(X_cf)
+        predicted = round(_v5_to_source_fuel_mt(
+            predicted_vlsfo_equivalent, effective_fuel_lcv, hours_full_speed,
+        ), 2)
+        predicted_cf = round(_v5_to_source_fuel_mt(
+            predicted_cf_vlsfo_equivalent, effective_fuel_lcv, hours_full_speed,
+        ), 2)
     except Exception as e:
-        return err(500, f'Model load failed: {e}')
+        return err(500, f'Model load or v5 feature construction failed: {e}')
 
-    # ── Baseline prediction ───────────────────────────────────────────────────
-    X = _build_features(
-        vessel_id, speed_kn, stw,
-        wind_scale, wind_speed, sea_height, swell_height,
-        sea_water_temp, water_depth, diff_stw_sog_slip, full_spd_stw_slip,
-        hours_full_speed, hours_total, fore_draft, aft_draft, mid_draft,
-        maint_rows_sorted,
-        as_of_day=noon_day,
-    )
-    predicted = round(float(model.predict(X)[0]), 2)
-
-    # ── Counterfactual: simulate UWC+PP performed right now ──────────────────
-    X_cf = _build_features(
-        vessel_id, speed_kn, stw,
-        wind_scale, wind_speed, sea_height, swell_height,
-        sea_water_temp, water_depth, diff_stw_sog_slip, full_spd_stw_slip,
-        hours_full_speed, hours_total, fore_draft, aft_draft, mid_draft,
-        maint_rows_sorted,
-        as_of_day=noon_day,
-        override_days_since_hull_clean=0.0,
-        override_days_since_prop_polish=0.0,
-    )
-    predicted_cf  = round(float(model.predict(X_cf)[0]), 2)
-    cf_saving     = round(predicted - predicted_cf, 2)
+    # Expose the same fuel-period MT target as the NOON Report while retaining
+    # v5's normalized value for traceability. Energy is invariant across the
+    # conversion because source MT × source LCV equals VLSFO-equivalent energy.
+    raw_cf_delta = round(predicted - predicted_cf, 2)
+    cf_saving = max(0.0, raw_cf_delta)
     cf_saving_pct = round(cf_saving / predicted * 100, 1) if predicted > 0 else None
 
-    # Annual saving estimate (300 sea days/year, bunker $600/MT)
-    annual_saving_mt  = round(cf_saving * 300, 1)
-    annual_saving_usd = round(cf_saving * 300 * 600, 0)
+    annual_saving_mt = round(cf_saving * SEA_DAYS_PER_YEAR, 1)
+    energy_pricing = _calculate_energy_pricing(cf_saving, fuel_type, effective_fuel_lcv)
 
     # Days since last maintenance (for context)
     days_since_hull  = None
@@ -1429,7 +1699,7 @@ def predict_fuel(event):
     return resp(200, {
         'vessel_id': vessel_id,
         'noon_day':  noon_day,
-        'model':     'xgboost_v3_hybrid',
+        'model':     'v5_xgboost_lightgbm_ensemble',
         'input_used': {
             'avg_speed_kn':    speed_kn,
             'stw_kn':          stw,
@@ -1440,15 +1710,24 @@ def predict_fuel(event):
             'hours_full_speed': hours_full_speed,
             'days_since_hull_clean':  days_since_hull,
             'days_since_prop_polish': days_since_prop,
+            'fuel_type': fuel_type,
+            'fuel_type_source': fuel_type_source,
+            'effective_fuel_lcv_mj_per_kg': round(effective_fuel_lcv, 3),
+            'prediction_basis': 'source_fuel_full_speed_period',
+            'normalized_vlsfo_equivalent_mt_24h': round(predicted_vlsfo_equivalent, 2),
+            'model_basis': 'VLSFO_equivalent_24h',
+            'model_applicability': {'wind_scale_max': 4, 'hours_full_speed_min': 22},
         },
         'predicted_consumption_mt': predicted,
         'counterfactual_uwc_pp': {
-            'description':              'Predicted consumption if UWC+PP were performed now (days_since=0)',
+            'description':              'v5 VLSFO-equivalent 24h prediction if UWC+PP were performed now (maintenance age and FOC speed loss reset)',
             'predicted_consumption_mt': predicted_cf,
             'fuel_saving_mt_per_day':   cf_saving,
+            'raw_fuel_delta_mt_per_day': raw_cf_delta,
+            'benefit_available':         raw_cf_delta > 0,
             'saving_pct':               cf_saving_pct,
             'est_annual_saving_mt':     annual_saving_mt,
-            'est_annual_saving_usd':    annual_saving_usd,
+            'energy_pricing':           energy_pricing,
         },
     })
 

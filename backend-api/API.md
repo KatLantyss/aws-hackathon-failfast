@@ -329,12 +329,13 @@ GET /api/v1/fleet/ranking
 POST /api/v1/predict/fuel-consumption
 ```
 
-使用 XGBoost 模型（`model_v3.pkl`）預測指定船舶在特定天的主機全速油耗（MT/day），並自動計算「如果現在執行 UWC+PP 能節省多少」的反事實推論。
+使用 `model_v5_final.pkl` 預測指定船舶在特定天的 **VLSFO 等效、24 小時標準化主機日耗**（MT/24h），並計算 UWC+PP 反事實情境下的能源成本差額。
 
-**模型說明：** XGBoost v3 Hybrid（600 棵樹）
-- 29 個特徵，含環境、航行條件、船體污損退化（`days_since_hull_clean`、`days_since_prop_polish`）
-- `physics_consumption = ship_coefficient / stw²` 作為物理基線特徵
-- `UWI`（純檢查）不重置污損計時，符合題目要求
+**模型說明：** v5 XGBoost + LightGBM 50:50 ensemble
+- 30 個特徵，含 RPM、航速／航程、吃水／載重、海象、維護狀態與 ISO 19030 FOC speed loss
+- 預測目標統一為 `各油種耗量 × LCV / VLSFO LCV / HOURS_FULL_SPEED × 24`
+- 訓練適用範圍：`WIND_SCALE ≤ 4` 且 `HOURS_FULL_SPEED ≥ 22`；不符合時 API 回傳 HTTP 422，不產生不可靠的預測
+- UWC+PP 反事實假設：最近維護天數設為 0、維護類型設為 UWC+PP，並將 FOC speed loss 設為 0
 
 ---
 
@@ -358,7 +359,7 @@ curl -X POST $BASE/api/v1/predict/fuel-consumption \
   -d '{
     "vessel_id":  "S21",
     "noon_day":   960,
-    "WIND_SCALE": 6,
+    "WIND_SCALE": 4,
     "SEA_HEIGHT": 2.5
   }'
 ```
@@ -381,33 +382,60 @@ curl -X POST $BASE/api/v1/predict/fuel-consumption \
 | `HOURS_FULL_SPEED` | 全速航行時數 | hr |
 | `DIFF_STW_SOG_SLIP` | 對水-對地速差 | knots |
 | `FULL_SPD_STW_SLIP` | 全速時段滑差 | % |
+| `fuel_type` | 油種欄位名；若未提供會從 `noon_day` 日報推斷，仍無法判定時預設 VLSFO | enum |
+
+支援來源油種：`ME_FULLSPEED_CONSUMP_HSHFO`、`ME_FULLSPEED_CONSUMP_VLSFO`、`ME_FULLSPEED_CONSUMP_ULSFO`、`ME_FULLSPEED_CONSUMP_LSMGO`、`ME_FULLSPEED_CONSUMP_BIO_HSFO`。請求的 `fuel_type` 僅用來標示 `source_fuel_type` 的可追溯來源；v5 輸出、反事實節省與能源成本均固定為 VLSFO 等效 24 小時基準，並在 `input_used.fuel_type` 明確回傳 VLSFO。未指定時，API 會從日報推斷單一或混合來源油種。
 
 **Response:**
 
 ```json
 {
   "vessel_id": "S21",
-  "noon_day":  136.0,
-  "model":     "xgboost_v3_hybrid",
+  "noon_day": 136.0,
+  "model": "v5_xgboost_lightgbm_ensemble",
   "input_used": {
-    "avg_speed_kn":           10.6,
-    "stw_kn":                 10.6,
-    "wind_scale":             4.0,
-    "sea_height":             1.0,
-    "fore_draft":             12.45,
-    "aft_draft":              12.45,
-    "hours_full_speed":       25.0,
-    "days_since_hull_clean":  2.0,
-    "days_since_prop_polish": 2.0
+    "avg_speed_kn": 10.6,
+    "stw_kn": 10.6,
+    "wind_scale": 4.0,
+    "sea_height": 1.0,
+    "fore_draft": 12.45,
+    "aft_draft": 12.45,
+    "hours_full_speed": 25.0,
+    "days_since_hull_clean": 2.0,
+    "days_since_prop_polish": 2.0,
+    "fuel_type": "ME_FULLSPEED_CONSUMP_VLSFO",
+    "fuel_type_source": "v5_model_basis",
+    "source_fuel_type": "ME_FULLSPEED_CONSUMP_VLSFO",
+    "source_fuel_type_source": "noon_report",
+    "effective_fuel_lcv_mj_per_kg": 40.2,
+    "prediction_basis": "VLSFO_equivalent_24h",
+    "model_applicability": { "wind_scale_max": 4, "hours_full_speed_min": 22 }
   },
   "predicted_consumption_mt": 52.3,
   "counterfactual_uwc_pp": {
-    "description":              "Predicted consumption if UWC+PP were performed now (days_since=0)",
+    "description": "v5 VLSFO-equivalent 24h prediction if UWC+PP were performed now (maintenance age and FOC speed loss reset)",
     "predicted_consumption_mt": 49.8,
-    "fuel_saving_mt_per_day":   2.5,
-    "saving_pct":               4.8,
-    "est_annual_saving_mt":     750.0,
-    "est_annual_saving_usd":    450000.0
+    "fuel_saving_mt_per_day": 2.5,
+    "raw_fuel_delta_mt_per_day": 2.5,
+    "benefit_available": true,
+    "saving_pct": 4.8,
+    "est_annual_saving_mt": 750.0,
+    "energy_pricing": {
+      "fuel_type": "ME_FULLSPEED_CONSUMP_VLSFO",
+      "source_lcv_mj_per_kg": 40.2,
+      "normalized_energy_gj_per_day": 100.5,
+      "diesel_equivalent_l_per_day": 2801.96,
+      "price_twd_per_litre": 28.8,
+      "daily_saving_twd": 80696,
+      "annual_saving_twd": 24208764,
+      "sea_days_per_year": 300,
+      "price_source": {
+        "name": "Taiwan CPC public retail diesel price",
+        "effective_date": "7月13日",
+        "status": "fetched",
+        "basis": "CPC super diesel retail price is an open-data energy-price proxy, not a bunker spot quote."
+      }
+    }
   }
 }
 ```
@@ -416,10 +444,20 @@ curl -X POST $BASE/api/v1/predict/fuel-consumption \
 |------|------|
 | `input_used.days_since_hull_clean` | 截至 `noon_day`，距最後一次船殼清洗（UWC/DD）的天數 |
 | `input_used.days_since_prop_polish` | 截至 `noon_day`，距最後一次螺旋槳拋光（PP/DD）的天數 |
+| `input_used.fuel_type` / `fuel_type_source` | v5 固定使用的 VLSFO 等效模型／計價基準 |
+| `input_used.source_fuel_type` / `source_fuel_type_source` | 原始 request 或日報油種來源，僅供可追溯性，不改變 v5 的 VLSFO 等效預測或價格計算 |
+| `input_used.effective_fuel_lcv_mj_per_kg` | v5 的預測與節省統一採 VLSFO 等效基準，因此為 VLSFO LCV（40.2 MJ/kg） |
+| `input_used.prediction_basis` | 固定為 `VLSFO_equivalent_24h`；所有 `predicted_consumption_mt` 與節省 MT 皆為 VLSFO 等效 24 小時量 |
+| `input_used.model_applicability` | v5 的穩態訓練條件；超出時 API 回傳 422 |
 | `predicted_consumption_mt` | 當前狀態預測油耗（MT/day）|
-| `counterfactual_uwc_pp.fuel_saving_mt_per_day` | 執行 UWC+PP 後每日可節省油耗（MT/day）|
-| `counterfactual_uwc_pp.est_annual_saving_usd` | 估算年節省金額（300 海上天/年 × $600/MT）|
-```
+| `counterfactual_uwc_pp.raw_fuel_delta_mt_per_day` | 原始模型差值，可為負值，供診斷使用 |
+| `counterfactual_uwc_pp.benefit_available` | 原始差值是否大於 0；false 時節省量與金額皆為 0 |
+| `counterfactual_uwc_pp.fuel_saving_mt_per_day` | 僅計正向的每日節省油耗（MT/day）|
+| `counterfactual_uwc_pp.energy_pricing` | 先依有效 LCV 將節省 MT 折算為 GJ，再換算柴油等值公升，乘台灣中油公開超級柴油牌價得 TWD 金額；`price_source.status` 為 fetched 或 fallback |
+
+> 此金額是可追溯的能源成本節省估計，不是完整財務 ROI 比率；目前資料集沒有清洗費、進塢費或停航機會成本。中油柴油零售價是公開能源價格代理，不等於船用 bunker spot quote。
+>
+> Beta API 已以 `energy_pricing` 取代舊的固定 `est_annual_saving_usd`。不保留固定 USD 欄位，避免繼續使用無公開價格依據的 `$600/MT` 假設。
 
 ---
 
@@ -433,6 +471,7 @@ curl -X POST $BASE/api/v1/predict/fuel-consumption \
 |-----------|------|
 | 400 | 參數錯誤 |
 | 404 | 船舶不存在 |
+| 422 | 請求超出 v5 訓練適用範圍（風級 >4 或全速時數 <22） |
 | 500 | 伺服器內部錯誤 |
 
 ---
