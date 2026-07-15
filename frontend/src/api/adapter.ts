@@ -633,7 +633,18 @@ function buildVesselSummaryFromSummary(v: ApiFleetSummaryVessel): VesselSummary 
   const speedLossPct = v.latest_speed_loss_pct ?? v.avg_speed_loss_pct ?? 0
   const rate = v.speed_loss_trend != null ? v.speed_loss_trend / 90 : 0
 
-  const urgency: Urgency = v.urgency as Urgency
+  // Urgency: backend only uses speed_loss_trend (delta vs 90 days ago), which
+  // misses vessels that are already heavily fouled but stable. Override with
+  // a dual condition: absolute Speed Loss % (fouling grade thresholds) OR trend.
+  // Heavy (≥13%) or fast-degrading (trend ≥20) → HIGH
+  // Moderate (≥7%)  or degrading       (trend ≥10) → MEDIUM
+  // otherwise → LOW (back-compat with backend value when both are mild)
+  const trend = v.speed_loss_trend ?? 0
+  const urgency: Urgency =
+    speedLossPct >= 13 || trend >= 20 ? 'HIGH'
+    : speedLossPct >= 7 || trend >= 10 ? 'MEDIUM'
+    : 'LOW'
+
   const foulingGrade: FoulingGrade =
     speedLossPct < 3 ? 'Clean' : speedLossPct < 7 ? 'Light' : speedLossPct < 13 ? 'Moderate' : 'Heavy'
 

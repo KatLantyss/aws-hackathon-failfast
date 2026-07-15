@@ -5,12 +5,11 @@ import { fetchKpis, fetchVessels } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import KpiCard from '@/components/KpiCard.vue'
 import FleetMap from '@/components/FleetMap.vue'
-import FathometerGauge from '@/components/FathometerGauge.vue'
 import PanelTag from '@/components/PanelTag.vue'
 import StateDisplay from '@/components/StateDisplay.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
 import type { DataSourceInfo } from '@/types/dataSource'
-import { formatUsd, STATUS_LABEL, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
+import { formatUsd, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
 
 const router = useRouter()
 
@@ -45,9 +44,12 @@ const dsRanking: DataSourceInfo = {
   endpoint: 'GET /api/v1/fleet/summary',
   description: '取 per_vessel 依 speedLossPct 由前端排序後顯示前 6 艘，數值本身皆為後端原始欄位。',
   fields: [
-    { ui: 'Speed Loss % 量表', source: 'latest_speed_loss_pct（或 avg_speed_loss_pct）' },
-    { ui: '船舶狀態', source: 'status（前端固定寫死 "underway"，非後端欄位）' },
-    { ui: '急迫度', source: 'urgency' },
+    { ui: 'Speed Loss % 進度條 / 數值', source: 'latest_speed_loss_pct（或 avg_speed_loss_pct）' },
+    { ui: '急迫度標籤', source: 'urgency' },
+    { ui: '建議動作（UWC/PP/UWC+PP）', source: 'recommended_action' },
+    { ui: '距上次船殼清洗天數', source: 'days_since_hull_clean' },
+    { ui: 'DD 到期', source: 'dd_due' },
+    { ui: '超額燃油成本 (USD/天)', source: 'excess_fuel_cost_usd_per_day' },
   ],
 }
 
@@ -108,33 +110,73 @@ function goToVessel(imo: string) {
         <DataSourceTag :info="dsRanking" />
         <div class="flex items-center justify-between pl-0.5">
           <p class="font-display text-xs tracking-[0.08em] text-[var(--color-ink-muted)]">需優先處理</p>
+          <span class="font-mono text-[10px] text-[var(--color-ink-muted)]">依 Speed Loss % 排序</span>
         </div>
         <StateDisplay v-if="vesselState !== 'success'" :state="vesselState === 'error' ? 'error' : 'loading'" />
         <ul v-else class="flex flex-col gap-1.5">
           <li v-for="(v, i) in priorityRanked" :key="v.imo">
             <button
-              class="w-full text-left flex items-center gap-3 rounded-[3px] px-2.5 py-2.5 border border-transparent transition-all duration-150 hover:bg-[var(--color-chart-paper-hi)] hover:border-[color-mix(in_srgb,var(--color-brass-amber)_40%,transparent)] group"
+              class="w-full text-left flex flex-col gap-1.5 rounded-[3px] px-2.5 py-2.5 border border-transparent transition-all duration-150 hover:bg-[var(--color-chart-paper-hi)] hover:border-[color-mix(in_srgb,var(--color-brass-amber)_40%,transparent)] group"
               @click="goToVessel(v.imo)"
             >
-              <span class="font-mono text-[11px] text-[var(--color-ink-muted)] w-4 shrink-0 tabular-nums">{{ i + 1 }}</span>
-              <FathometerGauge
-                :value="Math.min(100, v.speedLossPct * 8)"
-                :grade="v.foulingGrade"
-                :display-value="`${v.speedLossPct.toFixed(1)}%`"
-                size="sm"
-              />
-              <div class="flex-1 min-w-0">
-                <p class="font-display text-sm truncate group-hover:text-[var(--color-brass-amber)] transition-colors">
+              <!-- 第一行：排名 + 船名 + 急迫度 + 箭頭 -->
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[11px] text-[var(--color-ink-muted)] w-4 shrink-0 tabular-nums">{{ i + 1 }}</span>
+                <span class="font-display text-sm flex-1 truncate group-hover:text-[var(--color-brass-amber)] transition-colors">
                   {{ v.name }}
-                </p>
-                <p class="font-mono text-[11px] text-[var(--color-ink-muted)] mt-0.5">
-                  {{ STATUS_LABEL[v.status] }} · 急迫度
-                  <span :style="{ color: URGENCY_COLOR[v.maintenanceUrgency] }" class="font-semibold">{{
-                    URGENCY_LABEL[v.maintenanceUrgency]
-                  }}</span>
-                </p>
+                </span>
+                <span
+                  class="font-display text-[10px] px-1.5 py-0.5 rounded-[2px] shrink-0"
+                  :style="{
+                    color: URGENCY_COLOR[v.maintenanceUrgency],
+                    background: `color-mix(in srgb, ${URGENCY_COLOR[v.maintenanceUrgency]} 14%, transparent)`,
+                  }"
+                >{{ URGENCY_LABEL[v.maintenanceUrgency] }}</span>
+                <span class="text-[var(--color-ink-muted)] group-hover:text-[var(--color-brass-amber)] transition-colors shrink-0" aria-hidden="true">›</span>
               </div>
-              <span class="text-[var(--color-ink-muted)] group-hover:text-[var(--color-brass-amber)] transition-colors" aria-hidden="true">›</span>
+
+              <!-- 第二行：Speed Loss 進度條 + 數值 -->
+              <div class="flex items-center gap-2 pl-6">
+                <div class="flex-1 h-1.5 rounded-full bg-[var(--color-ink-slate)]/10 overflow-hidden">
+                  <div
+                    class="h-full rounded-full transition-all"
+                    :style="{
+                      width: `${Math.min(100, v.speedLossPct * 6)}%`,
+                      background: v.foulingGrade === 'Heavy' ? 'var(--color-signal-red)'
+                        : v.foulingGrade === 'Moderate' ? 'var(--color-brass-amber)'
+                        : 'var(--color-fathom-teal)',
+                    }"
+                  />
+                </div>
+                <span class="font-data text-xs tabular-nums shrink-0"
+                  :style="{
+                    color: v.foulingGrade === 'Heavy' ? 'var(--color-signal-red)'
+                      : v.foulingGrade === 'Moderate' ? 'var(--color-brass-amber)'
+                      : 'var(--color-fathom-teal)',
+                  }"
+                >{{ v.speedLossPct.toFixed(1) }}%</span>
+                <span class="font-mono text-[10px] text-[var(--color-ink-muted)] shrink-0">SL</span>
+              </div>
+
+              <!-- 第三行：維修相關資訊 -->
+              <div class="flex items-center gap-3 pl-6 flex-wrap">
+                <!-- 建議動作 -->
+                <span v-if="v.recommendedAction" class="font-display text-[10px] px-1.5 py-0.5 rounded-[2px] bg-[var(--color-signal-red)]/10 text-[var(--color-signal-red)]">
+                  建議：{{ v.recommendedAction }}
+                </span>
+                <!-- 距上次船殼清洗 -->
+                <span class="font-mono text-[10px] text-[var(--color-ink-muted)]">
+                  距清洗 <strong class="font-data text-[var(--color-ink-slate)]">{{ v.daysSinceHullClean }}</strong> 天
+                </span>
+                <!-- DD 到期 -->
+                <span v-if="v.ddDue" class="font-display text-[10px] px-1.5 py-0.5 rounded-[2px] bg-[var(--color-brass-amber)]/10 text-[var(--color-brass-amber)]">
+                  DD 到期
+                </span>
+                <!-- 超額油耗成本 -->
+                <span v-if="v.excessFuelCostUsdMtd > 0" class="font-mono text-[10px] text-[var(--color-ink-muted)]">
+                  超額 <strong class="font-data text-[var(--color-signal-red)]">{{ formatUsd(v.excessFuelCostUsdMtd) }}</strong>/天
+                </span>
+              </div>
             </button>
           </li>
         </ul>
