@@ -120,6 +120,15 @@ def _warmup_cache():
     with ThreadPoolExecutor(max_workers=15) as pool:
         list(pool.map(_fetch, ALL_VESSELS))
 
+    # Prime the two dashboard-landing endpoints too — otherwise the first real
+    # request (almost always the fleet overview page on load) still pays the
+    # full DynamoDB round-trip even though every vessel is already cached.
+    try:
+        get_fleet_summary({})
+        get_fleet_ranking({})
+    except Exception:
+        pass
+
 
 def start_warmup():
     """Kick off cache warm-up in a background daemon thread (non-blocking)."""
