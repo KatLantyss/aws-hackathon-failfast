@@ -221,10 +221,11 @@ const chartOption = computed(() => {
       nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 11 },
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, formatter: '{value}%' },
       splitLine: { lineStyle: { color: c.splitLine } },
-      scale: false,  // 禁用自動縮放
+      scale: false,
       min: (value: any) => {
-        // 動態計算最小值，確保包含負值
-        return value.min < 0 ? Math.floor(value.min * 1.1) : -Math.abs(value.max) * 0.5
+        // 動態計算最小值，確保包含負值（outperformance cases）
+        if (value.min < -5) return Math.floor(value.min * 1.1)  // 負值情況
+        return value.min < 0 ? -5 : -Math.abs(value.max) * 0.5  // 確保負值區域可見
       },
       max: (value: any) => {
         // 動態計算最大值
@@ -232,7 +233,7 @@ const chartOption = computed(() => {
       },
       axisLine: {
         lineStyle: { color: c.axisLine },
-        onZero: true,  // y=0 基準線在中間
+        onZero: false,  // 改為 false，讓 0 基準線在下方而不是中間
       },
     },
     dataZoom: [
@@ -315,7 +316,6 @@ const chartOption = computed(() => {
   <div class="flex flex-col gap-4">
     <!-- controls -->
     <div class="panel p-3 flex flex-wrap items-center gap-4 text-sm">
-      <PanelTag code="SPD-01" />
       <label class="flex items-center gap-2">
         <span class="text-xs text-[var(--color-ink-slate)]/60">橫軸</span>
         <select v-model="xAxisMode" class="border rounded-[2px] px-2 py-1 text-xs">
@@ -373,7 +373,6 @@ const chartOption = computed(() => {
       <div class="flex flex-col gap-3">
         <div class="panel p-4" v-if="stats">
           <DataSourceTag :info="dsStats" />
-          <PanelTag code="STAT-01" class="mb-2" />
           <dl class="flex flex-col gap-3 text-sm">
             <div>
               <dt class="text-xs text-[var(--color-ink-slate)]/60">篩選區間平均 Speed Loss</dt>
@@ -407,21 +406,6 @@ const chartOption = computed(() => {
           </dl>
         </div>
 
-        <div class="panel p-4 border-l-4" style="border-left-color: var(--color-brass-amber)">
-          <DataSourceTag :info="dsRec" />
-          <PanelTag code="REC-01" class="mb-2" />
-          <p class="font-display text-sm mb-1">建議下次清洗窗口</p>
-          <p class="font-data text-base text-[var(--color-brass-amber)]">
-            {{ formatDay(suggestedWindow.startDay) }} — {{ formatDay(suggestedWindow.endDay) }}
-          </p>
-          <p class="text-xs text-[var(--color-ink-slate)]/70 mt-2">
-            污損增長速率{{ stats && stats.growthPerMonth > 0.5 ? '高於' : '接近' }}船隊平均，建議依此區間安排下次船體清洗。
-          </p>
-          <div v-if="vessel.lastHullCleanType || vessel.lastEventType" class="mt-2 pt-2 border-t border-[var(--color-ink-slate)]/10 text-xs text-[var(--color-ink-slate)]/60 font-data">
-            <span v-if="vessel.lastHullCleanType">上次清洗：{{ vessel.lastHullCleanType }}</span>
-            <span v-if="vessel.lastEventType"> · 最後養護：{{ vessel.lastEventType }}</span>
-          </div>
-        </div>
       </div>
     </div>
   </div>

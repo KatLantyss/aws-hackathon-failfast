@@ -7,7 +7,6 @@ import { fetchCorrelation, fetchRecommendation } from '@/composables/useDataSour
 import { useAsyncData } from '@/composables/useAsyncData'
 import { useChartTheme } from '@/composables/useChartTheme'
 import StateDisplay from '@/components/StateDisplay.vue'
-import PanelTag from '@/components/PanelTag.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatDay, formatUsd, formatNumber, formatPct } from '@/utils/format'
 
@@ -498,7 +497,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <!-- ═══ Timeline Chart ═══ -->
       <div class="panel p-3">
         <DataSourceTag :info="dsTimeline" />
-        <PanelTag code="COR-01" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
           效能時序圖 — ◆ 養護事件 / ▲ 異常事件
         </p>
@@ -512,7 +510,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         <!-- Cost-Benefit Curve -->
         <div class="panel p-3">
           <DataSourceTag :info="dsCostBenefit" />
-          <PanelTag code="COR-02" class="mb-2" />
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
           <div class="h-[280px]">
             <VChart v-if="advisorData" :option="costBenefitOption" autoresize class="h-full w-full" />
@@ -523,7 +520,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         <!-- Optimal Timing Recommendation -->
         <div class="panel p-4 border-l-4" :style="{ borderLeftColor: urgencyColor(data.optimalTiming.urgency) }">
           <DataSourceTag :info="dsOptimalTiming" />
-          <PanelTag code="COR-03" class="mb-2" />
           <p class="font-display text-sm mb-3">🔧 最佳維修時機建議</p>
           <div class="grid grid-cols-2 gap-3 mb-3">
             <div>
@@ -570,7 +566,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         <div class="panel p-3">
           <DataSourceTag :info="dsTypeBar" />
-          <PanelTag code="COR-04" class="mb-2" />
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">維修類型 vs 平均改善效果</p>
           <div class="h-[200px]">
             <VChart :option="barOption" autoresize class="h-full w-full" />
@@ -578,7 +573,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         </div>
         <div class="panel p-4">
           <DataSourceTag :info="dsTypeBar" />
-          <PanelTag code="COR-05" class="mb-2" />
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">成本效益評級</p>
           <div class="flex flex-col gap-3">
             <div
@@ -602,7 +596,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <!-- ═══ Event Details Table ═══ -->
       <div class="panel p-4">
         <DataSourceTag :info="dsEventTable" />
-        <PanelTag code="COR-06" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">養護事件效益驗證明細</p>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -653,7 +646,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <!-- ═══ Anomaly Alerts ═══ -->
       <div v-if="data.events.some((e) => e.isAnomaly)" class="panel p-4 border-l-4" style="border-left-color: var(--color-signal-red)">
         <DataSourceTag :info="dsAnomaly" />
-        <PanelTag code="COR-07" class="mb-2" />
         <p class="font-display text-sm mb-2 text-[var(--color-signal-red)]">異常預警</p>
         <ul class="flex flex-col gap-2 text-sm">
           <li v-for="evt in data.events.filter((e) => e.isAnomaly)" :key="evt.id" class="flex gap-2">
@@ -668,7 +660,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
       <!-- ═══ AI Insight ═══ -->
       <div class="panel p-4 border-l-4" style="border-left-color: var(--color-fathom-teal)">
         <DataSourceTag :info="dsInsight" />
-        <PanelTag code="COR-08" class="mb-2" />
         <p class="font-display text-sm mb-2">AI 分析摘要</p>
         <div class="text-sm text-[var(--color-ink-slate)]/80 flex flex-col gap-2">
           <p>

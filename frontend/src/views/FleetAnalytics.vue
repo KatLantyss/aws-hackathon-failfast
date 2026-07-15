@@ -5,7 +5,6 @@ import { useRouter } from 'vue-router'
 import { fetchVessels, fetchSpeedLossData } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
-import PanelTag from '@/components/PanelTag.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
 import { formatUsd, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
 import { useChartTheme } from '@/composables/useChartTheme'
@@ -147,7 +146,6 @@ function goToVessel(imo: string) {
       <!-- Speed Loss overlay chart -->
       <div class="panel p-3">
         <DataSourceTag :info="dsOverlay" />
-        <PanelTag code="OVL-01" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
           全船隊 Speed Loss 趨勢疊圖（最近 180 筆 Noon Report calm condition）
         </p>
@@ -161,7 +159,6 @@ function goToVessel(imo: string) {
       <div class="panel p-3">
         <DataSourceTag :info="dsRanking" />
         <div class="flex items-center justify-between mb-3">
-          <PanelTag code="RANK-02" />
           <label class="flex items-center gap-2 text-xs">
             <span class="text-[var(--color-ink-slate)]/60">排序依據</span>
             <select v-model="sortKey" class="border rounded-[2px] px-2 py-1 text-xs">

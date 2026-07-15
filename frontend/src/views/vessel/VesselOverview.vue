@@ -104,7 +104,6 @@ function trendColor(trend: number | null): string {
   <div class="flex flex-col gap-4">
     <!-- Speed Loss diagnostic: full width -->
     <div class="relative">
-      <DataSourceTag :info="dsKpiRow1" />
       <div class="panel p-4 flex items-center gap-6">
         <div class="shrink-0">
           <FathometerGauge
@@ -130,7 +129,6 @@ function trendColor(trend: number | null): string {
 
     <!-- Action row: 4 KPI cards -->
     <div class="relative grid grid-cols-2 md:grid-cols-4 gap-3">
-      <DataSourceTag :info="dsKpiRow1" />
       <KpiCard
         label="距清洗"
         :value="vessel.daysSinceHullClean"
@@ -157,7 +155,6 @@ function trendColor(trend: number | null): string {
 
     <!-- Reference info: 1 row -->
     <div class="relative grid grid-cols-2 lg:grid-cols-5 gap-3">
-      <DataSourceTag :info="dsKpiRow2" />
       <div class="panel p-3">
         <p class="font-display text-[9px] uppercase tracking-wide text-[var(--color-ink-slate)]/50 mb-1">SFOC</p>
         <p class="font-data text-base font-semibold">
@@ -197,7 +194,6 @@ function trendColor(trend: number | null): string {
 
     <!-- focused position map -->
     <div class="panel panel--map-glow p-3 flex flex-col gap-2">
-      <DataSourceTag :info="dsMap" />
       <div class="flex items-center justify-between">
         <p class="map-glow-label font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">目前位置</p>
       </div>

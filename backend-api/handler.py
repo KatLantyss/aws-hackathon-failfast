@@ -398,27 +398,15 @@ def get_noon_reports(vessel_id, event):
 
     records = []
     for r in rows:
-        records.append({
-            'vessel_id':           r['vessel_id'],
-            'noon_day':            safe_float(r.get('NOON_UTC')),
-            'voyage':              safe_float(r.get('VOYAGE')),
-            'avg_speed_kn':        safe_float(r.get('AVG_SPEED')),
-            'speed_through_water': safe_float(r.get('SPEED_THROUGH_WATER')),
-            'me_rpm':              safe_float(r.get('ME_AVG_RPM')),
-            'fore_draft':          safe_float(r.get('FORE_DRAFT')),
-            'aft_draft':           safe_float(r.get('AFTER_DRAFT')),
-            'cargo_on_board':      safe_float(r.get('CARGO_ON_BOARD')),
-            'wind_scale':          safe_float(r.get('WIND_SCALE')),
-            'sea_height':          safe_float(r.get('SEA_HEIGHT')),
-            'horse_power':         safe_float(r.get('HORSE_POWER')),
-            'me_consumption':      safe_float(r.get('ME_CONSUMPTION')),
-            'total_consump':       safe_float(r.get('TOTAL_CONSUMP')),
-            'sfoc':                safe_float(r.get('SFOC')),
-            'me_slip':             safe_float(r.get('ME_SLIP')),
-            # Required by the v5 model applicability gate. Expose it so the
-            # frontend can select a real, steady-state baseline report.
-            'hours_full_speed':     safe_float(r.get('HOURS_FULL_SPEED')),
-        })
+        # Return all vt_fd.csv fields (convert uppercase keys to lowercase)
+        # EXCLUDING speed_loss — that's served separately by get_speed_loss endpoint
+        record = {}
+        for k, v in r.items():
+            if k not in ['vessel_id', 'sort_key', 'speed_loss']:
+                # Convert NOON_UTC -> noon_utc, AVG_SPEED -> avg_speed, etc.
+                key = k.lower()
+                record[key] = safe_float(v) if isinstance(v, (int, float, str)) and v not in [None, ''] else v
+        records.append(record)
 
     return resp(200, {
         'vessel_id': vessel_id,
@@ -585,10 +573,12 @@ def get_speed_loss(vessel_id, event):
         if not rpm or rpm <= 0:
             continue
 
-        # FOC-based speed loss
+        # FOC-based speed loss. Not clamped to 0 — a negative value is a real
+        # result (that day's FOC beat the baseline) and callers rely on
+        # seeing it rather than a flattened 0 (see adapter.ts's speedLossPct mapping).
         baseline_foc = get_baseline_foc(cr['cycle'], rpm)
         if baseline_foc and baseline_foc > 0:
-            foc_sl_pct = max(0.0, (cr['daily_foc_vlsfo'] - baseline_foc) / baseline_foc * 100)
+            foc_sl_pct = (cr['daily_foc_vlsfo'] - baseline_foc) / baseline_foc * 100
             foc_timeline.append({
                 'noon_day': cr['noon_day'],
                 'voyage': cr['voyage'],
@@ -610,7 +600,7 @@ def get_speed_loss(vessel_id, event):
         if stw and stw > 0:
             ref_stw = get_baseline_stw(cr['cycle'], rpm)
             if ref_stw and ref_stw > 0:
-                stw_sl_pct = max(0.0, (ref_stw - stw) / ref_stw * 100)
+                stw_sl_pct = (ref_stw - stw) / ref_stw * 100
                 stw_timeline.append({
                     'noon_day': cr['noon_day'],
                     'voyage': cr['voyage'],
@@ -669,6 +659,26 @@ def get_speed_loss(vessel_id, event):
             'degradation_pct': degrad,
         })
 
+    # Layer 3: ISO 19030-2 (9-correction + per-vessel quantile/DD baseline).
+    # `speed_loss` is backfilled directly onto each vessel_tbl row offline
+    # (add_speedloss_column_full_iso.py + import_vt_fd_to_dynamodb.py) — read
+    # it straight from the row instead of recomputing, and keep None (non-
+    # steady-state, never backfilled) and negative values (outperformed
+    # baseline) as-is rather than flattening them.
+    iso_speedloss_timeline = sorted(
+        (
+            {
+                'noon_day': safe_float(r.get('NOON_UTC'), 0),
+                'speed_loss_pct': safe_float(r.get('speed_loss')),
+                'sort_key': r.get('sort_key'),
+                'row_index': safe_float(r.get('row_index')),
+                'is_valid': r.get('speed_loss') is not None,
+            }
+            for r in rows
+        ),
+        key=lambda p: p['noon_day'],
+    )
+
     return resp(200, {
         'vessel_id': vessel_id,
         'method': 'ISO19030_FOC_normalized + STW_RPM_baseline',
@@ -676,6 +686,9 @@ def get_speed_loss(vessel_id, event):
             'wind_scale_max': 4,
             'hours_full_speed_min': 22,
         },
+        # Layer 3: ISO 19030-2, precomputed — see comment above. Preferred by
+        # the frontend adapter over Layers 1/2 when present.
+        'iso_speedloss_timeline': iso_speedloss_timeline,
         # Layer 1: FOC-based (primary indicator per competition spec)
         'foc_summary': {
             'avg_daily_foc_vlsfo': round(mean([t['daily_foc_vlsfo'] for t in foc_timeline]), 2) if foc_timeline else None,

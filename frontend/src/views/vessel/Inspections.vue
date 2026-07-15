@@ -51,7 +51,6 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   <div class="panel p-4 flex flex-col gap-3">
     <DataSourceTag :info="dsInspect" />
     <div class="flex items-center gap-2">
-      <PanelTag code="UWI-01" />
       <span v-if="data" class="text-xs text-[var(--color-ink-slate)]/50 font-data">共 {{ data.total.toLocaleString() }} 筆</span>
     </div>
     <StateDisplay

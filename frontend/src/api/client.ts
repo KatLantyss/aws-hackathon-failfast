@@ -68,6 +68,14 @@ export interface ApiMaintenanceCycle {
   degradation_pct: number | null
 }
 
+export interface ApiIsoSpeedLossPoint {
+  noon_day: number
+  speed_loss_pct: number | null
+  sort_key: string
+  row_index: number
+  is_valid: boolean
+}
+
 export interface ApiSpeedLossResponse {
   vessel_id: string
   method: string
@@ -75,6 +83,7 @@ export interface ApiSpeedLossResponse {
     wind_scale_max: number
     hours_full_speed_min: number
   }
+  iso_speedloss_timeline: ApiIsoSpeedLossPoint[]
   foc_summary: {
     avg_daily_foc_vlsfo: number | null
     avg_speed_loss_pct: number | null

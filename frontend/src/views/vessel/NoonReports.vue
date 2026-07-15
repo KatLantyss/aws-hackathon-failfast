@@ -41,51 +41,72 @@ const dsDiagnosis: DataSourceInfo = {
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
+interface FullNoonReport {
+  [key: string]: any
+  isLocal?: boolean
+}
+
 type LocalNoonReportEntry = NoonReportEntry & { isLocal?: boolean }
 
-async function fetchReports(imo: string): Promise<{ vessel: VesselSummary; reports: NoonReportEntry[] }> {
-  const resp = await getNoonReports(imo, { limit: 5000 })
-  const reports: NoonReportEntry[] = resp.records.map((r) => ({
-    day: r.noon_day,
-    lat: 0,
-    lon: 0,
-    observedSpeedKt: r.avg_speed_kn ?? 0,
-    correctedSpeedKt: r.speed_through_water ?? 0,
-    speedLossPct: 0,
-    fuelConsumptionMt: r.me_consumption ?? 0,
-    beaufort: r.wind_scale ?? 0,
-    seaState: r.wind_scale ?? 0,
-    draftFwd: r.fore_draft ?? 0,
-    draftAft: r.aft_draft ?? 0,
-    loadCondition: (r.cargo_on_board ?? 0) > 1000 ? 'laden' : 'ballast',
-  }))
+async function fetchReports(imo: string): Promise<{ vessel: VesselSummary; reports: FullNoonReport[] }> {
+  const resp = await getNoonReports(imo, { limit: 10000 })
+  const reports: FullNoonReport[] = resp.records.sort((a, b) => {
+    const dayA = Number(a.noon_utc || a.noon_day || 0)
+    const dayB = Number(b.noon_utc || b.noon_day || 0)
+    return dayB - dayA
+  })
   return { vessel: props.vessel, reports }
 }
 
 const { data, state } = useAsyncData(() => props.imo, fetchReports)
 
+// 分頁
+const currentPage = ref(1)
+const itemsPerPage = 10
+
+const allReports = computed<FullNoonReport[]>(() => data.value?.reports ?? [])
+
+const totalPages = computed(() => Math.ceil(allReports.value.length / itemsPerPage))
+
+// 動態計算所有欄位名稱
+const allFieldNames = computed(() => {
+  if (allReports.value.length === 0) return []
+  const fieldSet = new Set<string>()
+  for (const report of allReports.value) {
+    Object.keys(report).forEach((k) => {
+      if (k !== 'isLocal') fieldSet.add(k)
+    })
+  }
+  // 優先顯示常用欄位
+  const priority = ['noon_utc', 'voyage', 'noon_day']
+  const priorityFields = priority.filter((f) => fieldSet.has(f))
+  const otherFields = Array.from(fieldSet).filter((f) => !priority.includes(f)).sort()
+  return [...priorityFields, ...otherFields]
+})
+
+const paginatedReports = computed(() => {
+  const start = (currentPage.value - 1) * itemsPerPage
+  const end = start + itemsPerPage
+  return allReports.value.slice(start, end)
+})
+
+function goToPage(page: number) {
+  currentPage.value = Math.max(1, Math.min(page, totalPages.value))
+}
+
+function formatCellValue(value: any): string {
+  if (value == null) return '—'
+  if (typeof value === 'number') {
+    if (Number.isInteger(value)) return value.toString()
+    if (value < 10) return value.toFixed(2)
+    return value.toFixed(1)
+  }
+  return String(value)
+}
+
 // 本次工作階段新增的填報 — 純前端 state，不落地寫入後端。
 const localReports = ref<LocalNoonReportEntry[]>([])
 const combinedReports = computed<LocalNoonReportEntry[]>(() => [...(data.value?.reports ?? []), ...localReports.value])
-
-const startDayInput = ref('')
-const endDayInput = ref('')
-const startDay = computed(() => (startDayInput.value === '' ? null : Number(startDayInput.value)))
-const endDay = computed(() => (endDayInput.value === '' ? null : Number(endDayInput.value)))
-
-const filteredReports = computed(() => {
-  return combinedReports.value.filter((r) => {
-    if (startDay.value != null && r.day < startDay.value) return false
-    if (endDay.value != null && r.day > endDay.value) return false
-    return true
-  })
-})
-
-const visibleReports = computed(() => {
-  const list = filteredReports.value
-  if (startDay.value != null || endDay.value != null) return list
-  return list.slice(-60)
-})
 
 function exportCsv() {
   const rows = filteredReports.value.length ? filteredReports.value : visibleReports.value
@@ -456,54 +477,76 @@ function onRequestSubmitted() {
     </Transition>
 
     <div class="relative panel p-4 flex flex-col gap-3">
-      <DataSourceTag :info="dsNoon" />
       <StateDisplay
         v-if="state !== 'success'"
         :state="state === 'error' ? 'error' : state === 'empty' ? 'empty' : 'loading'"
         empty-title="此船尚無 Noon Report 記錄"
       />
-      <StateDisplay
-        v-else-if="visibleReports.length === 0"
-        state="empty"
-        empty-title="所選 Day 區間內無資料"
-        empty-hint="請放寬篩選範圍。"
-      />
-      <div v-else class="overflow-x-auto max-h-[640px] overflow-y-auto">
-        <table class="w-full text-sm">
-          <thead class="sticky top-0 bg-[var(--color-chart-paper)]">
-            <tr class="chart-divider">
-              <th class="text-left font-display text-xs uppercase tracking-wide px-3 py-2">Day</th>
-              <th class="text-left font-display text-xs uppercase tracking-wide px-3 py-2">位置</th>
-              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">航速(觀測)</th>
-              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">航速(修正後)</th>
-              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">油耗 MT/日</th>
-              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">海況(BF)</th>
-              <th class="text-right font-display text-xs uppercase tracking-wide px-3 py-2">吃水(F/A)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="r in visibleReports"
-              :key="r.day"
-              class="chart-divider group relative"
-              :class="{ 'bg-[color-mix(in_srgb,var(--color-brass-amber)_8%,transparent)]': r.isLocal }"
+      <div v-else-if="allReports.length === 0" class="text-center py-8 text-sm text-[var(--color-ink-slate)]/50">
+        無資料
+      </div>
+      <div v-else class="flex flex-col gap-3">
+        <!-- 分頁導航（上方） -->
+        <div class="flex items-center justify-between px-1">
+          <span class="text-xs text-[var(--color-ink-slate)]/50">
+            第 {{ currentPage }} / {{ totalPages }} 頁（共 {{ allReports.length.toLocaleString() }} 筆）
+          </span>
+          <div class="flex gap-2">
+            <button
+              :disabled="currentPage === 1"
+              class="border rounded-[2px] px-2 py-1 text-xs font-display uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors"
+              @click="goToPage(currentPage - 1)"
             >
-              <td class="px-3 py-1.5 font-data whitespace-nowrap">
-                {{ r.day }}
-                <span v-if="r.isLocal" class="status-dot bg-[var(--color-brass-amber)] ml-1" title="本次工作階段新增，未寫入後端" />
-              </td>
-              <td class="px-3 py-1.5 font-data text-xs text-[var(--color-ink-slate)]/50">—</td>
-              <td class="px-3 py-1.5 font-data text-right">{{ r.observedSpeedKt.toFixed(1) }}</td>
-              <td class="px-3 py-1.5 font-data text-right">{{ r.correctedSpeedKt.toFixed(1) }}</td>
-              <td class="px-3 py-1.5 font-data text-right">{{ r.fuelConsumptionMt.toFixed(1) }}</td>
-              <td class="px-3 py-1.5 font-data text-right">{{ r.beaufort }}</td>
-              <td class="px-3 py-1.5 font-data text-right">{{ r.draftFwd.toFixed(1) }}/{{ r.draftAft.toFixed(1) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="text-xs text-[var(--color-ink-slate)]/50 mt-2 px-1">
-          預設顯示最近 60 筆，可用 Day 篩選查看完整區間。
-        </p>
+              ← 上一頁
+            </button>
+            <button
+              :disabled="currentPage === totalPages"
+              class="border rounded-[2px] px-2 py-1 text-xs font-display uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors"
+              @click="goToPage(currentPage + 1)"
+            >
+              下一頁 →
+            </button>
+          </div>
+        </div>
+
+        <!-- 表格 -->
+        <div class="overflow-x-auto border rounded-[2px]">
+          <table class="w-full text-xs font-data">
+            <thead class="sticky top-0 bg-[var(--color-chart-paper)]">
+              <tr class="chart-divider">
+                <th v-for="field in allFieldNames" :key="field" class="text-right px-2 py-2 whitespace-nowrap text-[10px]">
+                  {{ field.toUpperCase() }}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(r, idx) in paginatedReports" :key="idx" class="chart-divider hover:bg-[var(--color-chart-paper-hi)]">
+                <td v-for="field in allFieldNames" :key="field" class="px-2 py-1 text-right">
+                  {{ formatCellValue(r[field]) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- 分頁導航（下方） -->
+        <div class="flex items-center justify-between px-1">
+          <button
+            :disabled="currentPage === 1"
+            class="border rounded-[2px] px-2 py-1 text-xs font-display uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors"
+            @click="goToPage(currentPage - 1)"
+          >
+            ← 上一頁
+          </button>
+          <span class="text-xs text-[var(--color-ink-slate)]/50">第 {{ currentPage }} / {{ totalPages }} 頁</span>
+          <button
+            :disabled="currentPage === totalPages"
+            class="border rounded-[2px] px-2 py-1 text-xs font-display uppercase tracking-wide disabled:opacity-50 disabled:cursor-not-allowed hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors"
+            @click="goToPage(currentPage + 1)"
+          >
+            下一頁 →
+          </button>
+        </div>
       </div>
     </div>
 

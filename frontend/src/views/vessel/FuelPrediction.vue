@@ -5,7 +5,6 @@ import type { VesselSummary } from '@/types/fleet'
 import type { DataSourceInfo } from '@/types/dataSource'
 import type { BackendFuelPredictionResult, BackendNoonReport } from '@/services/backend'
 import { getNoonReports, getSpeedLoss, predictFuelConsumption } from '@/services/backend'
-import PanelTag from '@/components/PanelTag.vue'
 import KpiCard from '@/components/KpiCard.vue'
 import StateDisplay from '@/components/StateDisplay.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
@@ -249,7 +248,6 @@ const sweepOption = computed(() => {
     <div class="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-4">
       <div class="panel p-4 flex flex-col gap-3">
         <DataSourceTag :info="dsForm" />
-        <PanelTag code="FUEL-P1" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70">受控航行情境</p>
         <p v-if="baselineNoonDay != null" class="text-[11px] text-[var(--color-ink-slate)]/50">
           比較基準：Day {{ baselineNoonDay }}（穩態日報；風級 {{ baselineReport?.wind_scale }}、全速 {{ baselineReport?.hours_full_speed }} 小時）
@@ -293,7 +291,6 @@ const sweepOption = computed(() => {
           </p>
 
           <div class="panel p-3">
-            <PanelTag code="FUEL-P5" class="mb-2" />
             <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">航速 vs. 預測油耗（NOON Report 來源燃油的全速時段量；以目前輸入條件為基準，對 AVG_SPEED 掃描 ±3 kt）</p>
             <div v-if="sweep.length" class="h-[300px]"><VChart :option="sweepOption" autoresize class="h-full w-full" /></div>
             <p v-else class="py-12 text-center text-sm text-[var(--color-ink-slate)]/55">航速掃描目前沒有可顯示的預測點。</p>

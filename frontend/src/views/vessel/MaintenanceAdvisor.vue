@@ -5,7 +5,6 @@ import type { VesselSummary } from '@/types/fleet'
 import { fetchRecommendation } from '@/composables/useDataSource'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
-import PanelTag from '@/components/PanelTag.vue'
 import MaintenanceRecommendationCard from '@/components/MaintenanceRecommendationCard.vue'
 import { useChartTheme } from '@/composables/useChartTheme'
 
@@ -65,7 +64,6 @@ const chartOption = computed(() => {
     />
     <template v-else-if="data">
       <div class="panel p-3">
-        <PanelTag code="ADV-01" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">成本效益模擬曲線</p>
         <div class="h-[360px]">
           <VChart :option="chartOption" autoresize class="h-full w-full" />
@@ -76,7 +74,6 @@ const chartOption = computed(() => {
         <MaintenanceRecommendationCard :data="data" />
 
         <div v-if="data.dataLimitations.length" class="panel p-4 border-l-4" style="border-left-color: var(--color-signal-red)">
-          <PanelTag code="ADV-03" class="mb-2" />
           <p class="font-display text-sm mb-2 text-[var(--color-signal-red)]">未盡之處</p>
           <ul class="flex flex-col gap-1.5 text-sm">
             <li v-for="(item, i) in data.dataLimitations" :key="i" class="flex gap-2">

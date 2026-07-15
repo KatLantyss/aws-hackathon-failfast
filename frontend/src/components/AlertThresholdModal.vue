@@ -5,7 +5,6 @@
 import { ref, watch } from 'vue'
 import type { VesselSummary } from '@/types/fleet'
 import type { DataSourceInfo } from '@/types/dataSource'
-import PanelTag from '@/components/PanelTag.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
 
 defineProps<{
@@ -53,10 +52,7 @@ function confirm() {
       >
         <DataSourceTag :info="dsAlert" />
         <div class="flex items-center justify-between pr-8">
-          <div class="flex items-center gap-2">
-            <PanelTag code="ALT-01" />
-            <p class="font-display text-sm">⚡ 設定 Speed Loss 告警 — {{ vessel.name }}</p>
-          </div>
+          <p class="font-display text-sm">⚡ 設定 Speed Loss 告警 — {{ vessel.name }}</p>
           <button type="button" class="text-[var(--color-ink-slate)]/50 hover:text-[var(--color-ink-slate)] text-lg leading-none" @click="close">
             ✕
           </button>

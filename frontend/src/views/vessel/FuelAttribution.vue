@@ -12,7 +12,6 @@ import {
 } from '@/services/backend'
 import { useAsyncData } from '@/composables/useAsyncData'
 import StateDisplay from '@/components/StateDisplay.vue'
-import PanelTag from '@/components/PanelTag.vue'
 import KpiCard from '@/components/KpiCard.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
 import { useChartTheme } from '@/composables/useChartTheme'
@@ -243,7 +242,6 @@ const anomalyBarOption = computed(() => {
     <template v-else-if="sla">
       <div class="panel p-4">
         <DataSourceTag :info="dsSlaSummary" />
-        <PanelTag code="SLA-1" class="mb-3" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">
           Speed Loss 歸因：多少 % 的效能損失來自船殼汙損、多少來自螺旋槳汙損（艦隊校準劣化速率模型，{{ sla.fleet_calibration.calibrated_on_vessels }} 艘訓練船）
         </p>
@@ -275,7 +273,6 @@ const anomalyBarOption = computed(() => {
 
       <div v-if="sla.event_attributions.length" class="panel p-3">
         <DataSourceTag :info="dsSlaChart" />
-        <PanelTag code="SLA-2" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">每次養護事件的歸因改善量（灰色半透明＝純檢查，不預期改善）</p>
         <div class="h-[280px]">
           <VChart :option="slaEventOption" autoresize class="h-full w-full" />
@@ -283,7 +280,6 @@ const anomalyBarOption = computed(() => {
       </div>
 
       <div v-if="sla.event_attributions.length" class="panel p-3 overflow-x-auto">
-        <PanelTag code="SLA-3" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">養護事件歸因明細</p>
         <table class="w-full text-sm min-w-[640px]">
           <thead>
@@ -329,7 +325,6 @@ const anomalyBarOption = computed(() => {
       <!-- Summary by cause + maintainable-vs-weather ROI -->
       <div class="panel p-4">
         <DataSourceTag :info="dsSummary" />
-        <PanelTag code="FUEL-A1" class="mb-3" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-3">
           近 {{ data.summary.total_days_analyzed }} 個穩態日，{{ data.summary.anomaly_days }} 天油耗異常（基準模型 R²={{ data.baseline_model_r2?.toFixed(3) ?? '—' }}）
         </p>
@@ -391,7 +386,6 @@ const anomalyBarOption = computed(() => {
       <!-- Anomaly bar chart -->
       <div v-if="data.anomalies.length" class="panel p-3">
         <DataSourceTag :info="dsBar" />
-        <PanelTag code="FUEL-A2" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">每日油耗殘差 %（顏色=主因，半透明=低信心）</p>
         <div class="h-[280px]">
           <VChart :option="anomalyBarOption" autoresize class="h-full w-full" />
@@ -401,7 +395,6 @@ const anomalyBarOption = computed(() => {
       <!-- Anomaly details table -->
       <div v-if="data.anomalies.length" class="panel p-3 overflow-x-auto">
         <DataSourceTag :info="dsTable" />
-        <PanelTag code="FUEL-A3" class="mb-2" />
         <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">異常明細（最近 {{ data.anomalies.length }} 筆）</p>
         <table class="w-full text-sm min-w-[720px]">
           <thead>
