@@ -1,4 +1,4 @@
-.PHONY: setup check-dev dev dev-api dev-frontend stop stop-all build prod prod-login prod-backend prod-frontend predict clean
+.PHONY: setup check-dev check-frontend local dev dev-api dev-frontend stop stop-all build prod prod-login prod-backend prod-frontend predict clean
 
 # Local development uses the existing Python 3.14 environment. The production
 # Docker image remains Python 3.12 and is intentionally independent.
@@ -32,17 +32,20 @@ setup:
 	@echo "✅  Local frontend dependencies installed; Python 3.14 environment verified. Configure AWS profile '$(AWS_PROFILE)', then run make dev."
 
 check-dev:
-	@test -x $(VENV_UVICORN) || { echo "ERROR: Python 3.14 backend environment '$(VENV)' is missing. Restore it before running make dev."; exit 1; }
+	@test -x $(VENV_UVICORN) || { echo "ERROR: Python 3.14 backend environment '$(VENV)' is missing. Restore it before running make local."; exit 1; }
 	@$(VENV_PYTHON) -c "import fastapi, uvicorn, boto3, pandas, numpy, sklearn, xgboost" || { echo "ERROR: Python 3.14 backend dependencies are incomplete in '$(VENV)'."; exit 1; }
 	@test -d frontend/node_modules || { echo "ERROR: Frontend dependencies are missing. Run 'npm --prefix frontend ci' or 'make setup'."; exit 1; }
 	@aws configure list-profiles | grep -Fxq "$(AWS_PROFILE)" || { echo "ERROR: AWS profile '$(AWS_PROFILE)' is not configured. See README.md."; exit 1; }
 
-# ── Dev（同時啟動 backend + frontend）─────────────────────────────────────────
-# 使用方式：make dev
-dev: check-dev
+check-frontend:
+	@test -d frontend/node_modules || { echo "ERROR: Frontend dependencies are missing. Run 'npm --prefix frontend ci' or 'make setup'."; exit 1; }
+
+# ── Local（本機 backend 直連 DynamoDB + 本機 frontend）────────────────────────
+# 使用方式：make local
+local: check-dev
 	@pkill -f "vite" 2>/dev/null || true
 	@$(MAKE) dev-api
-	@cd frontend && AWS_PROFILE=$(AWS_PROFILE) AWS_SDK_LOAD_CONFIG=1 VITE_BACKEND_BASE_URL=http://localhost:$(API_PORT) npm run dev -- --port 5173 --strictPort > /tmp/vite.log 2>&1 &
+	@cd frontend && AWS_PROFILE=$(AWS_PROFILE) AWS_SDK_LOAD_CONFIG=1 VITE_BACKEND_BASE_URL=http://localhost:$(API_PORT) npm run dev -- --port 5173 --strictPort --host 127.0.0.1 > /tmp/vite.log 2>&1 &
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
 		if curl -fsS http://127.0.0.1:5173 >/dev/null; then \
 			break; \
@@ -56,14 +59,44 @@ dev: check-dev
 		exit 1; \
 	fi
 	@echo ""
-	@printf "┌──────────────────────────────────────────────┐\n"
-	@printf "│   Ship Analysis -- Dev Environment           │\n"
-	@printf "│                                              │\n"
-	@printf "│   Backend API  ->  http://localhost:8000     │\n"
-	@printf "│   Frontend     ->  http://localhost:5173     │\n"
-	@printf "│                                              │\n"
-	@printf "│   make stop-all  to stop everything          │\n"
-	@printf "└──────────────────────────────────────────────┘\n"
+	@printf "┌──────────────────────────────────────────────────────────┐\n"
+	@printf "│   Ship Analysis -- Local Environment                     │\n"
+	@printf "│                                                          │\n"
+	@printf "│   Frontend     ->  http://localhost:5173                │\n"
+	@printf "│   Backend API  ->  http://localhost:8000 (local uvicorn) │\n"
+	@printf "│   Data         ->  DynamoDB directly (hackathon profile) │\n"
+	@printf "│                                                          │\n"
+	@printf "│   make stop-all  to stop everything                     │\n"
+	@printf "└──────────────────────────────────────────────────────────┘\n"
+	@echo ""
+
+# ── Dev（frontend 直接打正式 CloudFront，不啟動本機 backend）──────────────────
+# 使用方式：make dev
+dev: check-frontend
+	@$(MAKE) stop 2>/dev/null || true
+	@pkill -f "vite" 2>/dev/null || true
+	@cd frontend && VITE_BACKEND_BASE_URL=$(BACKEND_CF_URL) npm run dev -- --port 5173 --strictPort --host 127.0.0.1 > /tmp/vite.log 2>&1 &
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+		if curl -fsS http://127.0.0.1:5173 >/dev/null; then \
+			break; \
+		fi; \
+		sleep 2; \
+	done; \
+	if ! curl -fsS http://127.0.0.1:5173 >/dev/null; then \
+		echo "ERROR: Frontend did not become ready within 30 seconds. /tmp/vite.log:"; \
+		cat /tmp/vite.log; \
+		exit 1; \
+	fi
+	@echo ""
+	@printf "┌──────────────────────────────────────────────────────────┐\n"
+	@printf "│   Ship Analysis -- Dev Environment (prod API)            │\n"
+	@printf "│                                                          │\n"
+	@printf "│   Frontend  ->  http://localhost:5173                   │\n"
+	@printf "│   Backend   ->  $(BACKEND_CF_URL)  │\n"
+	@printf "│                                                          │\n"
+	@printf "│   No local backend, no AWS credentials needed.          │\n"
+	@printf "│   make stop-all  to stop                                │\n"
+	@printf "└──────────────────────────────────────────────────────────┘\n"
 	@echo ""
 
 # ── Backend only（直接跑 uvicorn，不用 Docker）────────────────────────────────
