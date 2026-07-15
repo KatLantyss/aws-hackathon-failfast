@@ -154,6 +154,7 @@ const showForm = ref(false)
 const formError = ref<string | null>(null)
 
 const form = reactive({
+  vesselName: '',
   voyage: 0,
   avgSpeed: 15,
   stw: 15,
@@ -196,6 +197,7 @@ const form = reactive({
 
 function openForm() {
   // Reset form to empty defaults
+  form.vesselName = props.imo || ''
   form.voyage = 0
   form.avgSpeed = 0
   form.stw = 0
@@ -435,6 +437,7 @@ function onRequestSubmitted() {
         </p>
       </div>
       <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 text-sm">
+        <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">船舶代號</span><input v-model="form.vesselName" type="text" class="field font-data text-xs" /></label>
         <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">航次</span><input v-model.number="form.voyage" type="number" class="field font-data text-xs" /></label>
         <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">平均對地航速 kt</span><input v-model.number="form.avgSpeed" type="number" step="0.1" class="field font-data text-xs" /></label>
         <label class="flex flex-col gap-1"><span class="text-xs text-[var(--color-ink-slate)]/60">對水航速 kt</span><input v-model.number="form.stw" type="number" step="0.1" class="field font-data text-xs" /></label>
