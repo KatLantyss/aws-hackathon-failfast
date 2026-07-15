@@ -4,8 +4,11 @@ import { handleNlu } from './nlu.ts'
 import { handleStt } from './stt.ts'
 
 const env = {
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+  AI_PROVIDER: process.env.AI_PROVIDER,
+  AWS_REGION: process.env.AWS_REGION,
+  BEDROCK_MODEL_ID: process.env.BEDROCK_MODEL_ID,
+  AGENTCORE_RUNTIME_ARN: process.env.AGENTCORE_RUNTIME_ARN,
+  AGENTCORE_QUALIFIER: process.env.AGENTCORE_QUALIFIER,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_STT_MODEL: process.env.OPENAI_STT_MODEL,
 }

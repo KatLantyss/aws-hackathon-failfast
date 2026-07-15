@@ -20,8 +20,11 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       ...(useHttps ? [basicSsl()] : []),
       voicebotApiPlugin({
-        ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
-        ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
+        AI_PROVIDER: env.AI_PROVIDER,
+        AWS_REGION: env.AWS_REGION,
+        BEDROCK_MODEL_ID: env.BEDROCK_MODEL_ID,
+        AGENTCORE_RUNTIME_ARN: env.AGENTCORE_RUNTIME_ARN,
+        AGENTCORE_QUALIFIER: env.AGENTCORE_QUALIFIER,
         OPENAI_API_KEY: env.OPENAI_API_KEY,
         OPENAI_STT_MODEL: env.OPENAI_STT_MODEL,
       }),

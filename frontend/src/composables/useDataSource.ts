@@ -7,6 +7,7 @@ import {
   fetchRealSpeedLoss,
   fetchRealFleetKpis,
   fetchRealFleetVessels,
+  fetchRealFuelAttribution,
   getRealShipList,
 } from '@/api/adapter'
 
@@ -51,13 +52,7 @@ export async function fetchVessels(): Promise<VesselSummary[]> {
   return fetchRealFleetVessels()
 }
 
-/**
- * Fetch fuel attribution for the voice/chat assistant's fuel_attribution
- * card (useChatOrchestrator.ts) — still a stub returning null. Unlike the
- * web page at /vessels/:imo/fuel-attribution (which calls the real
- * speed-loss-attribution endpoint via services/backend.ts directly), this
- * chat-card code path was never wired to that endpoint.
- */
-export async function fetchFuelAttr(_imo: string): Promise<FuelAttributionResponse | null> {
-  return null
+/** Fetch real maintenance-event speed-loss attribution adapted for the chat waterfall. */
+export async function fetchFuelAttr(imo: string): Promise<FuelAttributionResponse | null> {
+  return fetchRealFuelAttribution(imo)
 }

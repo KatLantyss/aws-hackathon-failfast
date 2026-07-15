@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { ChatHistoryMessage, ChatTurn } from '@/types/chat'
+import type { ChatHistoryMessage, ChatSessionMemory, ChatTurn } from '@/types/chat'
 
 export const useChatContextStore = defineStore('chatContext', () => {
   const open = ref(false)
@@ -14,9 +14,25 @@ export const useChatContextStore = defineStore('chatContext', () => {
   const history = computed<ChatHistoryMessage[]>(() =>
     turns.value.slice(-3).flatMap((turn) => [
       { role: 'user' as const, content: turn.userText },
-      { role: 'assistant' as const, content: turn.breadcrumbLabel },
+      { role: 'assistant' as const, content: turn.replyText },
     ]),
   )
+
+  const sessionMemory = computed<ChatSessionMemory>(() => {
+    const pendingTurn = [...turns.value].reverse().find((turn) => turn.awaitingVesselFor)
+    const pending = pendingTurn?.awaitingVesselFor
+    return {
+      pendingEntityResolution: pendingTurn && pending
+        ? {
+            userText: pendingTurn.userText,
+            assistantReply: pendingTurn.replyText,
+            intent: pending.intent,
+            factType: pending.factType,
+            suggestedVesselImo: pending.suggestedVesselImo ?? null,
+          }
+        : null,
+    }
+  })
 
   function openChat() {
     open.value = true
@@ -46,5 +62,5 @@ export const useChatContextStore = defineStore('chatContext', () => {
     activeTurnIndex.value = -1
   }
 
-  return { open, turns, activeTurnIndex, activeTurn, history, openChat, closeChat, toggleChat, pushTurn, goToTurn, reset }
+  return { open, turns, activeTurnIndex, activeTurn, history, sessionMemory, openChat, closeChat, toggleChat, pushTurn, goToTurn, reset }
 })

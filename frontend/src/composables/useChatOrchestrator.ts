@@ -31,9 +31,15 @@ function makeId() {
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function vesselNotFoundTurn(userText: string, vesselGuess: string | null): ChatTurn {
-  const replyText = vesselGuess
-    ? `找不到符合的船，你是不是指「${vesselGuess}」？`
+function suggestedQuestions(vesselImo?: string | null): string[] {
+  return vesselImo
+    ? [`查詢 ${vesselImo} 現在狀況`, `${vesselImo} 的目前 Speed Loss 是多少？`, `${vesselImo} 上次船體清洗是何時？`, `${vesselImo} 的油耗歸因`]
+    : ['哪些船需要優先安排維修？', '比較 S1 與 S2 的污損趨勢', '查詢 S8 現在狀況', 'S9 上次船體清洗是何時？']
+}
+
+function vesselNotFoundTurn(userText: string, nlu: NluResult): ChatTurn {
+  const replyText = nlu.vesselGuess
+    ? `找不到符合的船，你是不是指「${nlu.vesselGuess}」？`
     : `找不到符合的船，目前船隊有：${getRealShipList().join('、')}。`
   return {
     id: makeId(),
@@ -44,22 +50,41 @@ function vesselNotFoundTurn(userText: string, vesselGuess: string | null): ChatT
     vesselImo: null,
     vesselName: null,
     breadcrumbLabel: '查無此船',
+    suggestedQuestions: suggestedQuestions(nlu.vesselGuess),
+    awaitingVesselFor: nlu.vesselGuess
+      ? { intent: nlu.intent, factType: nlu.factType, suggestedVesselImo: nlu.vesselGuess }
+      : null,
   }
 }
 
 function outOfScopeTurn(userText: string, nlu: NluResult): ChatTurn {
-  const examples = nlu.outOfScopeExamples?.length
-    ? `\n\n你可以試著問：\n${nlu.outOfScopeExamples.map((e) => `・${e}`).join('\n')}`
-    : ''
+  const examples = nlu.outOfScopeExamples?.filter((example) => typeof example === 'string' && example.trim()).slice(0, 3)
+  const suggestions = examples?.length ? examples : suggestedQuestions()
   return {
     id: makeId(),
     userText,
     intent: 'out_of_scope',
-    replyText: `${nlu.clarifyingNote}${examples}`,
+    replyText: `${nlu.clarifyingNote}\n\n你可以試著問：\n${suggestions.map((example) => `・${example}`).join('\n')}`,
     cards: [],
+    suggestedQuestions: suggestions,
     vesselImo: null,
     vesselName: null,
     breadcrumbLabel: INTENT_LABEL.out_of_scope,
+  }
+}
+
+function dataUnavailableTurn(userText: string, nlu: NluResult, vesselImo?: string): ChatTurn {
+  const suggestions = suggestedQuestions(vesselImo)
+  return {
+    id: makeId(),
+    userText,
+    intent: nlu.intent,
+    replyText: `目前沒有足夠的真實資料完成這項查詢。\n\n你可以改問：\n${suggestions.map((question) => `・${question}`).join('\n')}`,
+    cards: [],
+    vesselImo: vesselImo ?? null,
+    vesselName: vesselImo ?? null,
+    breadcrumbLabel: '資料不足',
+    suggestedQuestions: suggestions,
   }
 }
 
@@ -105,16 +130,18 @@ function factAnswer(factType: ChatFactType, vessel: Awaited<ReturnType<typeof fe
 /** Resolves a Claude-classified intent into a ChatTurn using only real backend data — the LLM never supplies the final numbers. */
 export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, previousTurn: ChatTurn | null): Promise<ChatTurn> {
   const userText = userTextRaw
+  const pending = previousTurn?.awaitingVesselFor
 
   if (nluRaw.vesselNotFound) {
-    return vesselNotFoundTurn(userText, nluRaw.vesselGuess)
+    return vesselNotFoundTurn(userText, nluRaw)
   }
 
-  // Resuming a pending "which vessel?" clarification — as long as this reply
-  // resolved a vessel, finish the ORIGINAL request rather than whatever
-  // intent Claude guessed for a message that might just be a bare ship name.
-  const pending = previousTurn?.awaitingVesselFor
-  const nlu: NluResult = pending && nluRaw.vessels[0] ? { ...nluRaw, intent: pending.intent, factType: pending.factType } : nluRaw
+  // The server-side NLU receives session memory for the pending entity. Once
+  // it resolves a vessel, resume the original operation instead of treating a
+  // brief confirmation or correction as a standalone intent.
+  const nlu: NluResult = pending && nluRaw.vessels[0]
+    ? { ...nluRaw, intent: pending.intent, factType: pending.factType }
+    : nluRaw
 
   if (nlu.intent === 'out_of_scope') {
     return outOfScopeTurn(userText, nlu)
@@ -160,14 +187,14 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
 
   if (nlu.intent === 'compare_vessels') {
     const [va, vb] = nlu.vessels
-    if (!va || !vb) return outOfScopeTurn(userText, nlu)
+    if (!va || !vb) return vesselClarificationTurn(userText, nlu.intent, nlu.factType)
     const [vesselA, vesselB, seriesA, seriesB] = await Promise.all([
       fetchVesselData(va.imo),
       fetchVesselData(vb.imo),
       fetchSpeedLossData(va.imo),
       fetchSpeedLossData(vb.imo),
     ])
-    if (!vesselA || !vesselB || !seriesA || !seriesB) return outOfScopeTurn(userText, nlu)
+    if (!vesselA || !vesselB || !seriesA || !seriesB) return dataUnavailableTurn(userText, nlu)
     const worse = vesselA.speedLossPct >= vesselB.speedLossPct ? vesselA : vesselB
     return {
       id: makeId(),
@@ -189,6 +216,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
     const [vessel, series] = await Promise.all([fetchVesselData(target.imo), fetchSpeedLossData(target.imo)])
     const lastHullCleaning = series?.events.filter((e) => e.type === 'hull_cleaning').map((e) => e.day).sort((a, b) => a - b).pop() ?? null
     const factType = nlu.factType ?? 'current_speed_loss'
+    if (!vessel) return dataUnavailableTurn(userText, nlu, target.imo)
     return {
       id: makeId(),
       userText,
@@ -203,7 +231,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
 
   if (nlu.intent === 'fuel_attribution') {
     const [vessel, attribution] = await Promise.all([fetchVesselData(target.imo), fetchFuelAttr(target.imo)])
-    if (!vessel || !attribution) return outOfScopeTurn(userText, nlu)
+    if (!vessel || !attribution) return dataUnavailableTurn(userText, nlu, target.imo)
     const top = [...attribution.attribution].sort((a, b) => b.impactMt - a.impactMt)[0]
     const excessMt = attribution.actualFuelMt - attribution.baselineFuelMt
     const pct = excessMt > 0 ? ((top.impactMt / excessMt) * 100).toFixed(0) : '0'
@@ -226,7 +254,7 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
     fetchRecommendation(target.imo),
     fetchVessels(),
   ])
-  if (!vessel || !series || !recommendation) return outOfScopeTurn(userText, nlu)
+  if (!vessel || !series || !recommendation) return dataUnavailableTurn(userText, nlu, target.imo)
   const fleetAvg = fleet.reduce((s, v) => s + v.speedLossPct, 0) / fleet.length
   const comparison = vessel.speedLossPct > fleetAvg * 1.05 ? '高於船隊平均' : vessel.speedLossPct < fleetAvg * 0.95 ? '低於船隊平均' : '接近船隊平均'
   const cards: ChatCardSpec[] = [

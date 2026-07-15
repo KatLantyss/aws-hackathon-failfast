@@ -37,9 +37,20 @@ export interface NluResult {
   outOfScopeExamples: string[] | null
 }
 
+export interface ChatSessionMemory {
+  pendingEntityResolution: {
+    userText: string
+    assistantReply: string
+    intent: ChatIntent
+    factType: ChatFactType | null
+    suggestedVesselImo: string | null
+  } | null
+}
+
 export interface NluRequestBody {
   message: string
   history: ChatHistoryMessage[]
+  sessionMemory?: ChatSessionMemory
 }
 
 export type ChatCardSpec =
@@ -63,6 +74,12 @@ export interface ChatTurn {
   vesselImo: string | null
   vesselName: string | null
   breadcrumbLabel: string
+  suggestedQuestions?: string[]
   /** Set when this turn is a "which vessel do you mean?" clarifying question — the next turn resumes this intent once a vessel resolves, instead of treating a bare vessel name as an unrelated query. */
-  awaitingVesselFor?: { intent: ChatIntent; factType: ChatFactType | null } | null
+  awaitingVesselFor?: {
+    intent: ChatIntent
+    factType: ChatFactType | null
+    /** A valid vessel ID proposed after an unknown-vessel query; an affirmative reply resumes with this vessel. */
+    suggestedVesselImo?: string | null
+  } | null
 }

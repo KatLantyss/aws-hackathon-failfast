@@ -3,8 +3,11 @@ import { handleNlu } from './nlu.ts'
 import { handleStt } from './stt.ts'
 
 export interface VoicebotEnv {
-  ANTHROPIC_API_KEY?: string
-  ANTHROPIC_MODEL?: string
+  AI_PROVIDER?: string
+  AWS_REGION?: string
+  BEDROCK_MODEL_ID?: string
+  AGENTCORE_RUNTIME_ARN?: string
+  AGENTCORE_QUALIFIER?: string
   OPENAI_API_KEY?: string
   OPENAI_STT_MODEL?: string
 }
@@ -29,7 +32,7 @@ function registerRoutes(middlewares: Connect.Server, env: VoicebotEnv) {
   })
 }
 
-/** Local dev-time proxy for the VoiceBot overlay's Claude (NLU) and OpenAI (STT) calls, so API keys never reach the browser. */
+/** Local dev-time proxy for Bedrock/AgentCore NLU and OpenAI STT; provider credentials stay server-side. */
 export function voicebotApiPlugin(env: VoicebotEnv): Plugin {
   return {
     name: 'voicebot-api-proxy',

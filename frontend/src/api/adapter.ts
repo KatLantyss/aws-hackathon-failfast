@@ -23,6 +23,8 @@ import type {
 } from '@/types/fleet'
 
 import {
+  fetchApiSpeedLossAttribution,
+  type ApiSpeedLossAttribution,
   fetchApiVessels,
   fetchApiVesselDetail,
   fetchApiSpeedLoss,
@@ -231,6 +233,62 @@ export async function fetchRealMaintenanceRecommendation(shipId: string): Promis
     }
   } catch {
     return null
+  }
+}
+
+export async function fetchRealFuelAttribution(shipId: string): Promise<import('@/types/fleet').FuelAttributionResponse | null> {
+  try {
+    const [attribution, vessel] = await Promise.all([
+      fetchApiSpeedLossAttribution(shipId),
+      fetchRealVesselSummary(shipId),
+    ])
+    if (!vessel) return null
+    return buildFuelAttributionFromBackend(attribution, vessel)
+  } catch {
+    return null
+  }
+}
+
+function buildFuelAttributionFromBackend(
+  source: ApiSpeedLossAttribution,
+  vessel: VesselSummary,
+): import('@/types/fleet').FuelAttributionResponse {
+  const actualFuelMt = vessel.avgConsumptionMt ?? 0
+  const baselineFuelMt = actualFuelMt / (1 + Math.max(0, vessel.speedLossPct) * 0.018)
+  const toImpactMt = (slipDelta: number) => Math.max(0, actualFuelMt * Math.abs(slipDelta) * 0.018)
+  const categoryImpact = (category: string) => source.event_attributions
+    .filter((event) => event.category === category && event.physical_intervention && event.slip_delta_pct != null)
+    .map((event) => toImpactMt(event.slip_delta_pct))
+    .reduce((sum, impact) => sum + impact, 0)
+  const weatherImpact = source.weather_timeline.length
+    ? actualFuelMt * (source.weather_timeline.reduce((sum, point) => sum + Math.abs(point.diff_stw_sog), 0) / source.weather_timeline.length) * 0.003
+    : 0
+  const hullImpact = categoryImpact('hull') + categoryImpact('hull+propeller') / 2
+  const propellerImpact = categoryImpact('propeller') + categoryImpact('hull+propeller') / 2
+  const derivedImpact = Math.max(0, actualFuelMt - baselineFuelMt)
+  const knownImpact = hullImpact + propellerImpact + weatherImpact
+  const engineImpact = Math.max(0, derivedImpact - knownImpact)
+  const confidence: import('@/types/fleet').Confidence = source.event_attributions.some((event) => event.slip_delta_pct != null)
+    ? 'medium'
+    : 'low'
+
+  return {
+    baselineFuelMt,
+    actualFuelMt,
+    attribution: [
+      { factor: 'weather', impactMt: Number(weatherImpact.toFixed(2)), label: '天候／海流代理值' },
+      { factor: 'hull_fouling', impactMt: Number(hullImpact.toFixed(2)), label: '船殼維護前後差異' },
+      { factor: 'propeller_fouling', impactMt: Number(propellerImpact.toFixed(2)), label: '螺旋槳維護前後差異' },
+      { factor: 'engine_degradation', impactMt: Number(engineImpact.toFixed(2)), label: '未歸因之效能差異' },
+    ],
+    confidence,
+    timeSeries: source.weather_timeline.map((point) => ({
+      date: `Day ${point.noon_day}`,
+      weather: point.diff_stw_sog,
+      hull_fouling: 0,
+      propeller_fouling: 0,
+      engine_degradation: 0,
+    })),
   }
 }
 

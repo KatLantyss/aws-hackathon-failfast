@@ -25,8 +25,8 @@ CloudFront (https://d1yvzz0da29zvi.cloudfront.net)
 | 工具 | 說明 |
 |---|---|
 | Docker Desktop | 後端 image build 用 |
-| Node.js 18+ | 前端 npm build |
-| Python 3.11+ | scripts/ 輔助工具 |
+| Node.js 20.19+（或 22.12+） | 前端 Vite 8 toolchain |
+| Python 3.14 | Local backend runtime（使用既有 `.venv314`） |
 | AWS CLI v2 | 設定 `hackathon` profile（見下方）|
 | boto3 | `pip install boto3`（scripts/ 需要）|
 
@@ -39,8 +39,10 @@ CloudFront (https://d1yvzz0da29zvi.cloudfront.net)
 ```bash
 git clone <repo-url>
 cd aws-ai-hackathon
-cd frontend && npm install && cd ..
+make setup
 ```
+
+`make setup` 會驗證既有 Python 3.14 `.venv314` 可載入 backend dependencies，並以 lockfile 安裝 frontend dependencies。Local 不會自行重裝或降版 Python backend dependencies。Production Docker image 仍獨立使用 Python 3.12。
 
 ### 2. 設定 AWS Credentials
 
@@ -75,9 +77,8 @@ cp frontend/.env.example frontend/.env.local
 # VITE_BACKEND_BASE_URL=http://localhost:8000
 ```
 
-> **Voicebot / Chatbot 功能**需額外填入：
+> **Voicebot / Chatbot 功能**使用 Bedrock Runtime 的 Claude Sonnet 4.6（`.env.local` 預設 `BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6`），本機需有可呼叫 Bedrock 的 AWS `hackathon` profile；若要使用錄音轉錄，另填入：
 > ```
-> ANTHROPIC_API_KEY=sk-ant-...
 > OPENAI_API_KEY=sk-...
 > ```
 
@@ -93,9 +94,20 @@ make dev
 | Backend API | http://localhost:8000 |
 
 `make dev` 會：
-1. 停止舊的 uvicorn/Docker container（避免 port 衝突）
-2. 直接啟動 uvicorn（不用 Docker），使用 hackathon profile 的 credentials
-3. 背景啟動 Vite dev server
+1. 先檢查 Python 3.14 `.venv314`、frontend dependencies 與 AWS `hackathon` profile；缺少時直接顯示修正方式並停止。
+2. 停止舊的 uvicorn/Docker container（避免 port 衝突）。
+3. 以 `.venv314` 的 uvicorn 啟動 backend，並驗證 `/health`。
+4. 背景啟動 Vite，並驗證 `http://127.0.0.1:5173`；任何一端失敗都輸出對應 `/tmp/*` log，不會顯示假成功。
+
+---
+
+## AWS AI 助理（Bedrock / AgentCore）
+
+文字助理的 `/api/nlu` 預設使用 Amazon Bedrock Runtime `Converse`，模型由 `BEDROCK_MODEL_ID` 決定（預設 `us.anthropic.claude-sonnet-4-6`（US inference profile），Claude Sonnet 4.6）。本機 Vite process 使用 `AWS_PROFILE=hackathon` 的 AWS SDK credential chain；ECS production 必須改用 task role，且至少授權 `bedrock:InvokeModel`。
+
+若已部署相容的 Bedrock AgentCore Runtime，可設定 `AI_PROVIDER=agentcore`、`AGENTCORE_RUNTIME_ARN` 與可選的 `AGENTCORE_QUALIFIER`；task role 另需 `bedrock-agentcore:InvokeAgentRuntime`。AgentCore runtime 必須接收 JSON `{ message, history, systemPrompt, tool, responseSchema }`，並回傳符合 `NluResult` 的 JSON。Repository 不會自行建立或部署 AgentCore runtime。
+
+語音轉錄 (`/api/stt`) 是獨立能力，目前仍使用 OpenAI STT；未設定 `OPENAI_API_KEY` 時文字 Bedrock 助理仍可用，但錄音轉錄會失敗。所有 AWS/AI secrets 必須只存於本機 `.env.local` 或 ECS task configuration，絕不可使用 `VITE_*` 變數或 commit。
 
 ---
 
@@ -142,7 +154,8 @@ AWS_PROFILE=hackathon python3 build_fleet_summary.py
 
 | 指令 | 說明 |
 |---|---|
-| `make dev` | 本機開發：uvicorn backend + Vite frontend |
+| `make setup` | 驗證既有 Python 3.14 `.venv314` 並安裝 frontend dependencies |
+| `make dev` | 本機開發：先 preflight，再啟動並驗證 uvicorn backend + Vite frontend |
 | `make dev-api` | 只啟動 backend（uvicorn） |
 | `make dev-frontend` | 只啟動 frontend（Vite） |
 | `make stop` | 停止 uvicorn backend |

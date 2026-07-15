@@ -69,7 +69,12 @@ export function useChatVoiceInput(onSubmit: (text: string) => void | Promise<voi
       await onSubmit(text)
     } finally {
       thinking.value = false
-      if (cameFromVoice) recorder.resumeSegment()
+      if (cameFromVoice) {
+        // A completed voice turn must be an explicit boundary. Immediately
+        // reopening the mic can capture a trailing phrase as a second query.
+        recorder.pauseSensing()
+        mode.value = 'typing'
+      }
     }
   }
 

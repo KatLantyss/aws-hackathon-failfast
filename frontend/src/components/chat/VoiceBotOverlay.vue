@@ -5,7 +5,6 @@ import { useChatContextStore } from '@/stores/chatContext'
 import { resolveChatTurn } from '@/composables/useChatOrchestrator'
 import { useChatVoiceInput } from '@/composables/useChatVoiceInput'
 import type { ChatTurn, NluRequestBody, NluResult } from '@/types/chat'
-import ChatBreadcrumbs from './ChatBreadcrumbs.vue'
 import VoiceBrandBar from './VoiceBrandBar.vue'
 import ChatCard from './ChatCard.vue'
 import RadarScanCanvas from './RadarScanCanvas.vue'
@@ -30,6 +29,7 @@ watch(
 
 function resetConversation() {
   voice.stop()
+  pendingUserText.value = null
   chatContext.reset()
   voice.enterListening()
 }
@@ -42,6 +42,7 @@ const SUGGESTED_QUESTIONS = [
 ]
 
 const loading = ref(false)
+const pendingUserText = ref<string | null>(null)
 const revealedCount = ref(0)
 let revealTimers: ReturnType<typeof setTimeout>[] = []
 
@@ -93,9 +94,18 @@ function makeErrorTurn(userText: string, message: string): ChatTurn {
 }
 
 async function handleSubmit(text: string) {
+  const submittedText = text.trim()
+  if (!submittedText || loading.value) return
+
+  const previousTurn = chatContext.activeTurn
+  pendingUserText.value = submittedText
   loading.value = true
   try {
-    const body: NluRequestBody = { message: text, history: chatContext.history }
+    const body: NluRequestBody = {
+      message: submittedText,
+      history: chatContext.history,
+      sessionMemory: chatContext.sessionMemory,
+    }
     const res = await fetch('/api/nlu', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -106,11 +116,12 @@ async function handleSubmit(text: string) {
       throw new Error(err?.error ?? 'NLU 請求失敗')
     }
     const nlu = (await res.json()) as NluResult
-    const turn = await resolveChatTurn(text, nlu, chatContext.activeTurn)
+    const turn = await resolveChatTurn(submittedText, nlu, previousTurn)
     chatContext.pushTurn(turn)
   } catch (err) {
-    chatContext.pushTurn(makeErrorTurn(text, err instanceof Error ? err.message : '未知錯誤'))
+    chatContext.pushTurn(makeErrorTurn(submittedText, err instanceof Error ? err.message : '未知錯誤'))
   } finally {
+    pendingUserText.value = null
     loading.value = false
   }
 }
@@ -124,7 +135,9 @@ async function handleSubmit(text: string) {
 
       <div class="relative z-10 flex flex-col h-full max-w-[900px] w-full mx-auto px-4 py-6 gap-4">
         <div class="flex items-center justify-between gap-3">
-          <ChatBreadcrumbs />
+          <div class="min-w-0 text-xs font-data text-[var(--color-on-navy)]/65">
+            {{ chatContext.turns.length || pendingUserText ? `對話紀錄 · ${chatContext.turns.length + (pendingUserText ? 1 : 0)} 則` : 'AI 維運助理' }}
+          </div>
           <div class="flex items-center gap-2 shrink-0">
             <button
               v-if="chatContext.turns.length"
@@ -155,7 +168,7 @@ async function handleSubmit(text: string) {
         </div>
 
         <div class="flex-1 min-h-0 overflow-y-auto flex flex-col gap-4 pr-1">
-          <div v-if="!chatContext.turns.length" class="flex-1 min-h-[240px] flex flex-col items-center justify-center text-center gap-5">
+          <div v-if="!chatContext.turns.length && !pendingUserText" class="flex-1 min-h-[240px] flex flex-col items-center justify-center text-center gap-5">
             <div class="flex flex-col gap-2">
               <h1 class="font-display text-2xl md:text-3xl text-[var(--color-on-navy)]">
                 您好！我是 AI 語音助理
@@ -177,13 +190,43 @@ async function handleSubmit(text: string) {
             </div>
           </div>
 
-          <template v-else-if="chatContext.activeTurn">
-            <p class="font-display text-base text-[var(--color-on-navy)] whitespace-pre-line">
-              {{ chatContext.activeTurn.replyText }}
-            </p>
+          <template v-else>
+            <div class="flex flex-col gap-4">
+              <article v-for="turn in chatContext.turns" :key="turn.id" class="flex flex-col gap-2">
+                <p class="self-end max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--color-fathom-teal)]/20 px-3 py-2 text-sm text-[var(--color-on-navy)] whitespace-pre-line">
+                  {{ turn.userText }}
+                </p>
+                <p class="self-start max-w-[90%] font-display text-base text-[var(--color-on-navy)] whitespace-pre-line">
+                  {{ turn.replyText }}
+                </p>
+              </article>
+              <article v-if="pendingUserText" class="flex flex-col gap-2" aria-live="polite">
+                <p class="self-end max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--color-fathom-teal)]/20 px-3 py-2 text-sm text-[var(--color-on-navy)] whitespace-pre-line">
+                  {{ pendingUserText }}
+                </p>
+                <p class="self-start font-data text-xs text-[var(--color-on-navy)]/60">理解中…</p>
+              </article>
+            </div>
+
+            <div
+              v-if="chatContext.activeTurn?.suggestedQuestions?.length && !loading"
+              class="flex flex-wrap gap-2"
+              aria-label="可繼續查詢的問題"
+            >
+              <button
+                v-for="question in chatContext.activeTurn.suggestedQuestions"
+                :key="question"
+                type="button"
+                class="text-xs font-body px-3 py-1.5 rounded-full border border-[var(--color-fathom-teal-glow)]/40 text-[var(--color-on-navy)]/85 hover:border-[var(--color-fathom-teal-glow)] hover:bg-[var(--color-fathom-teal-glow)]/10 transition-colors"
+                :disabled="loading"
+                @click="handleSubmit(question)"
+              >
+                {{ question }}
+              </button>
+            </div>
 
             <button
-              v-if="chatContext.activeTurn.vesselImo"
+              v-if="chatContext.activeTurn?.vesselImo && !loading"
               type="button"
               class="self-start flex items-center gap-1.5 text-xs font-data text-[var(--color-fathom-teal-glow)] hover:text-white transition-colors"
               @click="viewFullPage(`/vessels/${chatContext.activeTurn.vesselImo}/overview`)"
@@ -194,7 +237,7 @@ async function handleSubmit(text: string) {
               </svg>
             </button>
 
-            <TransitionGroup name="chat-card-fade" tag="div" class="flex flex-col gap-3">
+            <TransitionGroup v-if="chatContext.activeTurn && !loading" name="chat-card-fade" tag="div" class="flex flex-col gap-3">
               <template v-for="(card, i) in chatContext.activeTurn.cards.slice(0, revealedCount)" :key="card.type + i">
                 <ChatCard
                   v-if="card.type === 'gauge'"
@@ -251,8 +294,6 @@ async function handleSubmit(text: string) {
               </template>
             </TransitionGroup>
           </template>
-
-          <p v-if="loading" class="font-data text-xs text-[var(--color-on-navy)]/60">理解中…</p>
         </div>
 
         <!-- One unified brand-red instrument bar (logo + waveform + controls)

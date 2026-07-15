@@ -92,6 +92,29 @@ export interface ApiSpeedLossResponse {
   maintenance_cycles: ApiMaintenanceCycle[]
 }
 
+export interface ApiSpeedLossAttributionEvent {
+  event_type: string
+  event_day: number
+  category: 'hull+propeller' | 'hull' | 'propeller' | 'inspection_only' | 'other'
+  physical_intervention: boolean
+  slip_before_pct: number | null
+  slip_after_pct: number | null
+  slip_delta_pct: number | null
+  notes: string
+}
+
+export interface ApiSpeedLossAttribution {
+  vessel_id: string
+  method: string
+  summary: Partial<Record<ApiSpeedLossAttributionEvent['category'], number>>
+  event_attributions: ApiSpeedLossAttributionEvent[]
+  weather_timeline: { noon_day: number; diff_stw_sog: number }[]
+}
+
+export function fetchApiSpeedLossAttribution(vesselId: string): Promise<ApiSpeedLossAttribution> {
+  return get(`/api/v1/vessels/${vesselId}/speed-loss-attribution`)
+}
+
 export interface ApiMaintenanceEvent {
   vessel_id: string
   event_day: number
