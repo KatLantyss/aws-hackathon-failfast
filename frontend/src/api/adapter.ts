@@ -24,7 +24,6 @@ import type {
 
 import {
   fetchApiSpeedLossAttribution,
-  type ApiSpeedLossAttribution,
   fetchApiVessels,
   fetchApiVesselDetail,
   fetchApiSpeedLoss,
@@ -33,6 +32,7 @@ import {
   fetchApiFleetSummary,
   fetchApiNoonReports,
   fetchApiMaintenanceRecommendation,
+  type ApiSpeedLossAttribution,
   type ApiFocTimelinePoint,
   type ApiStwTimelinePoint,
   type ApiMaintenanceEvent,
@@ -271,7 +271,6 @@ function buildFuelAttributionFromBackend(
   const confidence: import('@/types/fleet').Confidence = source.event_attributions.some((event) => event.slip_delta_pct != null)
     ? 'medium'
     : 'low'
-
   return {
     baselineFuelMt,
     actualFuelMt,
@@ -308,9 +307,8 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
     const stwData = slResp.stw_timeline ?? []
     const primaryData = focData.length > 0 ? focData : stwData
 
-    // Build timeline (sample every 5th point to reduce density)
+    // Build timeline (all data points for full fidelity)
     const timeline: PerformanceTimelinePoint[] = primaryData
-      .filter((_, i) => i % 5 === 0)
       .map((p) => {
         return {
           day: p.noon_day,
@@ -319,16 +317,12 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
         }
       })
 
-    // Compute before/after for each maintenance event
-    const WINDOW_DAYS = 14
+    // Compute before/after for each maintenance event using FOC directly
+    const WINDOW_DAYS = 30
     const effectivenessEvents: MaintenanceEffectivenessEvent[] = []
 
     for (const maint of maintResp.events) {
-      // Pure inspection (UWI) performs no physical work — mirrors backend's
-      // physical_intervention=false / category='inspection_only' for this
-      // exact event_type. Scoring it here would misrepresent a no-op as a
-      // real fuel/speed-loss improvement, which the dataset's own event
-      // semantics explicitly rule out.
+      // Pure inspection (UWI) performs no physical work
       if (maint.event_type === 'UWI') continue
 
       const before = primaryData.filter(
@@ -338,32 +332,68 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
         (p) => p.noon_day > maint.event_day && p.noon_day <= maint.event_day + WINDOW_DAYS
       )
 
-      if (before.length < 3 || after.length < 3 || avgConsumptionMt == null) continue
+      if (before.length < 3 || after.length < 3) continue
 
       const slBefore = before.reduce((s, p) => s + p.speed_loss_pct, 0) / before.length
       const slAfter = after.reduce((s, p) => s + p.speed_loss_pct, 0) / after.length
 
-      // Theoretical fuel impact (cubic-law approximation: 1% slip ≈ 1.8% fuel increase),
-      // scaled off this vessel's own real average consumption.
-      const fuelBefore = avgConsumptionMt * (1 + Math.max(0, slBefore) / 100 * 1.8)
-      const fuelAfter = avgConsumptionMt * (1 + Math.max(0, slAfter) / 100 * 1.8)
+      // Use actual FOC values directly for maintenance effectiveness
+      // (more reliable than speed_loss_pct which has RPM bin noise)
+      const focBefore = 'daily_foc_vlsfo' in before[0]
+        ? before.reduce((s, p) => s + ((p as typeof focData[0]).daily_foc_vlsfo), 0) / before.length
+        : null
+      const focAfter = 'daily_foc_vlsfo' in after[0]
+        ? after.reduce((s, p) => s + ((p as typeof focData[0]).daily_foc_vlsfo), 0) / after.length
+        : null
+
+      // FOC-based improvement: (before - after) / before × 100
+      const fuelBefore = focBefore ?? (avgConsumptionMt ?? 0)
+      const fuelAfter = focAfter ?? (avgConsumptionMt ?? 0)
       const fuelImprovementMt = fuelBefore - fuelAfter
       const improvementPct = fuelBefore > 0 ? (fuelImprovementMt / fuelBefore) * 100 : 0
 
+      // ─── RPM-Normalized Improvement ───
+      // Find average RPM in after window, then filter before data for same RPM range
+      let rpmNormalizedImprovementPct: number | null = null
+      if ('rpm' in after[0] && before.length >= 3 && after.length >= 3) {
+        const rpmAfterAvg = after.reduce((s, p) => s + (p as any).rpm, 0) / after.length
+        const rpmTolerance = 5 // ±5 RPM
+        const beforeInRpmRange = before.filter(
+          (p) => Math.abs((p as any).rpm - rpmAfterAvg) <= rpmTolerance && (p as any).rpm
+        )
+        const afterInRpmRange = after.filter(
+          (p) => Math.abs((p as any).rpm - rpmAfterAvg) <= rpmTolerance && (p as any).rpm
+        )
+
+        if (beforeInRpmRange.length >= 2 && afterInRpmRange.length >= 2) {
+          const focBeforeNorm = 'daily_foc_vlsfo' in beforeInRpmRange[0]
+            ? beforeInRpmRange.reduce((s, p) => s + ((p as typeof focData[0]).daily_foc_vlsfo), 0) / beforeInRpmRange.length
+            : null
+          const focAfterNorm = 'daily_foc_vlsfo' in afterInRpmRange[0]
+            ? afterInRpmRange.reduce((s, p) => s + ((p as typeof focData[0]).daily_foc_vlsfo), 0) / afterInRpmRange.length
+            : null
+
+          if (focBeforeNorm && focBeforeNorm > 0) {
+            rpmNormalizedImprovementPct = ((focBeforeNorm - focAfterNorm) / focBeforeNorm) * 100
+          }
+        }
+      }
+
       const eventType = CORRELATION_TYPE_MAP[maint.event_type] || 'Hull Cleaning'
 
-      // Anomaly detection
+      // Anomaly detection — use RPM-normalized if available, otherwise use raw improvement
+      const effectiveImprovement = rpmNormalizedImprovementPct !== null ? rpmNormalizedImprovementPct : improvementPct
       let isAnomaly = false
       let anomalyReason: string | null = null
-      if (maint.event_type === 'DD' && improvementPct < 2) {
+      if (maint.event_type === 'DD' && effectiveImprovement < 2) {
         isAnomaly = true
-        anomalyReason = '進塢後 Speed Loss 改善不明顯 (<2%)，建議確認塗裝品質。'
-      } else if (maint.event_type === 'PP' && improvementPct > 18) {
+        anomalyReason = '進塢後油耗改善不明顯 (<2%)，建議確認塗裝品質。'
+      } else if (maint.event_type === 'PP' && effectiveImprovement > 25) {
         isAnomaly = true
-        anomalyReason = '螺旋槳拋光改善幅度異常高 (>18%)，可能有其他因素或量測誤差。'
-      } else if (improvementPct < 0) {
+        anomalyReason = '螺旋槳拋光油耗改善幅度異常高 (>25%)，可能有其他因素。'
+      } else if (effectiveImprovement < -5) {
         isAnomaly = true
-        anomalyReason = '養護後效能反而下降，可能施工品質不佳或環境因素影響。'
+        anomalyReason = '養護後油耗反而增加 (>5%)，可能施工品質不佳或航行條件差異。'
       }
 
       effectivenessEvents.push({
@@ -375,6 +405,7 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
         fuelAfter: Number(fuelAfter.toFixed(2)),
         fuelImprovementMt: Number(fuelImprovementMt.toFixed(2)),
         improvementPct: Number(improvementPct.toFixed(1)),
+        rpmNormalizedImprovementPct: rpmNormalizedImprovementPct !== null ? Number(rpmNormalizedImprovementPct.toFixed(1)) : null,
         speedLossBefore: Number(slBefore.toFixed(2)),
         speedLossAfter: Number(slAfter.toFixed(2)),
         isAnomaly,
@@ -413,10 +444,17 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
     // Optimal timing — compute from most recent data
     const lastPoint = primaryData[primaryData.length - 1]
-    const currentSL = lastPoint?.speed_loss_pct ?? 0
 
-    // Degradation rate (last 60 points)
+    // "Current" SL + degradation rate both come from a trailing window (last
+    // 60 raw points), not a single last-day point — per-day speed_loss_pct is
+    // extremely noisy (a single maneuvering/idle/bad-weather day can spike
+    // past 60% even on a healthy hull), so averaging is required to land near
+    // the backend's own filtered foc_summary.avg_speed_loss_pct.
     const recent = primaryData.slice(-60)
+    const currentSL = recent.length > 0
+      ? recent.reduce((s, p) => s + p.speed_loss_pct, 0) / recent.length
+      : lastPoint?.speed_loss_pct ?? 0
+
     let rate = 0
     if (recent.length >= 2) {
       const slStart = recent[0].speed_loss_pct
@@ -467,10 +505,11 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
       vessel: { imo: shipId, name: shipId },
       timeline,
       events: effectivenessEvents,
+      allMaintenanceEvents: maintResp.events.map((e) => ({ day: e.event_day, type: e.event_type })),
       typeEffectiveness,
       optimalTiming,
       summary: {
-        totalEvents: effectivenessEvents.length,
+        totalEvents: maintResp.events.length,
         avgImprovementPct: Number(avgImprovementPct.toFixed(1)),
         bestEventId: bestEvent?.id ?? '',
         worstEventId: worstEvent?.id ?? '',

@@ -171,8 +171,10 @@ export interface MaintenanceEffectivenessEvent {
   fuelAfter: number
   /** Absolute improvement in MT/day */
   fuelImprovementMt: number
-  /** Improvement percentage */
+  /** Improvement percentage (raw FOC comparison) */
   improvementPct: number
+  /** RPM-normalized improvement percentage (at same RPM range, excludes effect of speed change) */
+  rpmNormalizedImprovementPct: number | null
   /** Speed loss % before maintenance */
   speedLossBefore: number
   /** Speed loss % after maintenance */
@@ -207,6 +209,8 @@ export interface MaintenanceCorrelationResponse {
   timeline: PerformanceTimelinePoint[]
   /** Individual maintenance events with before/after analysis */
   events: MaintenanceEffectivenessEvent[]
+  /** All raw maintenance events (for chart marklines) */
+  allMaintenanceEvents: { day: number; type: string }[]
   /** Aggregated effectiveness per maintenance type */
   typeEffectiveness: MaintenanceTypeEffectiveness[]
   /** AI-driven optimal maintenance timing recommendation */

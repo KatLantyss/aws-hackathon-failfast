@@ -5,7 +5,15 @@ import type { ChatVoiceInput } from '@/composables/useChatVoiceInput'
 import yangMingLogo from '@/assets/yangming_logo.png'
 import SiriWaveform from './SiriWaveform.vue'
 
-defineProps<{ voice: ChatVoiceInput }>()
+const props = defineProps<{ voice: ChatVoiceInput }>()
+
+function handleEnter(event: KeyboardEvent) {
+  // macOS Chinese/Japanese IMEs use Enter to confirm a candidate first.
+  // Safari can report that keydown as keyCode 229 even when isComposing has
+  // already toggled, so guard both signals before allowing a real send.
+  if (event.isComposing || event.keyCode === 229) return
+  props.voice.confirmSend()
+}
 </script>
 
 <template>
@@ -58,7 +66,7 @@ defineProps<{ voice: ChatVoiceInput }>()
           :placeholder="voice.mode.value === 'reviewing' ? '確認或修改語音辨識結果…' : '輸入問題，例如：YM WELLNESS 現在狀況怎麼樣？'"
           class="voice-text-input flex-1"
           autofocus
-          @keydown.enter="voice.confirmSend()"
+          @keydown.enter="handleEnter"
         />
         <button
           v-if="voice.mode.value === 'reviewing'"

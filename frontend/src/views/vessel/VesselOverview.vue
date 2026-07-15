@@ -12,7 +12,7 @@ import KpiCard from '@/components/KpiCard.vue'
 import StateDisplay from '@/components/StateDisplay.vue'
 import VesselFocusMap from '@/components/VesselFocusMap.vue'
 import DataSourceTag from '@/components/DataSourceTag.vue'
-import { formatUsd, STATUS_LABEL, URGENCY_LABEL, URGENCY_COLOR } from '@/utils/format'
+import { formatUsd, STATUS_LABEL } from '@/utils/format'
 
 const props = defineProps<{ vessel: VesselSummary; imo: string }>()
 
@@ -232,24 +232,6 @@ function trendColor(trend: number | null): string {
           <span class="text-xs text-[var(--color-ink-slate)]/60">次</span>
         </p>
       </div>
-    </div>
-
-    <!-- urgency badge -->
-    <div class="flex items-center gap-3 px-1">
-      <span class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/60">維修急迫度</span>
-      <span
-        class="font-semibold text-sm px-2.5 py-0.5 rounded-[3px]"
-        :style="{
-          color: URGENCY_COLOR[vessel.maintenanceUrgency],
-          background: `color-mix(in srgb, ${URGENCY_COLOR[vessel.maintenanceUrgency]} 14%, transparent)`,
-        }"
-      >{{ URGENCY_LABEL[vessel.maintenanceUrgency] }}</span>
-      <span v-if="vessel.lastHullCleanType" class="font-data text-xs text-[var(--color-ink-slate)]/50">
-        上次清洗：{{ vessel.lastHullCleanType }}
-      </span>
-      <span v-if="vessel.lastEventType" class="font-data text-xs text-[var(--color-ink-slate)]/50">
-        · 最後養護：{{ vessel.lastEventType }}
-      </span>
     </div>
 
     <!-- focused position map -->

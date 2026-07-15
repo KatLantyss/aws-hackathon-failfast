@@ -85,12 +85,14 @@ const dsTypeBar: DataSourceInfo = {
 const dsEventTable: DataSourceInfo = {
   status: 'hybrid',
   endpoint: ['GET /api/v1/vessels/{vessel_id}/speed-loss', 'GET /api/v1/vessels/{vessel_id}/maintenance-events'],
-  description: '事件明細表的 Speed Loss 前/後值是後端真實資料算出的區間平均；油耗前/後值與改善% 是前端固定公式換算。',
+  description: '事件明細表現在顯示「RPM正規化改善%」作為唯一的真實指標。原始改善%會受RPM變化影響（虛幻改善），而RPM正規化排除了轉速變化的干擾。',
   fields: [
-    { ui: 'SL 前→後', source: '前端對事件前後 14 天視窗的 iso_timeline/slip_timeline 取平均（real 資料，前端聚合）' },
-    { ui: '前/後油耗 (MT) / 改善%', source: FUEL_FORMULA_NOTE },
+    { ui: '改善% (raw FOC)', source: '前端計算：(FOC前-FOC後)/FOC前×100（會被RPM變化誤導）' },
+    { ui: '改善% ✓ (RPM正規化)', source: '前端在同RPM範圍内對比FOC改善（排除轉速變化，真實維修效果）。若無足夠同RPM數據則顯示—' },
+    { ui: 'SL 前→後', source: '前端對事件前後30天視窗的 slip_timeline 取平均（real資料）' },
+    { ui: '前/後油耗 (MT)', source: FUEL_FORMULA_NOTE },
     { ui: '港口', source: '無對應欄位，固定顯示 "—"' },
-    { ui: '❌/✅ 狀態', source: '前端異常門檻判斷（見下方 COR-07）' },
+    { ui: '❌/✅ 狀態', source: '前端基於RPM正規化改善%的異常門檻判斷（見下方COR-07）' },
   ],
 }
 
@@ -140,20 +142,30 @@ const timelineOption = computed(() => {
   const c = chart.value
   const timeline = data.value.timeline
   const events = data.value.events
+  const allMaint = data.value.allMaintenanceEvents
   const dayList = timeline.map((t) => t.day)
 
-  const markLines = events.map((evt) => ({
+  // Use ALL maintenance events for markLines (not just ones with before/after data)
+  const EVENT_LABEL: Record<string, string> = {
+    PP: '螺旋槳拋光',
+    'UWI+PP': '檢查+拋光',
+    UWC: '船殼清洗',
+    'UWC+PP': '清洗+拋光',
+    DD: '進塢',
+    UWI: '水下檢查',
+  }
+  const markLines = allMaint.map((evt) => ({
     xAxis: evt.day,
     label: {
-      formatter: evt.type === 'Hull Cleaning + PP' ? 'HC+PP' : evt.type === 'Hull Cleaning' ? 'HC' : 'PP',
+      formatter: EVENT_LABEL[evt.type] || evt.type,
       fontSize: 10,
-      fontFamily: 'IBM Plex Mono',
-      color: evt.isAnomaly ? c.signalRed : c.brassAmber,
+      fontFamily: 'IBM Plex Sans',
+      color: c.brassAmber,
     },
     lineStyle: {
-      color: evt.isAnomaly ? c.signalRed : c.brassAmber,
+      color: evt.type === 'DD' ? c.fathomTeal : evt.type === 'UWI' ? c.inkSlate : c.brassAmber,
       type: 'dashed' as const,
-      width: 1.5,
+      width: evt.type === 'DD' ? 2 : 1.5,
     },
   }))
 
@@ -176,11 +188,18 @@ const timelineOption = computed(() => {
   return {
     animation: false,
     grid: { left: 60, right: 60, top: 50, bottom: 70 },
-    legend: { top: 0, textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate } },
+    legend: {
+      top: 0,
+      textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate },
+      selected: { '日油耗 (MT)': true, 'Speed Loss %': true, '養護事件 ✅': true, '異常事件 ❌': true },
+    },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: c.marineNavy,
-      textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
+      backgroundColor: 'rgba(24, 30, 40, 0.95)',
+      borderColor: 'rgba(192, 138, 62, 0.4)',
+      borderWidth: 1,
+      padding: [10, 14],
+      textStyle: { color: '#f0ede8', fontFamily: 'IBM Plex Sans', fontSize: 13 },
     },
     dataZoom: [
       { type: 'inside', start: 0, end: 100 },
@@ -238,7 +257,7 @@ const timelineOption = computed(() => {
           formatter: (params: { dataIndex: number }) => {
             const evt = normalEventPoints[params.dataIndex]?.evt
             if (!evt) return ''
-            return `<b>${evt.type}</b><br/>Day ${evt.day}<br/>港口: ${evt.port}<br/>改善: ${evt.improvementPct}%<br/>油耗: ${evt.fuelBefore.toFixed(1)} → ${evt.fuelAfter.toFixed(1)} MT`
+            return `<b style="color:#fff;">${evt.type}</b><br/><span style="color:#aab4be;">Day ${evt.day}</span><br/><span style="color:#aab4be;">港口: ${evt.port}</span><br/><span style="color:#7dcea0;font-weight:600;">改善: ${evt.improvementPct}%</span><br/><span style="color:#aab4be;">油耗: ${evt.fuelBefore.toFixed(1)} → ${evt.fuelAfter.toFixed(1)} MT</span>`
           },
         },
       },
@@ -253,7 +272,7 @@ const timelineOption = computed(() => {
           formatter: (params: { dataIndex: number }) => {
             const evt = anomalyEventPoints[params.dataIndex]?.evt
             if (!evt) return ''
-            return `<b>⚠ ${evt.type} (異常)</b><br/>Day ${evt.day}<br/>港口: ${evt.port}<br/>改善: ${evt.improvementPct}%<br/>原因: ${evt.anomalyReason}`
+            return `<b style="color:#f5c842;">⚠ ${evt.type} (異常)</b><br/><span style="color:#aab4be;">Day ${evt.day}</span><br/><span style="color:#aab4be;">港口: ${evt.port}</span><br/><span style="color:#e2572b;font-weight:600;">改善: ${evt.improvementPct}%</span><br/><span style="color:#f0ede8;">${evt.anomalyReason}</span>`
           },
         },
       },
@@ -273,8 +292,11 @@ const costBenefitOption = computed(() => {
     legend: { top: 0, textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate } },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: c.marineNavy,
-      textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
+      backgroundColor: 'rgba(24, 30, 40, 0.95)',
+      borderColor: 'rgba(192, 138, 62, 0.4)',
+      borderWidth: 1,
+      padding: [10, 14],
+      textStyle: { color: '#f0ede8', fontFamily: 'IBM Plex Sans', fontSize: 13 },
       valueFormatter: (v: number) => `$${v.toLocaleString()}`,
     },
     xAxis: {
@@ -316,13 +338,16 @@ const barOption = computed(() => {
     grid: { left: 120, right: 40, top: 24, bottom: 32 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: c.marineNavy,
-      textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
+      backgroundColor: 'rgba(24, 30, 40, 0.95)',
+      borderColor: 'rgba(192, 138, 62, 0.4)',
+      borderWidth: 1,
+      padding: [10, 14],
+      textStyle: { color: '#f0ede8', fontFamily: 'IBM Plex Sans', fontSize: 13 },
       axisPointer: { type: 'shadow' },
       formatter: (params: { name: string; value: number }[]) => {
         const t = types.find((t) => t.type === params[0].name)
         if (!t) return ''
-        return `<b>${t.type}</b><br/>平均改善: ${t.avgImprovementPct}%<br/>節省油耗: ${t.avgFuelImprovementMt} MT/day<br/>事件數: ${t.eventCount}`
+        return `<b style="color:#fff;">${t.type}</b><br/><span style="color:#7dcea0;">平均改善: ${t.avgImprovementPct}%</span><br/><span style="color:#aab4be;">節省油耗: ${t.avgFuelImprovementMt} MT/day</span><br/><span style="color:#aab4be;">事件數: ${t.eventCount}</span>`
       },
     },
     xAxis: {
@@ -587,9 +612,10 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 <th class="py-2 pr-3">Day</th>
                 <th class="py-2 pr-3">類型</th>
                 <th class="py-2 pr-3">港口</th>
-                <th class="py-2 pr-3 text-right">前</th>
-                <th class="py-2 pr-3 text-right">後</th>
-                <th class="py-2 pr-3 text-right">改善</th>
+                <th class="py-2 pr-3 text-right">前 (MT)</th>
+                <th class="py-2 pr-3 text-right">後 (MT)</th>
+                <th class="py-2 pr-3 text-right">改善 %<br/><span class="text-[10px]">raw FOC</span></th>
+                <th class="py-2 pr-3 text-right text-[var(--color-fathom-teal)] font-bold">改善 % ✓<br/><span class="text-[10px] font-normal">RPM正規化</span></th>
                 <th class="py-2 pr-3 text-right">SL 前→後</th>
                 <th class="py-2 pr-3 text-center">狀態</th>
               </tr>
@@ -606,8 +632,11 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 <td class="py-2 pr-3 whitespace-nowrap">{{ evt.port }}</td>
                 <td class="py-2 pr-3 text-right font-data">{{ formatNumber(evt.fuelBefore, 1) }}</td>
                 <td class="py-2 pr-3 text-right font-data">{{ formatNumber(evt.fuelAfter, 1) }}</td>
-                <td class="py-2 pr-3 text-right font-data" :class="evt.improvementPct > 0 ? 'text-[var(--color-fathom-teal)]' : 'text-[var(--color-signal-red)]'">
+                <td class="py-2 pr-3 text-right font-data text-[var(--color-ink-slate)]/50" :title="'Raw FOC comparison (affected by RPM change)'">
                   {{ evt.improvementPct > 0 ? '↓' : '↑' }} {{ formatPct(Math.abs(evt.improvementPct)) }}
+                </td>
+                <td class="py-2 pr-3 text-right font-data font-bold" :class="evt.rpmNormalizedImprovementPct ? (evt.rpmNormalizedImprovementPct > 0 ? 'text-[var(--color-fathom-teal)]' : 'text-[var(--color-signal-red)]') : 'text-[var(--color-ink-slate)]/30'" :title="'Improvement at same RPM range (true effectiveness)'">
+                  {{ evt.rpmNormalizedImprovementPct !== null ? (evt.rpmNormalizedImprovementPct > 0 ? '↓' : '↑') + ' ' + formatPct(Math.abs(evt.rpmNormalizedImprovementPct)) : '—' }}
                 </td>
                 <td class="py-2 pr-3 text-right font-data whitespace-nowrap">
                   {{ formatNumber(evt.speedLossBefore, 1) }}% → {{ formatNumber(evt.speedLossAfter, 1) }}%

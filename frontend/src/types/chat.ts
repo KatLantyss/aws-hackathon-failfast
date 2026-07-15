@@ -10,6 +10,7 @@ export type ChatIntent =
   | 'fleet_ranking'
   | 'fuel_attribution'
   | 'compare_vessels'
+  | 'maintenance_recommendation'
   | 'single_fact'
   | 'follow_up'
   | 'out_of_scope'
@@ -75,7 +76,6 @@ export interface ChatTurn {
   vesselName: string | null
   breadcrumbLabel: string
   suggestedQuestions?: string[]
-  /** Set when this turn is a "which vessel do you mean?" clarifying question — the next turn resumes this intent once a vessel resolves, instead of treating a bare vessel name as an unrelated query. */
   awaitingVesselFor?: {
     intent: ChatIntent
     factType: ChatFactType | null

@@ -35,10 +35,10 @@ function resetConversation() {
 }
 
 const SUGGESTED_QUESTIONS = [
-  'YM WELLNESS 現在狀況怎麼樣？',
   '哪些船需要優先安排維修？',
-  '比較 YM WELLNESS 跟 YM VICTORY 的污損趨勢',
-  '上次水下清洗是什麼時候？',
+  '比較 S1 與 S2 的污損趨勢',
+  '查詢 S23 現在狀況',
+  'S9 上次船體清洗是何時？',
 ]
 
 const loading = ref(false)
@@ -196,7 +196,7 @@ async function handleSubmit(text: string) {
                 <p class="self-end max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--color-fathom-teal)]/20 px-3 py-2 text-sm text-[var(--color-on-navy)] whitespace-pre-line">
                   {{ turn.userText }}
                 </p>
-                <p class="self-start max-w-[90%] font-display text-base text-[var(--color-on-navy)] whitespace-pre-line">
+                <p class="self-start max-w-[90%] font-body text-base text-[var(--color-on-navy)] whitespace-pre-line">
                   {{ turn.replyText }}
                 </p>
               </article>

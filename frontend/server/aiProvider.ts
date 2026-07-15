@@ -19,6 +19,7 @@ const INTENTS = new Set([
   'fleet_ranking',
   'fuel_attribution',
   'compare_vessels',
+  'maintenance_recommendation',
   'single_fact',
   'follow_up',
   'out_of_scope',
@@ -70,11 +71,24 @@ function buildSystemPrompt(sessionMemory?: ChatSessionMemory): string {
 - 只負責判斷意圖分類與抽取參數，絕對不要自己編造任何數字、日期或結論（那些會由畫面上的真實資料呈現）。
 - 使用者提到的船名若不在上面的清單裡，設 vesselNotFound=true，並在 vesselGuess 給一個清單裡最接近的代號；vessels 留空陣列。
 - 若問題與船隊維運資料無關，intent 設為 out_of_scope，並在 outOfScopeExamples 給 2-3 個範例問題。
-- 若使用者是針對前一輪的追問，intent 設為 follow_up。
+- 只有在使用者只是要求補充、解釋上一個已呈現結果且不需查新資料時，才設 intent 為 follow_up。
+- 若使用者問「需要清潔嗎」、「是否要安排維修」、「何時該清潔／坐塢」或其他維修必要性與時程問題，設 intent 為 maintenance_recommendation；即使問題是接續前文的「那需要清潔嗎」也一樣。
+- 若使用者只說有效船號加上「呢」，請從完整對話判讀並重用前一個查詢的實質 intent 與 factType；不可只因它是追問就設為 follow_up。
 - 一定要呼叫 emit_answer 工具回答，不要輸出其他文字。`
 }
 
-function assertNluResult(value: unknown): NluResult {
+function extractKnownShips(message: string): Array<{ imo: string; name: string }> {
+  const matches = [...message.matchAll(/\bS\s*(\d{1,2})\b/gi)]
+  const seen = new Set<string>()
+  return matches.flatMap((match) => {
+    const imo = `S${match[1]}`
+    if (!REAL_SHIPS.includes(imo as typeof REAL_SHIPS[number]) || seen.has(imo)) return []
+    seen.add(imo)
+    return [{ imo, name: imo }]
+  })
+}
+
+export function assertNluResult(value: unknown, userMessage: string): NluResult {
   if (!value || typeof value !== 'object') throw new Error('AI provider returned an empty structured result')
   const raw = value as Partial<NluResult>
   // Bedrock models may omit fields whose values can be safely inferred from a
@@ -96,10 +110,15 @@ function assertNluResult(value: unknown): NluResult {
         return [{ imo, name: typeof candidate.name === 'string' ? candidate.name : imo }]
       })
     : []
+  // An explicit, valid vessel ID in the user's text is authoritative. This
+  // prevents an NLU tool-call hallucination such as marking S23 "not found"
+  // even though it is a real fleet vessel.
+  const explicitVessels = extractKnownShips(userMessage)
+  const resolvedVessels = explicitVessels.length ? explicitVessels : vessels
   const result = {
     ...raw,
-    vessels,
-    vesselNotFound: raw.vesselNotFound === true || raw.vesselNotFound === 'true',
+    vessels: resolvedVessels,
+    vesselNotFound: explicitVessels.length ? false : raw.vesselNotFound === true || raw.vesselNotFound === 'true',
     vesselGuess: typeof raw.vesselGuess === 'string' ? raw.vesselGuess : null,
     factType: typeof raw.factType === 'string' && FACT_TYPES.has(raw.factType) ? raw.factType : null,
     clarifyingNote: typeof raw.clarifyingNote === 'string' ? raw.clarifyingNote : '已解析船隊查詢',
@@ -140,7 +159,7 @@ async function invokeBedrock(body: NluRequestBody, env: AiProviderEnv): Promise<
   const toolUse = (response.output?.message?.content ?? [])
     .find((block) => block.toolUse?.name === EMIT_ANSWER_TOOL.name)?.toolUse
   if (!toolUse) throw new Error('Bedrock did not return the required emit_answer tool call')
-  return assertNluResult(toolUse.input)
+  return assertNluResult(toolUse.input, body.message)
 }
 
 async function invokeAgentCore(body: NluRequestBody, env: AiProviderEnv): Promise<NluResult> {
@@ -162,7 +181,7 @@ async function invokeAgentCore(body: NluRequestBody, env: AiProviderEnv): Promis
     })),
   }))
   if (!response.response) throw new Error('AgentCore returned no response stream')
-  return assertNluResult(JSON.parse(await response.response.transformToString()))
+  return assertNluResult(JSON.parse(await response.response.transformToString()), body.message)
 }
 
 export async function classifyWithAwsAi(body: NluRequestBody, env: AiProviderEnv): Promise<NluResult> {
