@@ -2512,12 +2512,14 @@ def get_speed_loss_dashboard(vessel_id, event):
     """
     Speed Loss Dashboard — 規格要求的三視圖後端資料計算。
 
-    演算法（依規格）：
+    演算法：
     1. 前處理：SPEED_LOSS coerce、去重（vessel+day+voyage）、排序
     2. 平滑趨勢：每 10 天一格，視窗 ±20 天內的 median SPEED_LOSS（≥2 點才算）
-    3. 船殼/螺旋槳歸因指數（啟發式代理）：
-       - hull_idx = distance_since_hull_clean / p95(distance)
-       - prop_idx = slip_excess / p95(slip_excess)，slip_excess = ME_SLIP - p5(ME_SLIP)
+    3. 船殼/螺旋槳歸因指數（物理意義正確的雙通道代理）：
+       - 船殼通道：FOC 對週期基準偏離 %（同 RPM 下多燒多少油 = 船殼阻力信號）
+         hull_idx = median(FOC 偏離 %, ±20 天穩態日)，取 max(0, value) 後正規化至 p95
+       - 螺旋槳通道：FULL_SPD_STW_SLIP 超出 p5 基準值（螺旋槳推進效率信號）
+         prop_idx = max(0, FULL_SPD_STW_SLIP - p5基準) 後正規化至 p95
        - hull/prop share → hull/prop contribution = share × max(0, smooth)
     4. 事件前後對比：±45 天視窗 median SPEED_LOSS，delta = after - before
        （delta < 0 = 改善；需 n≥3 才算，否則 null）
@@ -2528,9 +2530,88 @@ def get_speed_loss_dashboard(vessel_id, event):
     maint    = query_maintenance(vessel_id)
     ship_type = 'W1' if SHIP_TYPE.get(vessel_id, 0) == 0 else 'W2'
 
+    import statistics
+
     # ── 1. 前處理 ──────────────────────────────────────────────────────────
-    records = []
+    # 同時收集 SPEED_LOSS、FULL_SPD_STW_SLIP，以及 FOC 偏離計算所需欄位
+    # 去重 key = (day, voyage)
     seen = set()
+    records = []  # 全部有效列（SPEED_LOSS 可為 None）
+
+    # 先建週期邊界（船殼清洗事件），用於 FOC 週期基準
+    hull_clean_days = sorted(
+        safe_float(m.get('event_day'), 0)
+        for m in maint if str(m.get('event_type', '')) in HULL_CLEAN_TYPES
+    )
+
+    def get_cycle(day):
+        idx = 0
+        for bd in hull_clean_days:
+            if day >= bd:
+                idx += 1
+        return idx
+
+    # 第一遍：收集穩態 calm 日的 FOC，用來建 per-cycle RPM-bin baseline
+    # 篩選條件與 get_speed_loss() 一致：WIND_SCALE ≤ 4, HOURS_FULL_SPEED ≥ 22
+    calm_foc_rows = []   # {day, cycle, rpm, foc}
+    for r in rows:
+        ws  = safe_float(r.get('WIND_SCALE'), 99)
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
+        if ws > 4 or hfs < 22:
+            continue
+        foc, _ = get_daily_foc(r)
+        if foc is None:
+            continue
+        rpm = safe_float(r.get('ME_AVG_RPM'))
+        day = safe_float(r.get('NOON_UTC'))
+        if day is None or rpm is None or rpm <= 0:
+            continue
+        calm_foc_rows.append({'day': day, 'cycle': get_cycle(day), 'rpm': rpm, 'foc': foc})
+
+    calm_foc_rows.sort(key=lambda x: x['day'])
+
+    # 建 per-cycle RPM-bin FOC baseline（每週期前 ~15% 的穩態日取 median）
+    from collections import defaultdict
+    cycles_foc = defaultdict(list)
+    for cf in calm_foc_rows:
+        cycles_foc[cf['cycle']].append(cf)
+
+    cycle_foc_baseline = {}  # cycle → {rpm_bucket: median_foc}
+    for cyc, rows_c in cycles_foc.items():
+        n_bl = max(5, len(rows_c) // 7)
+        bl_rows = rows_c[:n_bl]
+        rpm_foc_map = defaultdict(list)
+        for cf in bl_rows:
+            bucket = int(cf['rpm'] // 5) * 5
+            rpm_foc_map[bucket].append(cf['foc'])
+        cycle_foc_baseline[cyc] = {
+            k: sorted(v)[len(v) // 2] for k, v in rpm_foc_map.items() if v
+        }
+
+    def get_foc_baseline(cycle, rpm):
+        bl = cycle_foc_baseline.get(cycle, {})
+        if not bl:
+            return None
+        bucket = int(rpm // 5) * 5
+        ref = bl.get(bucket)
+        if ref is None:
+            buckets = list(bl.keys())
+            if not buckets:
+                return None
+            bucket = min(buckets, key=lambda b: abs(b - bucket))
+            ref = bl[bucket]
+        return ref
+
+    # 建 day → FOC 偏離 % 的查找表（穩態日才有）
+    # foc_dev[day] = (actual_foc - baseline_foc) / baseline_foc * 100
+    foc_dev_by_day = {}
+    for cf in calm_foc_rows:
+        bl = get_foc_baseline(cf['cycle'], cf['rpm'])
+        if bl and bl > 0:
+            dev = (cf['foc'] - bl) / bl * 100.0
+            foc_dev_by_day[cf['day']] = dev
+
+    # 第二遍：建主 records 陣列（SPEED_LOSS + FULL_SPD_STW_SLIP）
     for r in rows:
         day_raw = safe_float(r.get('NOON_UTC'))
         voy_raw = safe_float(r.get('VOYAGE'))
@@ -2540,13 +2621,9 @@ def get_speed_loss_dashboard(vessel_id, event):
         if key in seen:
             continue
         seen.add(key)
-        sl = safe_float(r.get('SPEED_LOSS'))  # None if non-steady-state or HIDDEN
-        slip = safe_float(r.get('ME_SLIP'))
-        records.append({
-            'day':   day_raw,
-            'sl':    sl,      # None = masked/non-steady-state → 圖上斷點
-            'slip':  slip,
-        })
+        sl   = safe_float(r.get('SPEED_LOSS'))          # None = 非穩態 / HIDDEN
+        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))   # 螺旋槳推進效率（物理正確）
+        records.append({'day': day_raw, 'sl': sl, 'slip': slip})
 
     records.sort(key=lambda x: x['day'])
 
@@ -2556,12 +2633,10 @@ def get_speed_loss_dashboard(vessel_id, event):
     day_min = records[0]['day']
     day_max = records[-1]['day']
 
-    # Raw points（只包含 sl 非 None 的點，讓前端畫散布）
+    # Raw points（只含 sl 非 None 的點）
     raw = [[r['day'], round(r['sl'], 2)] for r in records if r['sl'] is not None]
 
     # ── 2. 平滑趨勢 ────────────────────────────────────────────────────────
-    import statistics
-
     def median_window(grid_day, half_win=20):
         vals = [r['sl'] for r in records
                 if r['sl'] is not None and abs(r['day'] - grid_day) <= half_win]
@@ -2576,41 +2651,35 @@ def get_speed_loss_dashboard(vessel_id, event):
         grid_days.append(round(g, 1))
         g += grid_step
 
-    # ── 3. 船殼/螺旋槳歸因指數 ─────────────────────────────────────────────
-    # 船殼清洗邊界（DD / UWC / UWC+PP）
-    hull_events_sorted = sorted(
-        [safe_float(m.get('event_day'), 0) for m in maint
-         if str(m.get('event_type', '')) in HULL_CLEAN_TYPES],
-    )
-
-    def distance_since_hull_clean(day):
-        prior = [d for d in hull_events_sorted if d <= day]
-        return day - prior[-1] if prior else day - day_min
-
-    # 螺旋槳代理：ME_SLIP p5 基準
-    all_slips = [r['slip'] for r in records if r['slip'] is not None]
-    if all_slips:
-        sorted_slips = sorted(all_slips)
-        p5_idx = max(0, int(len(sorted_slips) * 0.05))
-        baseline_slip = sorted_slips[p5_idx]
-    else:
-        baseline_slip = 0.0
-
-    def slip_excess(day):
-        # 用當天的 ME_SLIP（若有），否則 None
-        nearby = [r['slip'] for r in records
-                  if r['slip'] is not None and abs(r['day'] - day) <= 5]
-        if not nearby:
+    # ── 3. 船殼/螺旋槳歸因指數（物理意義正確雙通道）─────────────────────────
+    # 船殼通道：FOC 偏離 % 的滾動中位數（正值 = 多燒油 = 阻力增加 = 船殼汙損信號）
+    # 取 ±20 天內所有穩態日的 foc_dev 中位數，截斷到 ≥ 0
+    def hull_foc_signal(grid_day, half_win=20):
+        devs = [v for day, v in foc_dev_by_day.items()
+                if abs(day - grid_day) <= half_win and v > 0]
+        if not devs:
             return 0.0
-        return max(0.0, sum(nearby) / len(nearby) - baseline_slip)
+        return statistics.median(devs)
 
-    # 計算所有 grid 的 distance 與 slip_excess 以求 p95
-    all_dist = []
-    all_se   = []
-    for gd in grid_days:
-        all_dist.append(distance_since_hull_clean(gd))
-        all_se.append(slip_excess(gd))
+    # 螺旋槳通道：FULL_SPD_STW_SLIP 超出 p5 基準（此為螺旋槳推進效率的直接量）
+    all_slips_raw = [r['slip'] for r in records if r['slip'] is not None
+                     and 0 <= r['slip'] <= 30]  # 過濾異常值
+    if all_slips_raw:
+        sorted_slips = sorted(all_slips_raw)
+        p5_idx = max(0, int(len(sorted_slips) * 0.05))
+        prop_slip_baseline = sorted_slips[p5_idx]
+    else:
+        prop_slip_baseline = 0.0
 
+    def prop_slip_signal(grid_day, half_win=20):
+        slips = [r['slip'] for r in records
+                 if r['slip'] is not None and 0 <= r['slip'] <= 30
+                 and abs(r['day'] - grid_day) <= half_win]
+        if not slips:
+            return 0.0
+        return max(0.0, statistics.median(slips) - prop_slip_baseline)
+
+    # 正規化用 p95
     def p95(lst):
         if not lst:
             return 1.0
@@ -2618,21 +2687,20 @@ def get_speed_loss_dashboard(vessel_id, event):
         idx = min(len(s) - 1, int(len(s) * 0.95))
         return s[idx] if s[idx] > 0 else 1.0
 
-    dist_p95 = p95(all_dist)
-    se_p95   = p95(all_se)
+    all_hull_sig = [hull_foc_signal(gd) for gd in grid_days]
+    all_prop_sig = [prop_slip_signal(gd) for gd in grid_days]
+    hull_p95 = p95(all_hull_sig)
+    prop_p95 = p95(all_prop_sig)
 
     smooth = []
-    for gd in grid_days:
+    for gd, hs, ps in zip(grid_days, all_hull_sig, all_prop_sig):
         sm = median_window(gd)
         if sm is None:
             smooth.append([gd, None, None, None, 0])
             continue
 
-        dist = distance_since_hull_clean(gd)
-        se   = slip_excess(gd)
-
-        hull_idx = min(1.0, dist / dist_p95) if dist_p95 > 0 else 0.0
-        prop_idx = min(1.0, se   / se_p95)   if se_p95   > 0 else 0.0
+        hull_idx = min(1.0, hs / hull_p95) if hull_p95 > 0 else 0.0
+        prop_idx = min(1.0, ps / prop_p95) if prop_p95 > 0 else 0.0
 
         total = hull_idx + prop_idx
         if total < 1e-9:
@@ -2646,7 +2714,6 @@ def get_speed_loss_dashboard(vessel_id, event):
         hull_contrib = round(hull_share * loss, 3)
         prop_contrib = round(prop_share * loss, 3)
 
-        # 計入 window 點數（供前端 tooltip 顯示可信度）
         n_pts = len([r for r in records
                      if r['sl'] is not None and abs(r['day'] - gd) <= 20])
 
@@ -2730,9 +2797,10 @@ def get_speed_loss_dashboard(vessel_id, event):
             'event_window_days':  WINDOW,
             'min_n_for_delta':    MIN_N,
             'attribution_note':   (
-                '船殼/螺旋槳歸因為啟發式代理指標（非物理精確解）：'
-                '船殼指數依距上次清洗天數估算，螺旋槳指數依 ME_SLIP 超出 p5 基準值估算。'
-                '僅供判讀方向參考，不代表精確物理拆解。'
+                '船殼/螺旋槳歸因為物理意義正確的雙通道代理指標（非精確物理解）：'
+                '船殼通道使用 FOC 對週期基準的偏離 %（同轉速下多燒多少油，船殼阻力的直接信號）；'
+                '螺旋槳通道使用 FULL_SPD_STW_SLIP 超出 p5 基準值（螺旋槳每轉理論前進 vs 實際前進的落差，推進效率的直接量）。'
+                '兩者均正規化後按比例分配當時的 Speed Loss 損失量，僅供判讀方向參考。'
             ),
         },
     })

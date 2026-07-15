@@ -300,9 +300,9 @@ function isPropEvent(type: string) { return type === 'DD' || type.includes('PP')
             <p class="font-display text-[10px] tracking-widest uppercase text-[var(--color-ink-slate)]/45 mb-1.5">方法論摘要（啟發式估計，非物理精確解）</p>
             <p class="text-xs text-[var(--color-ink-slate)]/65 leading-relaxed mb-2">{{ methodNote }}</p>
             <ul class="text-xs text-[var(--color-ink-slate)]/55 space-y-0.5 list-disc list-inside">
-              <li><strong class="font-display">hull_idx</strong>(t) = min(1, 距上次船殼清洗天數 / p95)</li>
-              <li><strong class="font-display">prop_idx</strong>(t) = min(1, max(0, ME_SLIP − p5基準) / p95)</li>
-              <li>hull_share = hull_idx / (hull_idx + prop_idx)；兩者皆 0 時各佔 50%</li>
+              <li><strong class="font-display">船殼通道</strong>：FOC 對週期基準偏離 %（同 RPM 下多燒多少油 → 阻力增加 → 船殼汙損直接信號）</li>
+              <li><strong class="font-display">螺旋槳通道</strong>：FULL_SPD_STW_SLIP 超出 p5 基準（螺旋槳每轉理論 vs 實際前進落差 → 推進效率直接量）</li>
+              <li>兩通道信號均正規化至 0–1，按比例競爭分配當時的 Speed Loss</li>
               <li>hull/prop contribution = share × max(0, smooth(t))，無損失時兩項均為 0</li>
             </ul>
           </div>
