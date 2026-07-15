@@ -29,6 +29,19 @@ import numpy as np
 import pandas as pd
 import shap
 from sklearn.ensemble import RandomForestRegressor
+from scipy import stats
+
+# 導入斜率分析和異常檢測模組
+try:
+    from slope_based_analysis import calculate_slope_improvement, classify_maintenance_by_slope
+except ImportError:
+    calculate_slope_improvement = None
+    classify_maintenance_by_slope = None
+
+try:
+    from maintenance_advisor import detect_maintenance_anomaly
+except ImportError:
+    detect_maintenance_anomaly = None
 
 # ── Model loading (module-level: loaded once per Lambda container) ────────────
 _MODEL_BUNDLE = None
@@ -2725,7 +2738,7 @@ def get_speed_loss_dashboard(vessel_id, event):
             n_pts,
         ])
 
-    # ── 4. 事件前後對比 ────────────────────────────────────────────────────
+    # ── 4. 事件前後對比 + 斜率分析 ────────────────────────────────────────────────────
     WINDOW = 45
     MIN_N  = 3
 
@@ -2736,7 +2749,7 @@ def get_speed_loss_dashboard(vessel_id, event):
         if d is None:
             continue
         # UWI（單純水下檢查）僅記錄，不計效能改善
-        is_uwi_only = (etype == 'UWI')
+        is_uwi_only = 'UWI' in etype and not any(x in etype for x in ['DD', 'UWC', 'PP'])
 
         before_vals = [r['sl'] for r in records
                        if r['sl'] is not None and (d - WINDOW) <= r['day'] < d]
@@ -2752,7 +2765,38 @@ def get_speed_loss_dashboard(vessel_id, event):
             a_med = round(statistics.median(after_vals),  2)
             delta = round(a_med - b_med, 2)  # < 0 = 改善
 
-        events_out.append({
+        # ── 計算斜率改善（從 smooth 曲線）
+        slope_result = None
+        anomaly_result = None
+
+        if not is_uwi_only and len(before_vals) >= MIN_N and len(after_vals) >= MIN_N:
+            # 從 smooth 中篩選前後的網格點
+            smooth_before = [s for s in smooth if s[1] is not None and (d - WINDOW) <= s[0] < d]
+            smooth_after = [s for s in smooth if s[1] is not None and d < s[0] <= (d + WINDOW)]
+
+            if len(smooth_before) >= 2 and len(smooth_after) >= 2 and calculate_slope_improvement:
+                try:
+                    before_days = np.array([s[0] for s in smooth_before])
+                    before_sl = np.array([s[1] for s in smooth_before])
+                    after_days = np.array([s[0] for s in smooth_after])
+                    after_sl = np.array([s[1] for s in smooth_after])
+
+                    slope_result = calculate_slope_improvement(before_days, before_sl, after_days, after_sl)
+
+                    # 基於斜率分類異常
+                    if slope_result and classify_maintenance_by_slope:
+                        anomaly_result = classify_maintenance_by_slope(
+                            slope_result['slope_improvement'],
+                            etype
+                        )
+                except:
+                    pass
+
+        # 如果斜率方法失敗，降回 delta 判斷
+        if not anomaly_result and detect_maintenance_anomaly:
+            anomaly_result = detect_maintenance_anomaly(etype, delta, is_uwi_only)
+
+        event_dict = {
             'day':                   d,
             'type':                  etype,
             'before':                b_med,
@@ -2765,7 +2809,28 @@ def get_speed_loss_dashboard(vessel_id, event):
             'hull_fouling_type':     m.get('hull_fouling_type'),
             'hull_coating_condition':m.get('hull_coating_condition'),
             'cavitation_found':      m.get('cavitation_found'),
-        })
+        }
+
+        # 添加斜率數據
+        if slope_result:
+            event_dict.update({
+                'slope_before': slope_result['slope_before'],
+                'slope_after': slope_result['slope_after'],
+                'slope_improvement': slope_result['slope_improvement'],
+                'before_trend': slope_result['before_trend'],
+                'after_trend': slope_result['after_trend'],
+                'r_squared_before': slope_result['r_squared_before'],
+                'r_squared_after': slope_result['r_squared_after'],
+            })
+
+        # 添加異常判定
+        if anomaly_result:
+            event_dict['is_anomaly'] = anomaly_result.get('is_anomalous', False)
+            event_dict['anomaly_severity'] = anomaly_result.get('severity', 'NORMAL')
+            event_dict['anomaly_category'] = anomaly_result.get('category', 'ok')
+            event_dict['anomaly_reason'] = anomaly_result.get('description', '')
+
+        events_out.append(event_dict)
 
     # 全期加總 hull/prop 佔比摘要（只取有損失的 grid 點）
     loss_pts = [s for s in smooth if s[1] is not None and s[1] > 0]
