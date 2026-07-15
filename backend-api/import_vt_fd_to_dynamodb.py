@@ -62,7 +62,7 @@ def update_speed_loss(vessel_id, sort_key, speed_loss):
     )
 
 def main():
-    csv_path = r"C:\Users\KiraLiou(劉容綺)\ym-hackthon\yangming-aws-summit-hackathon\vt_fd_speed_loss.csv"
+    csv_path = r"C:\Users\KiraLiou(劉容綺)\ym-hackthon\vt_fd_speed_loss_2.csv"
 
     print("=" * 80)
     print("DynamoDB speed_loss backfill: vt_fd_speed_loss.csv")

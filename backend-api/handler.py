@@ -669,10 +669,10 @@ def get_speed_loss(vessel_id, event):
         (
             {
                 'noon_day': safe_float(r.get('NOON_UTC'), 0),
-                'speed_loss_pct': safe_float(r.get('speed_loss')),
+                'speed_loss_pct': safe_float(r.get('SPEED_LOSS')),
                 'sort_key': r.get('sort_key'),
                 'row_index': safe_float(r.get('row_index')),
-                'is_valid': r.get('speed_loss') is not None,
+                'is_valid': r.get('SPEED_LOSS') is not None,
             }
             for r in rows
         ),
