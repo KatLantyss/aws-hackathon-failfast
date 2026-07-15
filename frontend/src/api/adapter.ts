@@ -410,19 +410,13 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
       const eventType = CORRELATION_TYPE_MAP[maint.event_type] || 'Hull Cleaning'
 
-      // Anomaly detection — use RPM-normalized if available, otherwise use raw improvement
-      const effectiveImprovement = rpmNormalizedImprovementPct !== null ? rpmNormalizedImprovementPct : improvementPct
+      // Anomaly detection — only based on Speed Loss change (ignore fuel which has too many external factors)
+      // Anomaly if Speed Loss worsened after maintenance
       let isAnomaly = false
       let anomalyReason: string | null = null
-      if (maint.event_type === 'DD' && effectiveImprovement < 2) {
+      if (slAfter > slBefore) {
         isAnomaly = true
-        anomalyReason = '進塢後油耗改善不明顯 (<2%)，建議確認塗裝品質。'
-      } else if (maint.event_type === 'PP' && effectiveImprovement > 25) {
-        isAnomaly = true
-        anomalyReason = '螺旋槳拋光油耗改善幅度異常高 (>25%)，可能有其他因素。'
-      } else if (effectiveImprovement < -5) {
-        isAnomaly = true
-        anomalyReason = '養護後油耗反而增加 (>5%)，可能施工品質不佳或航行條件差異。'
+        anomalyReason = 'Speed Loss 變差，維修效果不佳。'
       }
 
       effectivenessEvents.push({
