@@ -64,7 +64,6 @@ function goToVessel(imo: string) {
 <template>
   <div class="mx-auto max-w-[1440px] px-4 md:px-6 py-4 md:py-6 flex flex-col gap-6">
     <div class="pt-1">
-      <p class="eyebrow mb-1.5">OVR-01 · Fleet Command</p>
       <h1 class="text-[2rem] leading-none">船隊總覽 Dashboard</h1>
       <p class="font-mono text-xs text-[var(--color-ink-muted)] mt-2 tracking-[0.14em] uppercase">
         Fleet-wide continuous monitoring
@@ -75,10 +74,9 @@ function goToVessel(imo: string) {
     <section aria-label="船隊關鍵指標" class="relative grid grid-cols-2 md:grid-cols-3 gap-3">
       <DataSourceTag :info="dsKpi" />
       <template v-if="kpiState === 'success' && kpis">
-        <KpiCard code="KPI-01" label="船隊總數" :value="kpis.totalVessels" />
-        <KpiCard code="KPI-04" label="待安排維修船數" :value="kpis.pendingMaintenance" tone="amber" />
+        <KpiCard label="船隊總數" :value="kpis.totalVessels" />
+        <KpiCard label="待安排維修船數" :value="kpis.pendingMaintenance" tone="amber" />
         <KpiCard
-          code="KPI-05"
           label="船隊超額燃油成本 (USD/天)"
           :value="kpis.monthlyExcessFuelCostUsd"
           :formatter="formatUsd"
@@ -93,7 +91,6 @@ function goToVessel(imo: string) {
       <div class="panel panel--accent-teal panel--map-glow p-3 flex flex-col gap-3">
         <DataSourceTag :info="dsMap" />
         <div class="flex items-center justify-between pl-0.5">
-          <PanelTag code="MAP-01" />
           <p class="map-glow-label font-display text-xs tracking-[0.08em] text-[var(--color-ink-muted)]">船隊即時位置</p>
         </div>
         <div class="map-glow-viewport rounded-[3px]">
@@ -110,7 +107,6 @@ function goToVessel(imo: string) {
       <div class="panel panel--accent-red p-4 flex flex-col gap-3">
         <DataSourceTag :info="dsRanking" />
         <div class="flex items-center justify-between pl-0.5">
-          <PanelTag code="RANK-01" />
           <p class="font-display text-xs tracking-[0.08em] text-[var(--color-ink-muted)]">需優先處理</p>
         </div>
         <StateDisplay v-if="vesselState !== 'success'" :state="vesselState === 'error' ? 'error' : 'loading'" />

@@ -29,12 +29,12 @@ const dsTable: DataSourceInfo = {
 }
 
 // ── Filters ───────────────────────────────────────────────────────────────────
-const typeFilter = ref('all')
-const keyword    = ref('')
+const vesselNameFilter = ref('all')
 
-const vesselTypes = computed(() => {
+const vesselNames = computed(() => {
   if (!vessels.value) return []
-  return Array.from(new Set(vessels.value.map((v) => v.shipClass))).sort()
+  return Array.from(new Set(vessels.value.map((v) => v.name)))
+    .sort((a, b) => naturalSort(a, b))
 })
 
 // ── Sort ──────────────────────────────────────────────────────────────────────
@@ -44,10 +44,32 @@ type SortField =
   | 'daysSincePropPolish' | 'excessFuelCostUsdMtd' | 'maintenanceUrgency'
   | 'totalRecords' | 'totalMaintEvents'
 
-const sortField = ref<SortField>('speedLossPct')
-const sortDir   = ref<'asc' | 'desc'>('desc')
+const sortField = ref<SortField>('name')
+const sortDir   = ref<'asc' | 'desc'>('asc')
 
 const urgencyRank: Record<string, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 }
+
+function naturalSort(a: string, b: string): number {
+  const aparts = String(a).split(/(\d+)/g).filter(Boolean)
+  const bparts = String(b).split(/(\d+)/g).filter(Boolean)
+
+  for (let i = 0; i < Math.max(aparts.length, bparts.length); i++) {
+    const apart = aparts[i] ?? ''
+    const bpart = bparts[i] ?? ''
+
+    const aisNum = /^\d+$/.test(apart)
+    const bisNum = /^\d+$/.test(bpart)
+
+    if (aisNum && bisNum) {
+      const diff = Number(apart) - Number(bpart)
+      if (diff !== 0) return diff
+    } else {
+      const cmp = String(apart).localeCompare(String(bpart))
+      if (cmp !== 0) return cmp
+    }
+  }
+  return 0
+}
 
 function toggleSort(field: SortField) {
   if (sortField.value === field) {
@@ -68,8 +90,7 @@ const rows = computed<VesselSummary[]>(() => {
   if (!vessels.value) return []
 
   const filtered = vessels.value.filter((v) => {
-    if (typeFilter.value !== 'all' && v.shipClass !== typeFilter.value) return false
-    if (keyword.value && !v.name.toLowerCase().includes(keyword.value.toLowerCase())) return false
+    if (vesselNameFilter.value !== 'all' && v.name !== vesselNameFilter.value) return false
     return true
   })
 
@@ -92,9 +113,12 @@ const rows = computed<VesselSummary[]>(() => {
         aVal = (a as any)[sortField.value] ?? 0
         bVal = (b as any)[sortField.value] ?? 0
     }
-    if (typeof aVal === 'string') return sortDir.value === 'asc'
-      ? aVal.localeCompare(bVal as string)
-      : (bVal as string).localeCompare(aVal)
+    if (typeof aVal === 'string') {
+      const cmp = sortField.value === 'name'
+        ? naturalSort(aVal, bVal as string)
+        : aVal.localeCompare(bVal as string)
+      return sortDir.value === 'asc' ? cmp : -cmp
+    }
     return sortDir.value === 'asc' ? aVal - (bVal as number) : (bVal as number) - aVal
   })
 })
@@ -133,22 +157,17 @@ function cleanDayColor(days: number): string {
 <template>
   <div class="mx-auto max-w-[1440px] px-4 md:px-6 py-4 md:py-6 flex flex-col gap-4">
     <div>
-      <p class="eyebrow mb-1.5">LIST-01 · Fleet Register</p>
       <h1 class="text-[1.9rem] leading-none">船隊列表</h1>
     </div>
 
     <!-- Filters -->
     <div class="panel p-3.5 flex flex-wrap items-center gap-4">
       <label class="flex items-center gap-2 text-sm">
-        <span class="col-head">船型</span>
-        <select v-model="typeFilter" class="field">
+        <span class="col-head">船舶代號</span>
+        <select v-model="vesselNameFilter" class="field">
           <option value="all">全部</option>
-          <option v-for="t in vesselTypes" :key="t" :value="t">{{ t }}</option>
+          <option v-for="n in vesselNames" :key="n" :value="n">{{ n }}</option>
         </select>
-      </label>
-      <label class="flex items-center gap-2 text-sm flex-1 min-w-[200px]">
-        <span class="col-head">關鍵字</span>
-        <input v-model="keyword" type="search" placeholder="船舶代號" class="field flex-1" />
       </label>
       <span class="text-xs text-[var(--color-ink-muted)] ml-auto">{{ rows.length }} 艘</span>
     </div>
@@ -157,7 +176,7 @@ function cleanDayColor(days: number): string {
 
     <div v-else class="panel panel--accent overflow-x-auto">
       <DataSourceTag :info="dsTable" />
-      <table class="w-full text-sm" style="min-width: 1160px">
+      <table class="w-full text-sm table-auto">
         <!-- ── Header ── -->
         <thead>
           <tr class="border-b-2" style="border-color: color-mix(in srgb, var(--color-ink-slate) 22%, transparent)">
@@ -167,11 +186,6 @@ function cleanDayColor(days: number): string {
               class="col-head text-left px-3 py-3 cursor-pointer select-none whitespace-nowrap hover:text-[var(--color-ink-slate)] transition-colors"
               @click="toggleSort('name')"
             >船舶代號{{ sortIcon('name') }}</th>
-            <!-- 2 船型 -->
-            <th
-              class="col-head text-left px-3 py-3 cursor-pointer select-none whitespace-nowrap"
-              @click="toggleSort('shipClass')"
-            >船型{{ sortIcon('shipClass') }}</th>
             <!-- 日報筆數 -->
             <th
               class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
@@ -197,22 +211,12 @@ function cleanDayColor(days: number): string {
               class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
               @click="toggleSort('avgConsumptionMt')"
             >平均油耗 (MT/天){{ sortIcon('avgConsumptionMt') }}</th>
-            <!-- 6 平均 RPM -->
-            <th
-              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
-              @click="toggleSort('avgRpm')"
-            >平均 RPM{{ sortIcon('avgRpm') }}</th>
-            <!-- 7 距上次清洗 -->
+            <!-- 距上次維護 -->
             <th
               class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
               @click="toggleSort('daysSinceHullClean')"
-            >距上次清洗 (天){{ sortIcon('daysSinceHullClean') }}</th>
-            <!-- 8 距上次螺旋槳拋光 -->
-            <th
-              class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
-              @click="toggleSort('daysSincePropPolish')"
-            >距上次螺旋槳拋光 (天){{ sortIcon('daysSincePropPolish') }}</th>
-            <!-- 9 超額成本 -->
+            >距上次維護 (天){{ sortIcon('daysSinceHullClean') }}</th>
+            <!-- 超額成本 -->
             <th
               class="col-head text-right px-3 py-3 cursor-pointer select-none whitespace-nowrap"
               @click="toggleSort('excessFuelCostUsdMtd')"
@@ -243,9 +247,6 @@ function cleanDayColor(days: number): string {
 
               <!-- 1 船舶代號 -->
               <td class="px-3 py-3 font-display text-[15px] tracking-wide">{{ v.name }}</td>
-
-              <!-- 2 船型 -->
-              <td class="px-3 py-3 font-data text-xs text-[var(--color-ink-muted)]">{{ v.shipClass }}</td>
 
               <!-- 日報筆數 -->
               <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
@@ -283,22 +284,12 @@ function cleanDayColor(days: number): string {
                 {{ v.avgConsumptionMt != null ? v.avgConsumptionMt.toFixed(1) : '—' }}
               </td>
 
-              <!-- 6 平均 RPM -->
-              <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
-                {{ v.avgRpm != null ? v.avgRpm.toFixed(0) : '—' }}
-              </td>
-
-              <!-- 7 距上次清洗 -->
+              <!-- 距上次維護 -->
               <td class="px-3 py-3 font-data text-right tabular-nums" :style="{ color: cleanDayColor(v.daysSinceHullClean) }">
                 {{ v.daysSinceHullClean }}
               </td>
 
-              <!-- 8 距上次螺旋槳拋光 -->
-              <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-ink-muted)]">
-                {{ v.daysSincePropPolish ?? '—' }}
-              </td>
-
-              <!-- 9 超額成本 -->
+              <!-- 超額成本 -->
               <td class="px-3 py-3 font-data text-right tabular-nums text-[var(--color-signal-red)]">
                 {{ formatUsd(v.excessFuelCostUsdMtd) }}
               </td>

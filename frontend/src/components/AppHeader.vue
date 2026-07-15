@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import yangMingLogo from '@/assets/yangming_logo.png'
 import { useAppTheme } from '@/composables/useAppTheme'
@@ -12,13 +12,20 @@ const chatContext = useChatContextStore()
 const navItems = [
   { to: '/', label: '船隊總覽' },
   { to: '/vessels', label: '船隊列表' },
-  { to: '/fleet-analytics', label: '跨船隊分析' },
 ]
 
 function isActive(path: string) {
   if (path === '/') return route.path === '/'
   return route.path.startsWith(path)
 }
+
+const isVesselDetail = computed(() => {
+  return route.path.startsWith('/vessels/') && route.path !== '/vessels'
+})
+
+const vesselName = computed(() => {
+  return (route.params.imo as string) || ''
+})
 
 // Mobile menu — a slide-down panel, not a generic full-screen overlay, so it
 // still reads as "part of the instrument header" rather than a bolted-on
@@ -76,6 +83,11 @@ watch(
             aria-hidden="true"
           />
         </RouterLink>
+
+        <!-- Vessel detail indicator -->
+        <span v-if="isVesselDetail" class="ml-1 font-display text-xs tracking-[0.12em] px-3.5 py-2 text-white">
+          {{ vesselName }}細項
+        </span>
       </nav>
 
       <div class="ml-auto flex items-center gap-2 md:gap-3">
@@ -160,7 +172,7 @@ watch(
       leave-to-class="mobile-nav--collapsed"
     >
       <nav
-        v-if="mobileOpen"
+        v-if="mobileOpen && !isVesselDetail"
         id="mobile-nav-panel"
         class="mobile-nav md:hidden border-t border-white/10"
         aria-label="行動裝置主導覽"

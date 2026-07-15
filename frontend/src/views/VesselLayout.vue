@@ -80,15 +80,7 @@ const tabs = computed(() => [
     <template v-else-if="vessel">
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <RouterLink to="/vessels" class="text-xs text-[var(--color-ink-slate)]/60 hover:text-[var(--color-brass-amber)]"
-            >← 返回船隊列表</RouterLink
-          >
-          <h1 class="text-2xl flex items-center gap-3 mt-1">
-            {{ vessel.name }}
-            <span class="font-data text-sm normal-case tracking-normal text-[var(--color-ink-slate)]/60"
-              >IMO {{ vessel.imo }}</span
-            >
-          </h1>
+          <h1 class="text-2xl">{{ vessel.name }}</h1>
         </div>
         <span class="inline-flex items-center gap-2 font-data text-sm text-[var(--color-ink-slate)]/60">
           {{ vessel.type }}
@@ -103,7 +95,6 @@ const tabs = computed(() => [
           class="border rounded-[2px] px-3 py-1.5 text-xs font-display uppercase tracking-wide hover:border-[var(--color-brass-amber)] hover:text-[var(--color-brass-amber)] transition-colors inline-flex items-center gap-1.5"
           @click="alertModalOpen = true"
         >
-          <PanelTag code="ALT-01" />
           ⚡ 設定 Speed Loss 告警
         </button>
       </div>
@@ -144,13 +135,6 @@ const tabs = computed(() => [
         >
           申請養護
         </button>
-
-        <span v-if="vessel.lastHullCleanType" class="font-data text-xs text-[var(--color-ink-slate)]/50">
-          上次清洗：{{ vessel.lastHullCleanType }}
-        </span>
-        <span v-if="vessel.lastEventType" class="font-data text-xs text-[var(--color-ink-slate)]/50">
-          · 最後養護：{{ vessel.lastEventType }}
-        </span>
       </div>
 
       <MaintenanceRequestModal

@@ -7,7 +7,6 @@ import {
   fetchRealSpeedLoss,
   fetchRealFleetKpis,
   fetchRealFleetVessels,
-  fetchRealFuelAttribution,
   getRealShipList,
 } from '@/api/adapter'
 

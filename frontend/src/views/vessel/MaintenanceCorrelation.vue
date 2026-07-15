@@ -414,7 +414,6 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         <DataSourceTag :info="dsAlert" />
         <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div class="flex items-center gap-2">
-            <PanelTag code="ALT-01" />
             <p class="font-display text-sm">⚡ 預警門檻設定</p>
           </div>
           <label class="flex items-center gap-2 text-sm cursor-pointer">

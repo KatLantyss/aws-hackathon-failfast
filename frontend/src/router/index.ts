@@ -64,11 +64,6 @@ const router = createRouter({
       ],
     },
     {
-      path: '/fleet-analytics',
-      name: 'fleet-analytics',
-      component: () => import('@/views/FleetAnalytics.vue'),
-    },
-    {
       path: '/:pathMatch(.*)*',
       redirect: '/',
     },

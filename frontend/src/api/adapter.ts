@@ -138,14 +138,36 @@ export async function fetchRealSpeedLoss(shipId: string): Promise<SpeedLossSerie
       fetchApiMaintenanceEvents(shipId),
     ])
 
-    // Use foc_timeline as primary source (competition-spec FOC-based speed loss).
-    // Fall back to stw_timeline if foc_timeline is empty.
+    // Priority: ISO 19030-2 (iso_speedloss_timeline) > FOC > STW
+    // Use iso_speedloss_timeline if available (最新的完整 9 項修正 + 分位數法 Baseline)
+    const isoData = slResp.iso_speedloss_timeline ?? []
     const focData = slResp.foc_timeline ?? []
     const stwData = slResp.stw_timeline ?? []
 
     let reports: NoonReportEntry[]
 
-    if (focData.length > 0) {
+    if (isoData.length > 0) {
+      // Layer 3: ISO 19030-2 (各自 Baseline - 完整 9 項修正)
+      reports = isoData.map((p) => ({
+        day: p.noon_day,
+        lat: 0,
+        lon: 0,
+        observedSpeedKt: 0,
+        correctedSpeedKt: 0,
+        speedLossPct: p.speed_loss_pct,  // 保留 null（非穩態）和負值（超額表現）
+        fuelConsumptionMt: 0,
+        beaufort: 0,
+        seaState: 0,
+        draftFwd: 0,
+        draftAft: 0,
+        loadCondition: 'laden',  // 預設為滿載
+        // 擴展: 包含 sort_key 和 row_index 用於追蹤
+        sortKey: p.sort_key,
+        rowIndex: p.row_index,
+        isValid: p.is_valid,  // true = 穩態航行，false = 非穩態（過濾掉的數據）
+      }))
+    } else if (focData.length > 0) {
+      // Layer 1: FOC-based (competition-spec)
       reports = focData.map((p) => ({
         day: p.noon_day,
         lat: 0,
@@ -161,6 +183,7 @@ export async function fetchRealSpeedLoss(shipId: string): Promise<SpeedLossSerie
         loadCondition: p.load_condition,
       }))
     } else if (stwData.length > 0) {
+      // Layer 2: STW-based (ISO 19030 verification)
       reports = stwData.map((p) => ({
         day: p.noon_day,
         lat: 0,
@@ -300,7 +323,7 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
       let rpmNormalizedImprovementPct: number | null = null
       if ('rpm' in after[0] && before.length >= 3 && after.length >= 3) {
         const rpmAfterAvg = after.reduce((s, p) => s + (p as any).rpm, 0) / after.length
-        const rpmTolerance = 5 // ±5 RPM
+        const rpmTolerance = 10 // ±10 RPM (relaxed from ±5 for better data coverage)
         const beforeInRpmRange = before.filter(
           (p) => Math.abs((p as any).rpm - rpmAfterAvg) <= rpmTolerance && (p as any).rpm
         )
@@ -308,7 +331,7 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
           (p) => Math.abs((p as any).rpm - rpmAfterAvg) <= rpmTolerance && (p as any).rpm
         )
 
-        if (beforeInRpmRange.length >= 2 && afterInRpmRange.length >= 2) {
+        if (beforeInRpmRange.length >= 1 && afterInRpmRange.length >= 1) {
           const focBeforeNorm = 'daily_foc_vlsfo' in beforeInRpmRange[0]
             ? beforeInRpmRange.reduce((s, p) => s + ((p as typeof focData[0]).daily_foc_vlsfo), 0) / beforeInRpmRange.length
             : null

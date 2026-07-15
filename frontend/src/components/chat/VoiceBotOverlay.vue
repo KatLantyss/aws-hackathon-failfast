@@ -241,7 +241,6 @@ async function handleSubmit(text: string) {
               <template v-for="(card, i) in chatContext.activeTurn.cards.slice(0, revealedCount)" :key="card.type + i">
                 <ChatCard
                   v-if="card.type === 'gauge'"
-                  code="CHAT-G1"
                   title="船體污損 / Speed Loss"
                   :to="`/vessels/${card.vessel.imo}/overview`"
                 >
@@ -255,7 +254,6 @@ async function handleSubmit(text: string) {
 
                 <ChatCard
                   v-else-if="card.type === 'speedLoss'"
-                  code="CHAT-S1"
                   title="Speed Loss 趨勢"
                   :to="`/vessels/${card.vessel.imo}/speed-loss`"
                 >
@@ -277,18 +275,17 @@ async function handleSubmit(text: string) {
 
                 <ChatCard
                   v-else-if="card.type === 'fuelWaterfall'"
-                  code="CHAT-F1"
                   title="油耗歸因（精簡版）"
                   :to="`/vessels/${card.vessel.imo}/fuel-attribution`"
                 >
                   <MiniWaterfallChart :data="card.data" />
                 </ChatCard>
 
-                <ChatCard v-else-if="card.type === 'ranking'" code="CHAT-R1" title="優先維修排行" to="/vessels">
+                <ChatCard v-else-if="card.type === 'ranking'" title="優先維修排行" to="/vessels">
                   <VesselRankingCard :vessels="card.vessels" />
                 </ChatCard>
 
-                <ChatCard v-else-if="card.type === 'compare'" code="CHAT-C1" title="污損趨勢比較" to="/fleet-analytics">
+                <ChatCard v-else-if="card.type === 'compare'" title="污損趨勢比較" to="/fleet-analytics">
                   <VesselCompareCard :a="card.a" :b="card.b" />
                 </ChatCard>
               </template>

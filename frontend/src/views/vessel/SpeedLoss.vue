@@ -221,6 +221,19 @@ const chartOption = computed(() => {
       nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 11 },
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, formatter: '{value}%' },
       splitLine: { lineStyle: { color: c.splitLine } },
+      scale: false,  // 禁用自動縮放
+      min: (value: any) => {
+        // 動態計算最小值，確保包含負值
+        return value.min < 0 ? Math.floor(value.min * 1.1) : -Math.abs(value.max) * 0.5
+      },
+      max: (value: any) => {
+        // 動態計算最大值
+        return Math.ceil(value.max * 1.1)
+      },
+      axisLine: {
+        lineStyle: { color: c.axisLine },
+        onZero: true,  // y=0 基準線在中間
+      },
     },
     dataZoom: [
       { type: 'slider', xAxisIndex: 0, bottom: 12, height: 18, borderColor: c.axisLine },
