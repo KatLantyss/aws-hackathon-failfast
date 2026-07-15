@@ -32,7 +32,16 @@ CloudFront (https://d1yvzz0da29zvi.cloudfront.net)
 
 ---
 
-## 本機開發（make dev）
+## 本機開發（make local / make dev）
+
+兩種本機模式，差在前端打的是**本機 backend**還是**正式 CloudFront API**：
+
+| 指令 | Frontend | Backend | 資料來源 | 需要 AWS 憑證/venv |
+|---|---|---|---|---|
+| `make local` | http://localhost:5173 | 本機 uvicorn (`localhost:8000`) | 直連 DynamoDB | 需要 |
+| `make dev` | http://localhost:5173 | 正式 CloudFront（EC2 上的真實後端） | 同生產環境 | 不需要 |
+
+`make dev` 適合純改前端、不想處理 AWS 憑證/`.venv314` 環境時快速起 UI；`make local` 適合會動到 `backend-api/` 邏輯、需要驗證真實資料流的時候。
 
 ### 1. Clone & 安裝
 
@@ -85,19 +94,23 @@ cp frontend/.env.example frontend/.env.local
 ### 4. 啟動
 
 ```bash
-make dev
+make local     # 本機 backend 直連 DynamoDB（需要 AWS 憑證 + .venv314）
+# 或
+make dev       # 前端直接打正式 CloudFront，不需要本機 backend/AWS 憑證
 ```
 
-| 服務 | URL |
-|---|---|
-| Frontend | http://localhost:5173 |
-| Backend API | http://localhost:8000 |
+| 服務 | `make local` | `make dev` |
+|---|---|---|
+| Frontend | http://localhost:5173 | http://localhost:5173 |
+| Backend API | http://localhost:8000（本機） | CloudFront（正式環境）|
 
-`make dev` 會：
+`make local` 會：
 1. 先檢查 Python 3.14 `.venv314`、frontend dependencies 與 AWS `hackathon` profile；缺少時直接顯示修正方式並停止。
 2. 停止舊的 uvicorn/Docker container（避免 port 衝突）。
 3. 以 `.venv314` 的 uvicorn 啟動 backend，並驗證 `/health`。
 4. 背景啟動 Vite，並驗證 `http://127.0.0.1:5173`；任何一端失敗都輸出對應 `/tmp/*` log，不會顯示假成功。
+
+`make dev` 只會停掉舊的 backend/Vite process、背景啟動 Vite 並把 `VITE_BACKEND_BASE_URL` 指向 CloudFront，不啟動本機 backend，也不檢查 AWS 憑證。
 
 ---
 
@@ -155,9 +168,10 @@ AWS_PROFILE=hackathon python3 build_fleet_summary.py
 | 指令 | 說明 |
 |---|---|
 | `make setup` | 驗證既有 Python 3.14 `.venv314` 並安裝 frontend dependencies |
-| `make dev` | 本機開發：先 preflight，再啟動並驗證 uvicorn backend + Vite frontend |
-| `make dev-api` | 只啟動 backend（uvicorn） |
-| `make dev-frontend` | 只啟動 frontend（Vite） |
+| `make local` | 本機開發：先 preflight，再啟動並驗證 uvicorn backend + Vite frontend，frontend 打本機 backend |
+| `make dev` | 前端開發：只啟動 Vite frontend，直接打正式 CloudFront API，不需要本機 backend/AWS 憑證 |
+| `make dev-api` | 只啟動 backend（uvicorn，直連 DynamoDB）|
+| `make dev-frontend` | 只啟動 frontend（Vite），打本機 backend（需自行先 `make dev-api`）|
 | `make stop` | 停止 uvicorn backend |
 | `make stop-all` | 停止 backend + frontend |
 | `make prod` | 生產部署：後端 ECS + 前端 S3/CloudFront |
@@ -260,8 +274,8 @@ aws-ai-hackathon/
 
 ## 常見問題
 
-**Q: `make dev` 後 API 一直回 403**
-→ AWS credentials 過期，重新設定 `hackathon` profile。
+**Q: `make local` 後 API 一直回 403 / 502**
+→ AWS credentials 過期，重新設定 `hackathon` profile，然後 `make dev-api` 重啟本機 backend（憑證是啟動時讀一次，改設定檔不會讓已啟動的 process 生效）。`make dev` 因為打的是正式 CloudFront，不受本機憑證影響。
 
 **Q: `make prod-backend` 後後端沒更新**
 → ECS host-network mode 導致 port 衝突，Makefile 已自動處理（停舊 task、等待健康檢查）。若仍有問題，手動停 task：
