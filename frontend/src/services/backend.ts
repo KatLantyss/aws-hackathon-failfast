@@ -125,6 +125,36 @@ export interface BackendSpeedLossAttribution {
   weather_timeline: { noon_day: number; diff_stw_sog: number }[]
 }
 
+export type FuelAnomalyCause = '船殼汙損' | '螺旋槳汙損' | '天候'
+export type FuelAnomalyDirection = 'over' | 'under' | 'normal'
+
+export interface BackendFuelAnomaly {
+  noon_day: number
+  daily_foc_actual: number
+  daily_foc_expected: number
+  residual_pct: number
+  direction: FuelAnomalyDirection
+  primary_cause: FuelAnomalyCause | null
+  primary_cause_contribution_pct: number | null
+  cause_model_agrees: boolean | null
+  days_since_hull_clean: number
+  days_since_prop_polish: number
+}
+
+export interface BackendFuelAnomalyCause {
+  vessel_id: string
+  method: string
+  baseline_model_r2: number | null
+  anomaly_threshold_pct: number
+  summary: {
+    total_days_analyzed: number
+    anomaly_days: number
+    cause_breakdown: Partial<Record<FuelAnomalyCause, number>>
+    confident_cause_breakdown: Partial<Record<FuelAnomalyCause, number>>
+  }
+  anomalies: BackendFuelAnomaly[]
+}
+
 export interface BackendMaintenanceEvent {
   vessel_id: string
   event_day: number
@@ -291,6 +321,12 @@ export function getSpeedLoss(vesselId: string) {
 
 export function getSpeedLossAttribution(vesselId: string) {
   return request<BackendSpeedLossAttribution>(`/api/v1/vessels/${encodeURIComponent(vesselId)}/speed-loss-attribution`)
+}
+
+export function getFuelAnomalyCause(vesselId: string, limit = 20) {
+  return request<BackendFuelAnomalyCause>(
+    `/api/v1/vessels/${encodeURIComponent(vesselId)}/fuel-anomaly-cause?limit=${limit}`,
+  )
 }
 
 export function getMaintenanceEvents(vesselId: string) {

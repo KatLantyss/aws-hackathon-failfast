@@ -27,6 +27,8 @@ from boto3.dynamodb.conditions import Key
 import lightgbm  # Required to deserialize the v5 LightGBM ensemble member.
 import numpy as np
 import pandas as pd
+import shap
+from sklearn.ensemble import RandomForestRegressor
 
 # ── Model loading (module-level: loaded once per Lambda container) ────────────
 _MODEL_BUNDLE = None
@@ -99,11 +101,13 @@ REGION          = os.environ.get('AWS_REGION', 'us-east-1')
 VESSEL_TABLE         = os.environ.get('VESSEL_TABLE',        'ship-analysis-dev-vessel-data')
 MAINT_TABLE          = os.environ.get('MAINT_TABLE',         'ship-analysis-dev-maintenance-events')
 FLEET_SUMMARY_TABLE  = os.environ.get('FLEET_SUMMARY_TABLE', 'ship-analysis-dev-fleet-summary')
+FUEL_ANOMALY_TABLE   = os.environ.get('FUEL_ANOMALY_TABLE',  'ship-analysis-dev-fuel-anomaly-cause')
 
 ddb = boto3.resource('dynamodb', region_name=REGION)
 vessel_tbl       = ddb.Table(VESSEL_TABLE)
 maint_tbl        = ddb.Table(MAINT_TABLE)
 fleet_summary_tbl = ddb.Table(FLEET_SUMMARY_TABLE)
+fuel_anomaly_tbl  = ddb.Table(FUEL_ANOMALY_TABLE)
 
 # Pre-load model on cold start (best-effort; errors surface at predict time)
 try:
@@ -174,6 +178,13 @@ def _warmup_cache():
     # without this the first attribution request pays that full cost.
     try:
         _fleet_degradation_rates()
+    except Exception:
+        pass
+
+    # Prime the fuel-anomaly-cause fleet models (two RandomForests + a SHAP
+    # explainer, fit on all 12 training vessels) — same reasoning as above.
+    try:
+        _fleet_fuel_anomaly_models()
     except Exception:
         pass
 
@@ -310,6 +321,8 @@ def route(event, context):
             return get_maintenance_events(vessel_id, event)
         if sub == 'maintenance-recommendation':
             return get_maintenance_recommendation(vessel_id, event)
+        if sub == 'fuel-anomaly-cause':
+            return get_fuel_anomaly_cause(vessel_id, event)
 
     # /api/v1/fleet/ranking
     if path == '/api/v1/fleet/ranking':
@@ -838,6 +851,343 @@ def _fleet_degradation_rates():
     return result
 
 
+# ── Fuel anomaly root-cause classification ─────────────────────────────────
+# Ported from notebooks/anomaly_analysis.ipynb §6-9: a baseline model that
+# only sees operating conditions predicts "expected" daily fuel consumption;
+# the gap between actual and expected (residual) is what a second model +
+# SHAP decompose into hull / propeller / weather contributions, per day.
+
+FUEL_ANOMALY_OP_FEATURES = [
+    'ME_AVG_RPM', 'SPEED_THROUGH_WATER', 'AVG_SPEED', 'FORE_DRAFT', 'AFTER_DRAFT',
+    'CARGO_ON_BOARD', 'WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP',
+]
+FUEL_ANOMALY_CAUSE_FEATURES = [
+    'days_since_hull_clean', 'days_since_prop_polish', 'propeller_condition_code',
+    'WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP',
+]
+FUEL_ANOMALY_CAUSE_GROUPS = {
+    '船殼汙損': ['days_since_hull_clean'],
+    '螺旋槳汙損': ['days_since_prop_polish', 'propeller_condition_code'],
+    '天候': ['WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP'],
+}
+FUEL_ANOMALY_THRESHOLD_PCT = 15
+PROPELLER_CONDITION_CODE = {'Poor': 0, 'Fair': 1, 'Good': 2, 'Unknown': -1}
+
+
+def _days_since_maint_type(maint_rows, noon_day, type_set):
+    """Days since the most recent maintenance event whose type is in
+    type_set, as of noon_day. No prior event of that type → treat noon_day
+    itself as the elapsed count (same fallback as get_speed_loss_attribution)."""
+    prior_days = [
+        safe_float(m.get('event_day'), 0) for m in maint_rows
+        if str(m.get('event_type', '')) in type_set and safe_float(m.get('event_day'), 1e18) <= noon_day
+    ]
+    return (noon_day - max(prior_days)) if prior_days else noon_day
+
+
+def _last_propeller_condition(maint_rows, noon_day):
+    prior = [m for m in maint_rows if safe_float(m.get('event_day'), 1e18) <= noon_day and m.get('propeller_condition')]
+    if not prior:
+        return 'Unknown'
+    last = max(prior, key=lambda m: safe_float(m.get('event_day'), 0))
+    return last.get('propeller_condition') or 'Unknown'
+
+
+def _fuel_anomaly_rows(vessel_id, rows=None, maint_rows=None):
+    """Build the per-day feature table (operating conditions + maintenance-
+    derived cause features + daily_foc) for one vessel's calm-condition days.
+    Shared by fleet model training and per-vessel inference so both use the
+    exact same feature definitions."""
+    rows = query_vessel(vessel_id) if rows is None else rows
+    maint_rows = query_maintenance(vessel_id) if maint_rows is None else maint_rows
+
+    out = []
+    for r in rows:
+        ws  = safe_float(r.get('WIND_SCALE'))
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'))
+        day = safe_float(r.get('NOON_UTC'))
+        if ws is None or hfs is None or day is None or ws > 4 or hfs < 22:
+            continue
+        daily_foc, _fuel = get_daily_foc(r)
+        if daily_foc is None or daily_foc < 10:
+            continue
+
+        op_vals = {f: safe_float(r.get(f)) for f in FUEL_ANOMALY_OP_FEATURES}
+        if any(v is None for v in op_vals.values()):
+            continue
+
+        prop_cond = _last_propeller_condition(maint_rows, day)
+        row = {
+            'noon_day': day,
+            'daily_foc': daily_foc,
+            'days_since_hull_clean':  _days_since_maint_type(maint_rows, day, HULL_CLEAN_TYPES),
+            'days_since_prop_polish': _days_since_maint_type(maint_rows, day, PROP_POLISH_TYPES),
+            'propeller_condition_code': PROPELLER_CONDITION_CODE.get(prop_cond, -1),
+            **op_vals,
+        }
+        out.append(row)
+    return out
+
+
+def _fleet_fuel_anomaly_models():
+    """Fleet-calibrated fuel-anomaly models, cached (queries all 12 training
+    vessels — expensive, don't recompute per request):
+
+    1. baseline_model: operating conditions (RPM/STW/draft/cargo/weather) →
+       daily_foc. Deliberately blind to maintenance state, so its residual
+       (actual − predicted) is attributable to whatever it *can't* see.
+    2. cause_model: maintenance + weather features → residual_pct. Its SHAP
+       values decompose each anomalous day's residual into hull/propeller/
+       weather contributions.
+    """
+    cache_key = 'fleet:fuel_anomaly_models'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    TRAIN_VESSELS = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', 'S10', 'S11', 'S12']
+    all_rows = []
+    for vid in TRAIN_VESSELS:
+        all_rows.extend(_fuel_anomaly_rows(vid))
+
+    if len(all_rows) < 50:
+        result = {'baseline_model': None, 'cause_model': None, 'explainer': None, 'r2': None, 'n_records': len(all_rows)}
+        _cache_set(cache_key, result)
+        return result
+
+    df = pd.DataFrame(all_rows)
+
+    X_op = df[FUEL_ANOMALY_OP_FEATURES]
+    y = df['daily_foc']
+    baseline_model = RandomForestRegressor(n_estimators=300, max_depth=8, random_state=42, n_jobs=-1)
+    baseline_model.fit(X_op, y)
+    # In-sample R² — a quick sanity check this cache entry is healthy, not a
+    # held-out validation metric (the notebook's train/test split is what's
+    # used to actually validate the method; see notebooks/anomaly_analysis.ipynb).
+    r2 = float(baseline_model.score(X_op, y))
+
+    df['predicted_foc'] = baseline_model.predict(X_op)
+    df['residual_pct'] = (df['daily_foc'] - df['predicted_foc']) / df['predicted_foc'] * 100
+
+    X_cause = df[FUEL_ANOMALY_CAUSE_FEATURES]
+    cause_model = RandomForestRegressor(n_estimators=300, max_depth=6, random_state=42, n_jobs=-1)
+    cause_model.fit(X_cause, df['residual_pct'])
+    explainer = shap.TreeExplainer(cause_model)
+
+    result = {
+        'baseline_model': baseline_model,
+        'cause_model': cause_model,
+        'explainer': explainer,
+        'r2': round(r2, 4),
+        'n_records': len(df),
+        'calibrated_on_vessels': len(TRAIN_VESSELS),
+    }
+    _cache_set(cache_key, result)
+    return result
+
+
+def _fuel_anomaly_from_precomputed(vessel_id, limit):
+    """Try the precomputed table first (populated by
+    precompute_fuel_anomaly.py directly from CSV — deliberately bypasses
+    query_vessel()/the vessel-data table, which has duplicate noon-report
+    items from an earlier double-upload). Returns None if the table is
+    empty/unavailable for this vessel, so the caller falls back to live
+    computation."""
+    try:
+        resp_page = fuel_anomaly_tbl.query(
+            KeyConditionExpression=Key('vessel_id').eq(vessel_id),
+            ScanIndexForward=False,  # newest noon_day first
+        )
+        items = resp_page.get('Items', [])
+    except Exception:
+        return None
+    if not items:
+        return None
+
+    # noon_day=-1 is a sentinel meta item (see precompute_fuel_anomaly.py)
+    # holding fleet-wide stats that don't fit the per-day anomaly shape.
+    meta = next((it for it in items if safe_float(it.get('noon_day')) == -1), None)
+    items = [it for it in items if safe_float(it.get('noon_day')) != -1]
+
+    cause_breakdown: dict = {}
+    confident_cause_breakdown: dict = {}
+    for it in items:
+        cause = it.get('primary_cause')
+        if cause:
+            cause_breakdown[cause] = cause_breakdown.get(cause, 0) + 1
+            if it.get('cause_model_agrees'):
+                confident_cause_breakdown[cause] = confident_cause_breakdown.get(cause, 0) + 1
+
+    anomalies_out = [{
+        'noon_day': safe_float(it.get('noon_day')),
+        'daily_foc_actual': safe_float(it.get('daily_foc_actual')),
+        'daily_foc_expected': safe_float(it.get('daily_foc_expected')),
+        'residual_pct': safe_float(it.get('residual_pct')),
+        'direction': it.get('direction'),
+        'primary_cause': it.get('primary_cause'),
+        'primary_cause_contribution_pct': safe_float(it.get('primary_cause_contribution_pct')),
+        'cause_model_agrees': bool(it.get('cause_model_agrees')) if it.get('cause_model_agrees') is not None else None,
+        'days_since_hull_clean': int(safe_float(it.get('days_since_hull_clean'), 0)),
+        'days_since_prop_polish': int(safe_float(it.get('days_since_prop_polish'), 0)),
+    } for it in items[:limit]]
+
+    return resp(200, {
+        'vessel_id': vessel_id,
+        'method': 'residual_shap_classification_precomputed',
+        'baseline_model_r2': safe_float(meta.get('baseline_model_r2')) if meta else None,
+        'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
+        'summary': {
+            'total_days_analyzed': int(safe_float(meta.get('total_days_analyzed'), 0)) if meta else None,
+            'anomaly_days': len(items),
+            'cause_breakdown': cause_breakdown,
+            'confident_cause_breakdown': confident_cause_breakdown,
+        },
+        'anomalies': anomalies_out,
+    })
+
+
+def get_fuel_anomaly_cause(vessel_id, event):
+    """
+    每日油耗異常根因分類：先用只看操作條件的模型算出「這個操作條件下預期油耗」，
+    殘差（實際−預期）超過門檻的日子視為異常，再用 SHAP 把殘差拆解成船殼/螺旋槳/
+    天候三類貢獻，取貢獻最大的當這一天的主因。方法完整推導見
+    notebooks/anomaly_analysis.ipynb §6-9。
+
+    優先讀 ship-analysis-dev-fuel-anomaly-cause 表（precompute_fuel_anomaly.py
+    直接從 CSV 算出、批次寫入，繞開 vessel-data 表現有的重複資料問題）；
+    表是空的（還沒跑過批次腳本）才即時計算。
+    """
+    qs = event.get('queryStringParameters') or {}
+    try:
+        limit = int(qs.get('limit', 20))
+    except (TypeError, ValueError):
+        limit = 20
+
+    precomputed = _fuel_anomaly_from_precomputed(vessel_id, limit)
+    if precomputed is not None:
+        return precomputed
+
+    rows = query_vessel(vessel_id)
+    if not rows:
+        return err(404, f'Vessel {vessel_id} not found')
+    maint_rows = query_maintenance(vessel_id)
+
+    models = _fleet_fuel_anomaly_models()
+    if models['baseline_model'] is None:
+        return err(502, 'fuel-anomaly-cause: fleet models unavailable (insufficient calibration data)')
+
+    qs = event.get('queryStringParameters') or {}
+    try:
+        limit = int(qs.get('limit', 20))
+    except (TypeError, ValueError):
+        limit = 20
+
+    vessel_rows = _fuel_anomaly_rows(vessel_id, rows=rows, maint_rows=maint_rows)
+    if not vessel_rows:
+        return resp(200, {
+            'vessel_id': vessel_id, 'method': 'residual_shap_classification',
+            'baseline_model_r2': models['r2'], 'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
+            'summary': {'total_days_analyzed': 0, 'anomaly_days': 0, 'cause_breakdown': {}},
+            'anomalies': [],
+        })
+
+    df = pd.DataFrame(vessel_rows)
+    X_op = df[FUEL_ANOMALY_OP_FEATURES]
+    df['predicted_foc'] = models['baseline_model'].predict(X_op)
+    df['residual_pct'] = (df['daily_foc'] - df['predicted_foc']) / df['predicted_foc'] * 100
+    df['direction'] = np.select(
+        [df['residual_pct'] > FUEL_ANOMALY_THRESHOLD_PCT, df['residual_pct'] < -FUEL_ANOMALY_THRESHOLD_PCT],
+        ['over', 'under'], default='normal',
+    )
+
+    anomalies_df = df[df['direction'] != 'normal'].copy()
+    cause_breakdown = {}
+    confident_cause_breakdown = {}
+    if len(anomalies_df):
+        X_cause = anomalies_df[FUEL_ANOMALY_CAUSE_FEATURES]
+        # cause_model 自己對 residual_pct 的預測值（= SHAP 貢獻加總 + base_value）。
+        # 這是「候選根因特徵能解釋的部分」，不等於 baseline_model 算出的真實
+        # residual_pct——cause_model 不是完美模型，兩者方向可能不一致，尤其
+        # 天候雜訊大的天。方向一致時 primary_cause 才可信，用
+        # cause_model_agrees 明確標示，不要讓不一致的分類悄悄混進統計。
+        cause_model_pred = models['cause_model'].predict(X_cause)
+        anomalies_df['cause_model_predicted_residual_pct'] = cause_model_pred
+        anomalies_df['cause_model_agrees'] = np.sign(cause_model_pred) == np.sign(anomalies_df['residual_pct'])
+
+        shap_values = models['explainer'].shap_values(X_cause)
+        shap_df = pd.DataFrame(shap_values, columns=FUEL_ANOMALY_CAUSE_FEATURES, index=anomalies_df.index)
+        group_shap = pd.DataFrame({
+            group: shap_df[cols].sum(axis=1) for group, cols in FUEL_ANOMALY_CAUSE_GROUPS.items()
+        })
+        # 對「燒太多」(over) 是貢獻最正的那組主導；對「燒太少」(under) 是貢獻
+        # 最負的那組（把預期往下拉最多）主導——兩者統一用「絕對值最大」判斷，
+        # 用 apply 逐列找出來，比矩陣花式索引直覺、不怕 index/位置對不齊。
+        primary_cause = group_shap.abs().idxmax(axis=1)
+        primary_cause_shap = group_shap.apply(lambda row: row[primary_cause[row.name]], axis=1)
+        anomalies_df['primary_cause'] = primary_cause
+        anomalies_df['primary_cause_shap'] = primary_cause_shap
+        cause_breakdown = anomalies_df['primary_cause'].value_counts().to_dict()
+        confident_cause_breakdown = anomalies_df.loc[anomalies_df['cause_model_agrees'], 'primary_cause'].value_counts().to_dict()
+
+    anomalies_df = anomalies_df.sort_values('noon_day', ascending=False).head(limit)
+
+    anomalies_out = []
+    for _, r in anomalies_df.iterrows():
+        anomalies_out.append({
+            'noon_day': r['noon_day'],
+            'daily_foc_actual': round(r['daily_foc'], 2),
+            'daily_foc_expected': round(r['predicted_foc'], 2),
+            'residual_pct': round(r['residual_pct'], 2),
+            'direction': r['direction'],
+            'primary_cause': r.get('primary_cause'),
+            'primary_cause_contribution_pct': round(r['primary_cause_shap'], 2) if 'primary_cause_shap' in r else None,
+            'cause_model_agrees': bool(r['cause_model_agrees']) if 'cause_model_agrees' in r else None,
+            'days_since_hull_clean': round(r['days_since_hull_clean']),
+            'days_since_prop_polish': round(r['days_since_prop_polish']),
+        })
+
+    return resp(200, {
+        'vessel_id': vessel_id,
+        'method': 'residual_shap_classification',
+        'baseline_model_r2': models['r2'],
+        'anomaly_threshold_pct': FUEL_ANOMALY_THRESHOLD_PCT,
+        'summary': {
+            'total_days_analyzed': len(df),
+            'anomaly_days': len(df[df['direction'] != 'normal']),
+            'cause_breakdown': cause_breakdown,
+            'confident_cause_breakdown': confident_cause_breakdown,
+        },
+        'anomalies': anomalies_out,
+    })
+
+
+def _vessel_excess_fuel_mt_per_day(vessel_id, rows=None, maint_rows=None):
+    """Model-grounded current excess fuel rate (MT/day) for one vessel:
+    average of (actual − baseline-model-expected) daily FOC over its most
+    recent qualifying (calm-condition) days, floored at 0.
+
+    Replaces the old `avg_consumption_mt * (slip% / 100) * 1.8` heuristic —
+    that 1.8 multiplier has no documented derivation anywhere in the repo
+    (checked git blame back to the commit that introduced it); this uses the
+    same baseline model as get_fuel_anomaly_cause() instead, so "excess fuel"
+    means the same thing everywhere in the API. Returns None if there isn't
+    enough calm-condition data to compute it.
+    """
+    models = _fleet_fuel_anomaly_models()
+    if models['baseline_model'] is None:
+        return None
+
+    vessel_rows = _fuel_anomaly_rows(vessel_id, rows=rows, maint_rows=maint_rows)
+    if not vessel_rows:
+        return None
+
+    df = pd.DataFrame(vessel_rows).sort_values('noon_day')
+    recent = df.tail(90)  # same 90-day recency window used elsewhere in this file
+    predicted = models['baseline_model'].predict(recent[FUEL_ANOMALY_OP_FEATURES])
+    residual_mt = recent['daily_foc'].to_numpy() - predicted
+    return max(0.0, float(np.mean(residual_mt)))
+
+
 def get_speed_loss_attribution(vessel_id, event):
     """
     Speed Loss 歸因分析：用「艦隊校準劣化速率」模型分開估算船殼與螺旋槳個別
@@ -1071,22 +1421,30 @@ def get_maintenance_recommendation(vessel_id, event):
         if avg_slip is not None and avg_prior_slip is not None else 0.0
     )
 
-    # Real average fuel consumption for this vessel (MT/day). Combined with the
-    # same baseline*slip%*1.8*FUEL_PRICE methodology used in
-    # build_fleet_summary.py for excess_fuel_cost_usd_per_day, this projects a
-    # cumulative excess-fuel-cost curve if maintenance is deferred — no
-    # per-event cleaning/opportunity cost is included since that data doesn't
-    # exist anywhere in the dataset.
+    # Real average fuel consumption for this vessel (MT/day), used only for
+    # display — the projection curve below is anchored to a model-derived
+    # excess rate, not a slip%-based guess.
     cons_list = recent_numeric(recent, 'ME_CONSUMPTION')
     avg_consumption_mt = round(mean(cons_list), 2) if cons_list else None
 
+    # Current excess fuel rate (MT/day), from the same baseline model as
+    # get_fuel_anomaly_cause() — replaces the old avg_consumption_mt *
+    # (slip%/100) * 1.8 heuristic, whose 1.8 multiplier has no documented
+    # derivation anywhere in this repo's history.
+    current_excess_mt_per_day = _vessel_excess_fuel_mt_per_day(vessel_id, rows=rows, maint_rows=maint)
+
     FUEL_PRICE = 620
     curve = []
-    if avg_slip is not None and avg_consumption_mt is not None:
+    if avg_slip is not None and current_excess_mt_per_day is not None:
         cumulative = 0.0
         for d in range(91):
             projected_slip = max(0.0, avg_slip + degradation_rate_pct_per_day * d)
-            excess_per_day = avg_consumption_mt * (projected_slip / 100) * 1.8 * FUEL_PRICE
+            # Excess fuel is assumed to scale with projected slip relative to
+            # today's slip (same degradation trend as the rest of this curve);
+            # the anchor value itself — how much excess *today* — comes from
+            # the model, not a fixed multiplier.
+            scale = (projected_slip / avg_slip) if avg_slip > 0 else 1.0
+            excess_per_day = current_excess_mt_per_day * scale * FUEL_PRICE
             cumulative += excess_per_day
             curve.append({
                 'deferral_days':                   d,
@@ -1109,6 +1467,7 @@ def get_maintenance_recommendation(vessel_id, event):
         'days_since_maintenance':        round(days_since),
         'avg_me_slip_pct':               avg_slip,
         'avg_consumption_mt':            avg_consumption_mt,
+        'current_excess_fuel_mt_per_day': round(current_excess_mt_per_day, 2) if current_excess_mt_per_day is not None else None,
         'degradation_rate_pct_per_day':  degradation_rate_pct_per_day,
         'fuel_price_usd_per_mt':         FUEL_PRICE,
         'recommendation':                'URGENT' if urgent else 'ROUTINE',
@@ -1286,10 +1645,13 @@ def get_fleet_summary(event):
                           'MEDIUM' if (slip_val >= 6  or (days_since and days_since > 270)) else 'LOW')
             cons_list  = [safe_float(r.get('ME_CONSUMPTION')) for r in rows if r.get('ME_CONSUMPTION')]
             avg_consumption = round(mean(cons_list), 2) if cons_list else None
-            # Uses this vessel's own real avg consumption, not a guessed per-class constant.
+            # Model-grounded excess (see _vessel_excess_fuel_mt_per_day) — not
+            # the old avg_consumption * (slip%/100) * 1.8 heuristic, whose 1.8
+            # multiplier has no documented derivation anywhere in this repo.
+            excess_mt_per_day = _vessel_excess_fuel_mt_per_day(vid, rows=rows, maint_rows=maint)
             excess_per_day = (
-                round(avg_consumption * (slip_val / 100) * 1.8 * FUEL_PRICE, 2)
-                if avg_consumption is not None else None
+                round(excess_mt_per_day * FUEL_PRICE, 2)
+                if excess_mt_per_day is not None else None
             )
             return {
                 'vessel_id':               vid,

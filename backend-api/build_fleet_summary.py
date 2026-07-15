@@ -77,6 +77,9 @@ from decimal import Decimal
 from pathlib import Path
 
 import boto3
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR  = Path(__file__).resolve().parent.parent
@@ -152,6 +155,86 @@ def last_event_of_type(sorted_events: list, types: set) -> dict | None:
     return matches[-1] if matches else None
 
 
+# ── Excess-fuel baseline model ─────────────────────────────────────────────
+# Mirrors backend-api/handler.py's _fleet_fuel_anomaly_models() /
+# _vessel_excess_fuel_mt_per_day() — duplicated here (not imported) because
+# this script works from CSV directly and runs standalone, without a live
+# DynamoDB-backed handler process. Replaces the old
+# avg_consumption * (slip%/100) * 1.8 heuristic, whose 1.8 multiplier has no
+# documented derivation anywhere in this repo's history (checked git blame
+# back to the commit that introduced it — see notebooks/anomaly_analysis.ipynb
+# §6 for the full method and validation).
+FUEL_LCV = {
+    'ME_FULLSPEED_CONSUMP_HSHFO': 40.2, 'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
+    'ME_FULLSPEED_CONSUMP_ULSFO': 41.2, 'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
+    'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
+}
+FUEL_COLS = list(FUEL_LCV.keys())
+OP_FEATURES = ['ME_AVG_RPM', 'SPEED_THROUGH_WATER', 'AVG_SPEED', 'FORE_DRAFT', 'AFTER_DRAFT',
+               'CARGO_ON_BOARD', 'WIND_SCALE', 'SEA_HEIGHT', 'SWELL_HEIGHT', 'SEA_WATER_TEMP']
+
+
+def get_daily_foc(row: dict) -> float | None:
+    hfs = safe_float(row.get('HOURS_FULL_SPEED'), 0)
+    if hfs is None or hfs < 22:
+        return None
+    best_col, best_val = None, 0
+    for fc in FUEL_COLS:
+        v = safe_float(row.get(fc), 0) or 0
+        if v > best_val:
+            best_val, best_col = v, fc
+    if best_col is None or best_val <= 0:
+        return None
+    lcv = FUEL_LCV[best_col]
+    return best_val * lcv / 40.2 / hfs * 24.0
+
+
+def _calm_op_rows(rows: list[dict]) -> list[dict]:
+    out = []
+    for r in rows:
+        ws, hfs = safe_float(r.get('WIND_SCALE')), safe_float(r.get('HOURS_FULL_SPEED'))
+        if ws is None or hfs is None or ws > 4 or hfs < 22:
+            continue
+        daily_foc = get_daily_foc(r)
+        if daily_foc is None or daily_foc < 10:
+            continue
+        op_vals = {f: safe_float(r.get(f)) for f in OP_FEATURES}
+        if any(v is None for v in op_vals.values()):
+            continue
+        out.append({'daily_foc': daily_foc, **op_vals})
+    return out
+
+
+def build_baseline_model(vessel_data: dict[str, list[dict]]) -> RandomForestRegressor | None:
+    """Fleet-wide baseline model: operating conditions -> expected daily FOC,
+    trained on all training vessels' calm-condition days, deliberately blind
+    to maintenance state (same design as handler.py's fuel-anomaly-cause)."""
+    all_rows = []
+    for vid in TRAIN_VESSELS:
+        all_rows.extend(_calm_op_rows(vessel_data.get(vid, [])))
+    if len(all_rows) < 50:
+        print(f"  WARNING: only {len(all_rows)} calm-condition rows available — skipping excess-fuel model, excess_fuel_cost_usd_per_day will be null.")
+        return None
+    df = pd.DataFrame(all_rows)
+    model = RandomForestRegressor(n_estimators=300, max_depth=8, random_state=42, n_jobs=-1)
+    model.fit(df[OP_FEATURES], df['daily_foc'])
+    return model
+
+
+def vessel_excess_fuel_mt_per_day(model: RandomForestRegressor | None, rows: list[dict]) -> float | None:
+    """This vessel's average (actual - baseline-model-expected) daily FOC over
+    its most recent 90 qualifying (calm-condition) days, floored at 0."""
+    if model is None:
+        return None
+    calm = _calm_op_rows(rows)
+    if not calm:
+        return None
+    df = pd.DataFrame(calm).tail(90)
+    predicted = model.predict(df[OP_FEATURES])
+    residual = df['daily_foc'].to_numpy() - predicted
+    return max(0.0, float(np.mean(residual)))
+
+
 def load_vessel_data() -> dict[str, list[dict]]:
     ships: dict[str, list[dict]] = {}
     with open(VT_FD_CSV, newline='', encoding='utf-8-sig') as f:
@@ -172,7 +255,8 @@ def load_maintenance_data() -> dict[str, list[dict]]:
 
 # ── Core computation ──────────────────────────────────────────────────────────
 
-def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) -> dict:
+def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict],
+                     excess_model: RandomForestRegressor | None = None) -> dict:
     """Compute all summary stats for one vessel from raw CSV rows."""
 
     # ── Sort rows by NOON_UTC ──────────────────────────────────────────────
@@ -252,11 +336,14 @@ def compute_summary(vessel_id: str, rows: list[dict], maint_rows: list[dict]) ->
         urgency = 'LOW'
 
     # ── Excess fuel cost per day ───────────────────────────────────────────
-    # Uses this vessel's own real avg_consumption (mean ME_CONSUMPTION) as the
-    # baseline, not a guessed per-class constant.
+    # Model-grounded: average (actual - baseline-model-expected) daily FOC
+    # over this vessel's last 90 calm-condition days. See
+    # vessel_excess_fuel_mt_per_day() docstring for why this replaced the old
+    # avg_consumption * (slip%/100) * 1.8 heuristic.
+    excess_mt_per_day = vessel_excess_fuel_mt_per_day(excess_model, rows)
     excess_fuel_cost_usd_per_day = (
-        round(avg_consumption * (max(0.0, slip_val) / 100) * 1.8 * FUEL_PRICE_USD_MT, 2)
-        if avg_consumption is not None else None
+        round(excess_mt_per_day * FUEL_PRICE_USD_MT, 2)
+        if excess_mt_per_day is not None else None
     )
 
     # ── Position ───────────────────────────────────────────────────────────
@@ -392,6 +479,9 @@ def main():
     vessel_data = load_vessel_data()
     maint_data  = load_maintenance_data()
 
+    print("Training fleet-wide excess-fuel baseline model (calm-condition, training vessels only) ...")
+    excess_model = build_baseline_model(vessel_data)
+
     all_vessels = sorted(TRAIN_VESSELS | PRED_VESSELS)
     summaries   = []
 
@@ -399,7 +489,7 @@ def main():
     for vid in all_vessels:
         rows       = vessel_data.get(vid, [])
         maint_rows = maint_data.get(vid, [])
-        summary    = compute_summary(vid, rows, maint_rows)
+        summary    = compute_summary(vid, rows, maint_rows, excess_model=excess_model)
         summaries.append(summary)
         print(
             f"  {vid:4s}  records={summary['total_records']:4d}"

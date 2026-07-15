@@ -14,8 +14,10 @@ dist/
 build/
 .eggs/
 .venv/
+.venv314/
 venv/
 env/
+.ipynb_checkpoints/
 
 # ── Environment / Secrets ──────────────────────────────────
 .env

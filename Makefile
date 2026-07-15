@@ -112,6 +112,7 @@ dev-api: check-dev
 		VESSEL_TABLE=ship-analysis-dev-vessel-data \
 		MAINT_TABLE=ship-analysis-dev-maintenance-events \
 		FLEET_SUMMARY_TABLE=ship-analysis-dev-fleet-summary \
+		FUEL_ANOMALY_TABLE=ship-analysis-dev-fuel-anomaly-cause \
 		$(VENV_UVICORN) app:app --host 0.0.0.0 --port $(API_PORT) > /tmp/backend-api.log 2>&1 &
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
 		if curl -fsS http://127.0.0.1:$(API_PORT)/health >/dev/null; then \

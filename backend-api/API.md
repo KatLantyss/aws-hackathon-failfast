@@ -15,6 +15,7 @@
 | 船舶航行日報 | `ship-analysis-dev-vessel-data` | 21,282 筆 |
 | 維護事件記錄 | `ship-analysis-dev-maintenance-events` | 77 筆 |
 | 船隊摘要（預計算） | `ship-analysis-dev-fleet-summary` | 15 筆（每船一筆，`build_fleet_summary.py` 產生，`/api/v1/fleet/summary` 用）|
+| 油耗異常根因（預計算） | `ship-analysis-dev-fuel-anomaly-cause` | 538 筆（15 艘船共 523 筆異常日 + 15 筆 sentinel meta item，`precompute_fuel_anomaly.py` **直接讀 CSV** 產生，`/api/v1/vessels/{id}/fuel-anomaly-cause` 用；刻意不讀 `vessel-data` 表，避免重複資料放大異常天數）|
 
 **船舶分類：**
 - 訓練集：S1–S12（12 艘，5 年歷史數據）
@@ -356,6 +357,62 @@ GET /api/v1/vessels/{vessel_id}/maintenance-recommendation
 |------|------|
 | `degradation_rate_pct_per_day` | 近 90 天 vs 前 90 天平均 slip 的變化率，用來推算未來衰退曲線 |
 | `curve` | 未來 91 天（0–90 天）若不維護，累積超耗油成本的推算曲線，`cumulative_excess_fuel_cost_usd = Σ avg_consumption_mt × (projected_slip_pct/100) × 1.8 × fuel_price_usd_per_mt` |
+
+---
+
+### 油耗異常根因分類
+
+```
+GET /api/v1/vessels/{vessel_id}/fuel-anomaly-cause?limit=20
+```
+
+逐日判斷「這天油耗異常，主要是船殼、螺旋槳、還是天候造成」。方法論完整推導見 [`notebooks/anomaly_analysis.ipynb`](../notebooks/anomaly_analysis.ipynb) §6–9，這支端點是那份 notebook 分析的正式上線版本。
+
+**資料來源（雙路徑）：**
+1. **優先讀取** DynamoDB `ship-analysis-dev-fuel-anomaly-cause` 表（PK=`vessel_id`，SK=`noon_day`）——由 [`precompute_fuel_anomaly.py`](precompute_fuel_anomaly.py) 離線批次寫入，**直接讀 CSV**（`vt_fd.csv`/`maintenance.csv`），刻意繞開 `ship-analysis-dev-vessel-data` 表——該表因為早期重複上傳，同一天筆數會膨脹近 2 倍，會讓異常天數/佔比失真。命中此路徑時 `method` 為 `residual_shap_classification_precomputed`。
+2. 該表若查無資料（尚未跑過批次腳本），才即時用 `query_vessel()`／`query_maintenance()`（會受上述重複資料影響）現場算，`method` 為 `residual_shap_classification`。
+3. 每艘船在該表另有一筆 `noon_day=-1` 的 sentinel meta item，存 `total_days_analyzed`/`baseline_model_r2`，API 會自動濾掉、併入 `summary`，不會出現在 `anomalies[]` 裡。
+
+**做法（兩條路徑共用同一套模型/方法論）：**
+1. **基準模型**（`_fleet_fuel_anomaly_models()`，快取，啟動時預熱；批次腳本另外用 CSV 各自訓練一份同架構的模型）：只用操作條件（轉速、船速、吃水、載重、天氣）預測「這個操作條件下預期油耗」，刻意不給它看養護狀態——這樣殘差（實際−預期）才能乾淨地歸因給模型看不到的東西
+2. `residual_pct = (實際 − 預期) ÷ 預期 × 100`，超過 `±15%` 標記為異常（`direction`: `over`=燒太多 / `under`=燒太少）
+3. **根因模型**：只吃候選根因特徵（距上次清船殼/拋螺旋槳天數、螺旋槳狀態、天候），預測 `residual_pct`，用 SHAP 把每一天的預測拆解成船殼/螺旋槳/天候三類貢獻，貢獻絕對值最大的當主因
+
+**`cause_model_agrees` 很重要**：根因模型是對 `residual_pct` 的另一個獨立預測，不保證跟基準模型算出的真實 `residual_pct` 同方向——`cause_model_agrees=false` 代表這天的 `primary_cause` 分類跟實際異常方向對不上，不可信。`summary.confident_cause_breakdown` 只統計 `cause_model_agrees=true` 的天數，比 `cause_breakdown`（全部異常天，含不可信的）更可信。
+
+**Query params：** `limit`（回傳最近幾筆異常，預設 20）
+
+**重新產生批次資料：** 來源 CSV 或方法論更動後，重跑 `cd backend-api && AWS_PROFILE=hackathon python3 precompute_fuel_anomaly.py`（`--dry-run` 可先預覽不寫入）。以 `noon_day` 當 SK，重跑會覆蓋同一天的舊值，不會累積重複資料。
+
+**Response:**
+```json
+{
+  "vessel_id": "S1",
+  "method": "residual_shap_classification_precomputed",
+  "baseline_model_r2": 0.9709,
+  "anomaly_threshold_pct": 15,
+  "summary": {
+    "total_days_analyzed": 397,
+    "anomaly_days": 36,
+    "cause_breakdown": { "天候": 19, "螺旋槳汙損": 13, "船殼汙損": 4 },
+    "confident_cause_breakdown": { "天候": 14, "螺旋槳汙損": 8, "船殼汙損": 3 }
+  },
+  "anomalies": [
+    {
+      "noon_day": 1591.0,
+      "daily_foc_actual": 30.3,
+      "daily_foc_expected": 25.91,
+      "residual_pct": 16.95,
+      "direction": "over",
+      "primary_cause": "天候",
+      "primary_cause_contribution_pct": 3.83,
+      "cause_model_agrees": true,
+      "days_since_hull_clean": 610,
+      "days_since_prop_polish": 31
+    }
+  ]
+}
+```
 
 ---
 

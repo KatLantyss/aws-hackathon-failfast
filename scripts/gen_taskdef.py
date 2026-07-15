@@ -37,6 +37,7 @@ td = {
                 {"name": "VESSEL_TABLE",        "value": "ship-analysis-dev-vessel-data"},
                 {"name": "MAINT_TABLE",         "value": "ship-analysis-dev-maintenance-events"},
                 {"name": "FLEET_SUMMARY_TABLE", "value": "ship-analysis-dev-fleet-summary"},
+                {"name": "FUEL_ANOMALY_TABLE",  "value": "ship-analysis-dev-fuel-anomaly-cause"},
             ],
             "logConfiguration": {
                 "logDriver": "awslogs",

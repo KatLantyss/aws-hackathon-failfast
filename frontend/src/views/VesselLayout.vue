@@ -59,11 +59,14 @@ const tabs = computed(() => [
   { to: `/vessels/${props.imo}/noon-reports`, label: 'Noon Report', name: 'vessel-noon-reports' },
   { to: `/vessels/${props.imo}/inspections`, label: '維護紀錄', name: 'vessel-inspections' },
   { to: `/vessels/${props.imo}/speed-loss`, label: 'Speed Loss', name: 'vessel-speed-loss' },
-  // Renamed from "油耗歸因": the underlying endpoint attributes SPEED LOSS
-  // (slip%) to hull vs propeller, not fuel consumption — matches
-  // main-requirement.md's ISO 19030 ask "② 船體 vs 螺旋槳歸因", not a real
-  // fuel waterfall. See docs/frontend-backend-integration-status.html §7.
-  { to: `/vessels/${props.imo}/fuel-attribution`, label: '速損歸因', name: 'vessel-fuel-attribution' },
+  // Renamed back to "油耗歸因" (2026-07): now backed by GET
+  // /vessels/{id}/fuel-anomaly-cause — a baseline model blind to maintenance
+  // state predicts expected daily fuel consumption from operating
+  // conditions; SHAP decomposes each anomalous day's actual-vs-expected gap
+  // into hull/propeller/weather contributions. This is a real fuel-based
+  // attribution (see notebooks/anomaly_analysis.ipynb §6-9), not the
+  // speed-loss-attribution (slip%) this tab used to show.
+  { to: `/vessels/${props.imo}/fuel-attribution`, label: '油耗歸因', name: 'vessel-fuel-attribution' },
   { to: `/vessels/${props.imo}/fuel-prediction`, label: '油耗預測', name: 'vessel-fuel-prediction' },
   { to: `/vessels/${props.imo}/maintenance-correlation`, label: '維修效能分析', name: 'vessel-maintenance-correlation' },
 ])
