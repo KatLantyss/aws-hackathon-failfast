@@ -84,10 +84,25 @@ watch(
           />
         </RouterLink>
 
-        <!-- Vessel detail indicator -->
-        <span v-if="isVesselDetail" class="ml-1 font-display text-xs tracking-[0.12em] px-3.5 py-2 text-white">
-          {{ vesselName }}細項
-        </span>
+        <!-- Vessel detail tab -->
+        <template v-if="isVesselDetail">
+          <span class="text-[var(--color-on-navy)]/40 px-1">|</span>
+          <RouterLink
+            :to="`/vessels/${vesselName}/overview`"
+            class="relative font-display text-xs tracking-[0.12em] uppercase px-3.5 py-2 rounded-[3px] transition-all duration-150"
+            :class="
+              isVesselDetail
+                ? 'text-white bg-white/[0.06]'
+                : 'text-[var(--color-on-navy)]/70 hover:text-[var(--color-on-navy)] hover:bg-white/[0.04]'
+            "
+          >
+            細項
+            <span
+              class="absolute left-3.5 right-3.5 -bottom-[1px] h-[2px] bg-[var(--color-brand-red)] rounded-full"
+              aria-hidden="true"
+            />
+          </RouterLink>
+        </template>
       </nav>
 
       <div class="ml-auto flex items-center gap-2 md:gap-3">
