@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir \
     boto3 \
     pandas \
     "xgboost[cpu]==2.1.4" \
+    lightgbm==4.6.0 \
     scikit-learn==1.6.1 \
     numpy==1.26.4
 

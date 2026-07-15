@@ -254,19 +254,20 @@ export async function resolveChatTurn(userTextRaw: string, nluRaw: NluResult, pr
     fetchRecommendation(target.imo),
     fetchVessels(),
   ])
-  if (!vessel || !series || !recommendation) return dataUnavailableTurn(userText, nlu, target.imo)
-  const fleetAvg = fleet.reduce((s, v) => s + v.speedLossPct, 0) / fleet.length
+  if (!vessel) return dataUnavailableTurn(userText, nlu, target.imo)
+  const fleetAvg = fleet.length ? fleet.reduce((s, v) => s + v.speedLossPct, 0) / fleet.length : 0
   const comparison = vessel.speedLossPct > fleetAvg * 1.05 ? '高於船隊平均' : vessel.speedLossPct < fleetAvg * 0.95 ? '低於船隊平均' : '接近船隊平均'
-  const cards: ChatCardSpec[] = [
-    { type: 'gauge', vessel },
-    { type: 'speedLoss', vessel, series },
-    { type: 'maintenance', vessel, data: recommendation },
-  ]
+  const cards: ChatCardSpec[] = [{ type: 'gauge', vessel }]
+  if (series) cards.push({ type: 'speedLoss', vessel, series })
+  if (recommendation) cards.push({ type: 'maintenance', vessel, data: recommendation })
+  const maintenanceText = recommendation
+    ? `建議於 Day ${recommendation.windowStartDay} 至 Day ${recommendation.windowEndDay} 安排水下清洗。`
+    : '目前可取得船舶狀態資料；維修建議資料不足，暫不下結論。'
   return {
     id: makeId(),
     userText,
     intent: 'vessel_overview',
-    replyText: `${vessel.name} 目前 Speed Loss ${vessel.speedLossPct.toFixed(1)}%，${comparison}，建議於 Day ${recommendation.windowStartDay} 至 Day ${recommendation.windowEndDay} 安排水下清洗。`,
+    replyText: `${vessel.name} 目前 Speed Loss ${vessel.speedLossPct.toFixed(1)}%，${comparison}，${maintenanceText}`,
     cards,
     vesselImo: target.imo,
     vesselName: target.name,

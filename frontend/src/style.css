@@ -68,9 +68,11 @@
 
 
 
-  --font-display: "Oswald", "Arial Narrow", sans-serif;
-  --font-body: "IBM Plex Sans", "Inter", system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+  /* Explicit CJK fallbacks keep Traditional Chinese visible in mixed-script chat
+     text even when the primary instrument/display fonts lack CJK glyphs. */
+  --font-display: "Oswald", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  --font-body: "IBM Plex Sans", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Inter", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", ui-monospace, "SFMono-Regular", monospace;
 
   --radius-chart: 3px;
 
