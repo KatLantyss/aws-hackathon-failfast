@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>主需求落地現況與缺口 @ f497ce1 — YangMing Fleet Dashboard</title>
+<style>
+  :root {
+    --navy: #0f2438;
+    --ink: #1b2a38;
+    --ink-muted: #5b6b7a;
+    --paper: #fbfaf7;
+    --paper-hi: #ffffff;
+    --line: #d8dde2;
+    --amber: #c8952e;
+    --red: #b5433d;
+    --teal: #2f7a6e;
+    --blue: #2b6cb0;
+    --gray: #8a97a3;
+    --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang TC', 'Noto Sans TC', Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 100px; }
+  header.doc-head { border-bottom: 3px solid var(--navy); padding-bottom: 24px; margin-bottom: 32px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--amber); font-weight: 700; margin: 0 0 8px;
+  }
+  h1 { font-size: 1.8rem; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--ink-muted); font-size: 0.95rem; margin: 0; }
+  .meta-row { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--ink-muted); }
+  .meta-row span b { color: var(--ink); }
+
+  h2 {
+    font-size: 1.2rem; margin: 40px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2 .num { font-family: var(--mono); font-size: 0.75rem; color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); padding: 2px 7px; border-radius: 3px; }
+  h3 { font-size: 1rem; margin: 24px 0 10px; }
+  p { color: var(--ink); }
+  code { font-family: var(--mono); font-size: 0.86em; background: color-mix(in srgb, var(--ink) 6%, transparent); padding: 1px 5px; border-radius: 3px; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11.5px;
+    font-weight: 700; padding: 2px 8px; border-radius: 4px; white-space: nowrap; line-height: 1.5;
+  }
+  .b-done  { background: color-mix(in srgb, var(--teal) 14%, transparent); color: var(--teal); }
+  .b-part  { background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--amber); }
+  .b-miss  { background: color-mix(in srgb, var(--red) 14%, transparent); color: var(--red); }
+
+  .legend-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px;
+    background: var(--paper-hi); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px;
+  }
+  .legend-grid .item { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--ink-muted); }
+
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 6px; font-size: 13.5px; background: var(--paper-hi); }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); background: color-mix(in srgb, var(--navy) 4%, transparent); }
+  tr:hover td { background: color-mix(in srgb, var(--navy) 2%, transparent); }
+  .tbl-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+  .tbl-scroll table { margin: 0; border: none; }
+  col.status { width: 190px; }
+  col.where { width: 300px; }
+
+  .note-box {
+    border-left: 3px solid var(--amber); background: color-mix(in srgb, var(--amber) 8%, transparent);
+    padding: 10px 14px; border-radius: 0 4px 4px 0; font-size: 13px; color: var(--ink); margin: 14px 0;
+  }
+  .note-box.danger { border-left-color: var(--red); background: color-mix(in srgb, var(--red) 8%, transparent); }
+  .note-box.info { border-left-color: var(--blue); background: color-mix(in srgb, var(--blue) 8%, transparent); }
+  .note-box.good { border-left-color: var(--teal); background: color-mix(in srgb, var(--teal) 8%, transparent); }
+
+  ul.gaps { padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 12px; }
+  ul.gaps li {
+    background: var(--paper-hi); border: 1px solid var(--line); border-radius: 6px; padding: 12px 16px; font-size: 13.5px;
+  }
+  ul.gaps li .tag {
+    font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--red); display: block; margin-bottom: 4px; font-weight: 700;
+  }
+
+  footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--gray); font-size: 12px; font-family: var(--mono); }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --navy: #7fb0d8; --ink: #e6e9ec; --ink-muted: #9aa7b3; --paper: #12181f; --paper-hi: #1a222b;
+      --line: #2c3742; --amber: #dcab4e; --red: #e0776f; --teal: #56b4a3; --blue: #6fa8dc; --gray: #6b7784;
+    }
+    th { background: color-mix(in srgb, #000 20%, transparent); }
+    code { background: color-mix(in srgb, #fff 10%, transparent); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="doc-head">
+    <p class="eyebrow">REQUIREMENT-COVERAGE · commit f497ce1 · 2026-07-15</p>
+    <h1>主需求落地現況與缺口</h1>
+    <p class="subtitle"><code>docs/main-requirement.md</code> 兩大產出（油耗預測模型 / Speed Loss Dashboard）逐項對照目前 frontend 的實際呈現狀況。</p>
+    <div class="meta-row">
+      <span>對照版本：<b>f497ce1</b>（tidy: FE debug mode, 並依據 docs 的分析結果及 main-requirement.md 建議進行修整）</span>
+      <span>對照文件：<code>docs/main-requirement.md</code></span>
+    </div>
+  </header>
+
+  <h2><span class="num">§1</span> 圖例</h2>
+  <div class="legend-grid">
+    <div class="item"><span class="badge b-done">✅ 已呈現</span> 前端有對應頁面/元件，且底層打的是真實 API。</div>
+    <div class="item"><span class="badge b-part">🟡 部分呈現</span> 有相關畫面，但呈現的東西跟主需求描述的不完全是同一件事。</div>
+    <div class="item"><span class="badge b-miss">❌ 未呈現</span> 前端完全沒有對應的頁面、元件或串接。</div>
+  </div>
+
+  <h2><span class="num">§2</span> A. 油耗預測模型</h2>
+  <div class="tbl-scroll">
+  <table>
+    <colgroup><col /><col class="where" /><col class="status" /></colgroup>
+    <thead><tr><th>主需求要求</th><th>前端呈現位置</th><th>狀態</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>給定航行/環境條件，預測當日主機全速油耗</td>
+        <td><code>/vessels/:imo/fuel-prediction</code>（<code>FuelPrediction.vue</code>）→ <code>POST /api/v1/predict/fuel-consumption</code>（XGBoost v3 Hybrid）</td>
+        <td><span class="badge b-done">✅ 已呈現</span></td>
+      </tr>
+      <tr>
+        <td>反事實推論「執行 UWC/PP 的節能效益」</td>
+        <td>同一頁面的 KPI 卡「執行 UWC+PP 可省油耗」「年化節省金額估計」，直接使用後端 <code>counterfactual_uwc_pp</code> 欄位</td>
+        <td><span class="badge b-done">✅ 已呈現</span></td>
+      </tr>
+      <tr>
+        <td>理解各類養護事件對運行/油耗的不同影響程度</td>
+        <td><code>/vessels/:imo/fuel-attribution</code>（速損歸因：依 hull/propeller/hull+propeller/inspection_only 分類平均改善%）＋ <code>/vessels/:imo/maintenance-correlation</code>（維修類型 vs 平均改善效果長條圖）</td>
+        <td><span class="badge b-part">🟡 部分呈現</span> — 透過速損歸因呈現，非透過油耗預測模型本身</td>
+      </tr>
+      <tr>
+        <td>效能如何隨時間退化、養護後如何恢復</td>
+        <td>Speed Loss 頁的污損趨勢回歸線＋清洗週期比較；maintenance-correlation 的時序圖（COR-01）</td>
+        <td><span class="badge b-part">🟡 部分呈現</span> — 呈現的是「原始資料的趨勢」，不是「模型學到的退化/恢復曲線」，兩者不是同一件事</td>
+      </tr>
+      <tr>
+        <td>只給部分可見特徵，推估被遮蔽的油耗數值</td>
+        <td class="mono">無</td>
+        <td><span class="badge b-miss">❌ 未呈現</span></td>
+      </tr>
+      <tr>
+        <td>客觀評分（模型準確度：MAE/RMSE/R²、predicted vs actual 對比）</td>
+        <td class="mono">無</td>
+        <td><span class="badge b-miss">❌ 未呈現</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note-box danger">
+    <b>「遮蔽特徵推估」目前只存在於離線腳本：</b> <code>backend-api/predict_submit.py</code> 讀取 <code>vt_fd.csv</code> 裡標記為 <code>PREDICT</code> 的列（S21–S23 的待預測資料），逐筆呼叫 <code>/api/v1/predict/fuel-consumption</code>，結果限幅到合理區間（30–120 MT/day）後寫出 <code>backend-api/submission.csv</code>（比賽提交格式，如 <code>S22,927,ME_FULLSPEED_CONSUMP_HSHFO,30.0</code>）。這是離線評分流程，<strong>前端完全沒有讀取或視覺化這份 submission 結果</strong>（全站搜尋 <code>submission</code>／<code>predict_submit</code> 均無關聯命中）。
+  </div>
+  <div class="note-box danger">
+    <b>沒有任何模型準確度展示：</b> 搜尋整個 <code>frontend/src</code>（<code>mae</code>／<code>rmse</code>／<code>r2</code>／<code>accuracy</code>／<code>validation</code>／<code>score</code>／<code>predicted vs actual</code> 等關鍵字）沒有找到任何有意義的命中。<code>FuelPrediction.vue</code> 只顯示單筆點預測值，看不出這個 XGBoost 模型在訓練集（S1–S12）上預測得準不準。
+  </div>
+  <div class="note-box">
+    <b>額外發現（非缺口，但值得記錄）：</b> <code>vessel.type</code>（'training'/'prediction'）雖然在 <code>VesselLayout.vue</code> 與 <code>VesselOverview.vue</code> 有 render 出來，但 <code>adapter.ts</code> 對 training 船會把它改顯示成 <code>"W1"</code>/<code>"W2"</code>（航線分組），只有 prediction 船會顯示英文原字 <code>"prediction"</code>。兩邊都沒有清楚的中文「訓練集／預測集」標示，使用者不容易一眼看出哪些船是有真實油耗答案的訓練船、哪些是本題要預測的船。
+  </div>
+
+  <h2><span class="num">§3</span> B. Speed Loss Dashboard（ISO 19030 三項重點）</h2>
+  <div class="tbl-scroll">
+  <table>
+    <colgroup><col /><col class="where" /><col class="status" /></colgroup>
+    <thead><tr><th>需求</th><th>前端呈現位置</th><th>狀態</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>① Speed Loss 趨勢（推進效能隨時間變化）</td>
+        <td><code>/vessels/:imo/speed-loss</code> 散布圖＋回歸線；<code>/vessels</code> 列表、<code>/fleet-analytics</code> 疊圖、<code>/</code> 首頁量表都有摘要值</td>
+        <td><span class="badge b-done">✅ 完整呈現</span> — 多處覆蓋</td>
+      </tr>
+      <tr>
+        <td>② Speed Loss 有多少百分比因船體髒污所致（船殼 vs 螺旋槳歸因）</td>
+        <td><code>/vessels/:imo/fuel-attribution</code>（已改標「速損歸因」）— 分類卡＋事件長條圖＋明細表</td>
+        <td><span class="badge b-done">✅ 完整呈現</span></td>
+      </tr>
+      <tr>
+        <td>③ Speed Loss 與水下清潔資料的比對（效能恢復/惡化時間點是否對應養護事件）</td>
+        <td>Speed Loss 頁圖表上的事件標記線＋「比較上次清洗週期」；<code>maintenance-correlation</code> 的時序圖（油耗/Speed Loss 疊圖＋◆養護事件/▲異常事件標記）＋事件效益驗證明細表</td>
+        <td><span class="badge b-done">✅ 完整呈現</span></td>
+      </tr>
+      <tr>
+        <td>提示：純檢查（UWI）事件不應被當成有效能改善</td>
+        <td><code>adapter.ts</code> 的 <code>EVENT_TYPE_MAP</code> / <code>CORRELATION_TYPE_MAP</code> 誤判已於 f497ce1 前一輪修正</td>
+        <td><span class="badge b-done">✅ 已修正</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2><span class="num">§4</span> 小結</h2>
+  <div class="note-box good">
+    <b>已做到的部分相當完整：</b> ISO 19030 的 ①②③ 三項全部有對應頁面，且都是打真實 API；UWI 誤判的正確性 bug 也已修正。油耗預測模型的「單日預測 + UWC/PP 反事實」核心功能也已修好並掛上路由（<code>/vessels/:imo/fuel-prediction</code>）。
+  </div>
+
+  <h3>兩個明確缺口 — 都跟「模型本身的客觀評分」有關，不是 Speed Loss Dashboard 那邊</h3>
+  <ul class="gaps">
+    <li>
+      <span class="tag">缺口 1 · 沒有模型準確度展示</span>
+      沒有任何頁面告訴使用者這個 XGBoost 模型預測得準不準——MAE/RMSE/R² 或「預測 vs 實際」對比圖都沒有。目前 <code>FuelPrediction.vue</code> 只能看到單筆點預測，無法評估模型品質。
+    </li>
+    <li>
+      <span class="tag">缺口 2 · 沒有「遮蔽特徵推估」的示範</span>
+      這件事目前只活在 <code>backend-api/predict_submit.py</code> 這支離線腳本裡，產出 <code>submission.csv</code>；前端從未讀取或視覺化這個流程與結果。
+    </li>
+  </ul>
+
+  <div class="note-box info">
+    <b>建議方向（尚未執行，待決策）：</b> 要補這兩塊，大概需要後端新增一支端點（例如回傳訓練集上的驗證指標，或讓 <code>submission.csv</code> 的結果可查詢），前端再新增一個「模型評估」頁面去顯示——這是目前完全不存在的新功能，不是既有頁面的小修，需要額外規劃。
+  </div>
+
+  <footer>
+    產出方式：基於同一次對話中對 <code>docs/main-requirement.md</code> 與 frontend/backend-api 程式碼的逐項比對與關鍵字搜尋（<code>mae|rmse|r2|accuracy|score|validation</code>、<code>submission|predict_submit</code>、<code>vessel.type</code> render 位置），未執行任何網路請求。對照的程式碼狀態為 git commit <code>f497ce1</code>。
+  </footer>
+
+</div>
+</body>
+</html>
