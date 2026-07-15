@@ -31,8 +31,8 @@ import {
   fetchApiFleetSummary,
   fetchApiNoonReports,
   fetchApiMaintenanceRecommendation,
-  type ApiSpeedLossIsoPoint,
-  type ApiSpeedLossSlipPoint,
+  type ApiFocTimelinePoint,
+  type ApiStwTimelinePoint,
   type ApiMaintenanceEvent,
   type ApiFleetRankingEntry,
   type ApiFleetSummaryVessel,
@@ -138,48 +138,45 @@ export async function fetchRealSpeedLoss(shipId: string): Promise<SpeedLossSerie
       fetchApiMaintenanceEvents(shipId),
     ])
 
-    // Use iso_timeline (RPM-baseline calm-condition speed loss) as primary source.
-    // Fall back to slip_timeline if iso_timeline is empty.
-    const isoData = slResp.iso_timeline ?? []
-    const slipData = slResp.slip_timeline ?? []
+    // Use foc_timeline as primary source (competition-spec FOC-based speed loss).
+    // Fall back to stw_timeline if foc_timeline is empty.
+    const focData = slResp.foc_timeline ?? []
+    const stwData = slResp.stw_timeline ?? []
 
     let reports: NoonReportEntry[]
 
-    if (isoData.length > 0) {
-      reports = isoData
-        .filter((p) => p.stw != null && p.ref_stw != null)
-        .map((p) => ({
-          day: p.noon_day,
-          lat: 0,
-          lon: 0,
-          observedSpeedKt: p.stw ?? 0,
-          correctedSpeedKt: p.ref_stw ?? 0,
-          speedLossPct: (p.ref_stw ?? 0) > 0
-            ? (((p.ref_stw ?? 0) - (p.stw ?? 0)) / (p.ref_stw ?? 1)) * 100
-            : 0,
-          fuelConsumptionMt: 0,
-          beaufort: p.wind_scale ?? 0,
-          seaState: p.wind_scale ?? 0,
-          draftFwd: 0,
-          draftAft: 0,
-          loadCondition: 'laden' as const,
-        }))
-    } else {
-      // Fallback: use slip_timeline (FULL_SPD_STW_SLIP values directly)
-      reports = slipData.map((p) => ({
+    if (focData.length > 0) {
+      reports = focData.map((p) => ({
         day: p.noon_day,
         lat: 0,
         lon: 0,
-        observedSpeedKt: 0,
+        observedSpeedKt: p.stw ?? 0,
         correctedSpeedKt: 0,
-        speedLossPct: p.slip_pct,
-        fuelConsumptionMt: 0,
-        beaufort: p.wind_scale ?? 0,
-        seaState: p.wind_scale ?? 0,
+        speedLossPct: p.speed_loss_pct,
+        fuelConsumptionMt: p.daily_foc_vlsfo,
+        beaufort: p.wind_scale,
+        seaState: p.wind_scale,
         draftFwd: 0,
         draftAft: 0,
-        loadCondition: 'laden' as const,
+        loadCondition: p.load_condition,
       }))
+    } else if (stwData.length > 0) {
+      reports = stwData.map((p) => ({
+        day: p.noon_day,
+        lat: 0,
+        lon: 0,
+        observedSpeedKt: p.stw,
+        correctedSpeedKt: p.ref_stw,
+        speedLossPct: p.speed_loss_pct,
+        fuelConsumptionMt: 0,
+        beaufort: p.wind_scale,
+        seaState: p.wind_scale,
+        draftFwd: 0,
+        draftAft: 0,
+        loadCondition: p.load_condition,
+      }))
+    } else {
+      reports = []
     }
 
     const events: SpeedLossEvent[] = maintResp.events.map((e) => ({
@@ -248,30 +245,19 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
     // not a guessed per-class baseline.
     const avgConsumptionMt = detail.avg_consumption ?? null
 
-    const isoData = slResp.iso_timeline ?? []
-    const slipData = slResp.slip_timeline ?? []
-
-    // Use iso_timeline if available, otherwise slip_timeline
-    const useIso = isoData.length > 0
-    const primaryData = useIso ? isoData : slipData
+    // Use foc_timeline (primary) or stw_timeline (fallback) — both now have speed_loss_pct directly
+    const focData = slResp.foc_timeline ?? []
+    const stwData = slResp.stw_timeline ?? []
+    const primaryData = focData.length > 0 ? focData : stwData
 
     // Build timeline (sample every 5th point to reduce density)
     const timeline: PerformanceTimelinePoint[] = primaryData
       .filter((_, i) => i % 5 === 0)
       .map((p) => {
-        let slPct: number
-        if (useIso) {
-          const iso = p as typeof isoData[0]
-          slPct = (iso.ref_stw ?? 0) > 0
-            ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
-            : 0
-        } else {
-          slPct = (p as typeof slipData[0]).slip_pct
-        }
         return {
           day: p.noon_day,
-          fuelConsumptionMt: 0, // Speed loss API doesn't have fuel data
-          speedLossPct: Number(slPct.toFixed(2)),
+          fuelConsumptionMt: 'daily_foc_vlsfo' in p ? (p as typeof focData[0]).daily_foc_vlsfo : 0,
+          speedLossPct: Number(p.speed_loss_pct.toFixed(2)),
         }
       })
 
@@ -296,30 +282,8 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
       if (before.length < 3 || after.length < 3 || avgConsumptionMt == null) continue
 
-      let slBefore: number, slAfter: number
-
-      if (useIso) {
-        slBefore = before
-          .map((p) => {
-            const iso = p as typeof isoData[0]
-            return (iso.ref_stw ?? 0) > 0
-              ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
-              : 0
-          })
-          .reduce((s, v) => s + v, 0) / before.length
-
-        slAfter = after
-          .map((p) => {
-            const iso = p as typeof isoData[0]
-            return (iso.ref_stw ?? 0) > 0
-              ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
-              : 0
-          })
-          .reduce((s, v) => s + v, 0) / after.length
-      } else {
-        slBefore = before.reduce((s, p) => s + (p as typeof slipData[0]).slip_pct, 0) / before.length
-        slAfter = after.reduce((s, p) => s + (p as typeof slipData[0]).slip_pct, 0) / after.length
-      }
+      const slBefore = before.reduce((s, p) => s + p.speed_loss_pct, 0) / before.length
+      const slAfter = after.reduce((s, p) => s + p.speed_loss_pct, 0) / after.length
 
       // Theoretical fuel impact (cubic-law approximation: 1% slip ≈ 1.8% fuel increase),
       // scaled off this vessel's own real average consumption.
@@ -391,35 +355,14 @@ export async function fetchRealMaintenanceCorrelation(shipId: string): Promise<M
 
     // Optimal timing — compute from most recent data
     const lastPoint = primaryData[primaryData.length - 1]
-    let currentSL: number
-
-    if (useIso) {
-      const iso = lastPoint as typeof isoData[0]
-      currentSL = (iso?.ref_stw ?? 0) > 0
-        ? (((iso.ref_stw ?? 0) - (iso.stw ?? 0)) / (iso.ref_stw ?? 1)) * 100
-        : 0
-    } else {
-      currentSL = (lastPoint as typeof slipData[0])?.slip_pct ?? 0
-    }
+    const currentSL = lastPoint?.speed_loss_pct ?? 0
 
     // Degradation rate (last 60 points)
     const recent = primaryData.slice(-60)
     let rate = 0
     if (recent.length >= 2) {
-      let slStart: number, slEnd: number
-      if (useIso) {
-        const isoStart = recent[0] as typeof isoData[0]
-        const isoEnd = recent[recent.length - 1] as typeof isoData[0]
-        slStart = (isoStart.ref_stw ?? 0) > 0
-          ? (((isoStart.ref_stw ?? 0) - (isoStart.stw ?? 0)) / (isoStart.ref_stw ?? 1)) * 100
-          : 0
-        slEnd = (isoEnd.ref_stw ?? 0) > 0
-          ? (((isoEnd.ref_stw ?? 0) - (isoEnd.stw ?? 0)) / (isoEnd.ref_stw ?? 1)) * 100
-          : 0
-      } else {
-        slStart = (recent[0] as typeof slipData[0]).slip_pct
-        slEnd = (recent[recent.length - 1] as typeof slipData[0]).slip_pct
-      }
+      const slStart = recent[0].speed_loss_pct
+      const slEnd = recent[recent.length - 1].speed_loss_pct
       const daySpan = recent[recent.length - 1].noon_day - recent[0].noon_day
       rate = daySpan > 0 ? (slEnd - slStart) / daySpan : 0
     }
