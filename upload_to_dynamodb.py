@@ -11,7 +11,7 @@ import sys
 AWS_REGION = 'us-east-1'
 VESSEL_TABLE  = 'ship-analysis-dev-vessel-data'
 MAINT_TABLE   = 'ship-analysis-dev-maintenance-events'
-VESSEL_CSV    = '/Users/yinlchen/Workspace/aws-ai-hackathon/backend/hackathon-data/vt_fd.csv'
+VESSEL_CSV    = '/Users/yinlchen/Workspace/aws-ai-hackathon/backend/hackathon-data/vt_fd_speed_loss.csv'
 MAINT_CSV     = '/Users/yinlchen/Workspace/aws-ai-hackathon/backend/hackathon-data/maintenance.csv'
 
 
@@ -160,6 +160,8 @@ def recreate_table(client, table_name, pk, sk):
 
 
 def main():
+    vessel_only = '--vessel-only' in sys.argv
+
     print('=' * 60)
     print('📊  CSV → DynamoDB（扁平化格式）')
     print('=' * 60)
@@ -174,16 +176,19 @@ def main():
     # 重建 vessel table（sort key 換成 sort_key）
     print(f'\n🔧  重建 DynamoDB tables...')
     recreate_table(ddb_client, VESSEL_TABLE, 'vessel_id', 'sort_key')
-    recreate_table(ddb_client, MAINT_TABLE,  'vessel_id', 'sort_key')
+    if not vessel_only:
+        recreate_table(ddb_client, MAINT_TABLE, 'vessel_id', 'sort_key')
 
     # 上傳
     upload_vessel(ddb_resource, VESSEL_CSV)
-    upload_maintenance(ddb_resource, MAINT_CSV)
+    if not vessel_only:
+        upload_maintenance(ddb_resource, MAINT_CSV)
 
     print('\n' + '=' * 60)
     print('✅  全部完成！')
     print(f'   vessel table   : {VESSEL_TABLE}')
-    print(f'   maintenance table: {MAINT_TABLE}')
+    if not vessel_only:
+        print(f'   maintenance table: {MAINT_TABLE}')
     print(f'   https://console.aws.amazon.com/dynamodbv2/home?region={AWS_REGION}#tables')
     print('=' * 60)
 
