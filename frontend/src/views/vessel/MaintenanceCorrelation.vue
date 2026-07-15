@@ -95,6 +95,19 @@ const dsEventTable: DataSourceInfo = {
   ],
 }
 
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  'PP': '螺旋槳拋光',
+  'UWI+PP': '水下檢查 + 螺旋槳拋光',
+  'UWC': '船殼清洗',
+  'UWC+PP': '船殼清洗 + 螺旋槳拋光',
+  'DD': '進塢（全面塗裝 + 機械保養）',
+  'UWI': '水下檢查（僅拍照，無物理介入）',
+}
+
+function getEventTypeLabel(type: string): string {
+  return EVENT_TYPE_LABELS[type] ?? type
+}
+
 const dsAnomaly: DataSourceInfo = {
   status: 'stub',
   description: '異常偵測完全是前端寫死的門檻規則，後端沒有任何異常偵測邏輯。',
@@ -603,10 +616,8 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
               <tr class="border-b border-[var(--color-ink-slate)]/20 text-left text-xs text-[var(--color-ink-slate)]/60">
                 <th class="py-2 pr-3">Day</th>
                 <th class="py-2 pr-3">類型</th>
-                <th class="py-2 pr-3">港口</th>
                 <th class="py-2 pr-3 text-right">前 (MT)</th>
                 <th class="py-2 pr-3 text-right">後 (MT)</th>
-                <th class="py-2 pr-3 text-right">改善 %<br/><span class="text-[10px]">raw FOC</span></th>
                 <th class="py-2 pr-3 text-right text-[var(--color-fathom-teal)] font-bold">改善 % ✓<br/><span class="text-[10px] font-normal">RPM正規化</span></th>
                 <th class="py-2 pr-3 text-right">SL 前→後</th>
                 <th class="py-2 pr-3 text-center">狀態</th>
@@ -620,13 +631,9 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
                 :class="{ 'bg-[var(--color-signal-red)]/5': evt.isAnomaly }"
               >
                 <td class="py-2 pr-3 font-data whitespace-nowrap">{{ formatDay(evt.day) }}</td>
-                <td class="py-2 pr-3 whitespace-nowrap">{{ evt.type }}</td>
-                <td class="py-2 pr-3 whitespace-nowrap">{{ evt.port }}</td>
+                <td class="py-2 pr-3 whitespace-nowrap">{{ getEventTypeLabel(evt.type) }}</td>
                 <td class="py-2 pr-3 text-right font-data">{{ formatNumber(evt.fuelBefore, 1) }}</td>
                 <td class="py-2 pr-3 text-right font-data">{{ formatNumber(evt.fuelAfter, 1) }}</td>
-                <td class="py-2 pr-3 text-right font-data text-[var(--color-ink-slate)]/50" :title="'Raw FOC comparison (affected by RPM change)'">
-                  {{ evt.improvementPct > 0 ? '↓' : '↑' }} {{ formatPct(Math.abs(evt.improvementPct)) }}
-                </td>
                 <td class="py-2 pr-3 text-right font-data font-bold" :class="evt.rpmNormalizedImprovementPct ? (evt.rpmNormalizedImprovementPct > 0 ? 'text-[var(--color-fathom-teal)]' : 'text-[var(--color-signal-red)]') : 'text-[var(--color-ink-slate)]/30'" :title="'Improvement at same RPM range (true effectiveness)'">
                   {{ evt.rpmNormalizedImprovementPct !== null ? (evt.rpmNormalizedImprovementPct > 0 ? '↓' : '↑') + ' ' + formatPct(Math.abs(evt.rpmNormalizedImprovementPct)) : '—' }}
                 </td>
