@@ -29,39 +29,67 @@ export interface ApiVesselDetail {
   voyage_range: { min: number; max: number }
 }
 
-export interface ApiSpeedLossIsoPoint {
+export interface ApiFocTimelinePoint {
   noon_day: number
   voyage: number
-  rpm: number | null
+  rpm: number
   stw: number | null
-  ref_stw: number | null
-  speed_loss_kn: number | null
-  wind_scale: number | null
+  daily_foc_vlsfo: number
+  baseline_foc: number
+  speed_loss_pct: number
+  fuel_type: string
+  hours_full_speed: number
+  wind_scale: number
+  cargo_on_board: number
+  load_condition: 'ballast' | 'laden'
+  maintenance_cycle: number
 }
 
-export interface ApiSpeedLossSlipPoint {
+export interface ApiStwTimelinePoint {
   noon_day: number
   voyage: number
-  slip_pct: number
-  wind_scale: number | null
-  hours_full_speed: number | null
+  rpm: number
+  stw: number
+  ref_stw: number
+  speed_loss_pct: number
+  wind_scale: number
+  load_condition: 'ballast' | 'laden'
+  maintenance_cycle: number
+}
+
+export interface ApiMaintenanceCycle {
+  cycle_index: number
+  start_day: number
+  end_day: number
+  trigger_event: string | null
+  records: number
+  baseline_foc_avg: number | null
+  end_foc_avg: number | null
+  degradation_pct: number | null
 }
 
 export interface ApiSpeedLossResponse {
   vessel_id: string
   method: string
-  slip_summary: {
-    avg_slip_pct: number | null
+  filter_criteria: {
+    wind_scale_max: number
+    hours_full_speed_min: number
+  }
+  foc_summary: {
+    avg_daily_foc_vlsfo: number | null
+    avg_speed_loss_pct: number | null
+    baseline_foc_by_rpm: Record<string, number>
     valid_records: number
     total_records: number
   }
-  slip_timeline: ApiSpeedLossSlipPoint[]
-  iso_summary: {
-    avg_speed_loss_kn: number | null
-    baseline_records: number
-    calm_records: number
+  foc_timeline: ApiFocTimelinePoint[]
+  stw_summary: {
+    avg_speed_loss_pct: number | null
+    baseline_stw_by_rpm: Record<string, number>
+    valid_records: number
   }
-  iso_timeline: ApiSpeedLossIsoPoint[]
+  stw_timeline: ApiStwTimelinePoint[]
+  maintenance_cycles: ApiMaintenanceCycle[]
 }
 
 export interface ApiMaintenanceEvent {

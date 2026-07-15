@@ -11,6 +11,7 @@ import time
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
 from decimal import Decimal
 from statistics import mean
 
@@ -352,105 +353,309 @@ def get_noon_reports(vessel_id, event):
 
 def get_speed_loss(vessel_id, event):
     """
-    Speed Loss 基於 ISO 19030 框架，使用 FULL_SPD_STW_SLIP。
-    FULL_SPD_STW_SLIP = 全速航行時段的螺旋槳對水滑差(%)，數值越高代表推進效能越差。
-    有效範圍：0–30%（排除異常值）
+    Speed Loss Dashboard — 基於 ISO 19030 框架 + 題目指定的 FOC-based 方法。
 
-    同時計算 ISO 19030-style speed loss：
-    以 calm condition (WIND≤3, HOURS_FULL_SPEED≥22) 的前 baseline 期 STW vs RPM 作為基準，
-    每筆資料在相同 RPM bin 下比較實際 STW，差值即 speed loss (kn)。
+    篩選條件（題目指定）：
+    - WIND_SCALE ≤ 4（Beaufort）
+    - HOURS_FULL_SPEED ≥ 22 小時
+    - 當日有有效燃料數據
+
+    計算方法：
+    Layer 1 (FOC-based, 主指標)：
+      Daily FOC = ME_FULLSPEED_CONSUMP_VLSFO_equiv / HOURS_FULL_SPEED × 24
+      各燃料用 LCV 熱值換算 VLSFO 當量
+      Baseline = 每個養護週期開始後的前 N 筆 calm records 的 RPM-bin median FOC
+      Speed Loss % = (actual_foc - baseline_foc) / baseline_foc × 100
+
+    Layer 2 (STW-based, ISO 19030 驗證)：
+      在相同 RPM-bin 下比較 STW vs baseline STW
+      Speed Loss % = (ref_stw - actual_stw) / ref_stw × 100
     """
     rows = query_vessel(vessel_id)
     if not rows:
         return err(404, f'Vessel {vessel_id} not found')
 
-    # ── Step 1: FULL_SPD_STW_SLIP 趨勢（主指標）──────────────────────────
-    slip_timeline = []
+    maint = query_maintenance(vessel_id)
+
+    # ── Fuel LCV constants (MJ/kg) ───────────────────────────────────────
+    FUEL_LCV = {
+        'ME_FULLSPEED_CONSUMP_HSHFO': 40.2,
+        'ME_FULLSPEED_CONSUMP_VLSFO': 40.2,
+        'ME_FULLSPEED_CONSUMP_ULSFO': 41.2,
+        'ME_FULLSPEED_CONSUMP_LSMGO': 42.7,
+        'ME_FULLSPEED_CONSUMP_BIO_HSFO': 39.4,
+    }
+    LCV_VLSFO = 40.2
+    FUEL_COLS = list(FUEL_LCV.keys())
+
+    # W1 capacity ~110,000 DWT, W2 ~85,000 DWT — ballast threshold ~20%
+    W1_BALLAST_THRESHOLD = 22000
+    W2_BALLAST_THRESHOLD = 17000
+    is_w1 = SHIP_TYPE.get(vessel_id, 0) == 0
+    ballast_threshold = W1_BALLAST_THRESHOLD if is_w1 else W2_BALLAST_THRESHOLD
+
+    # ── Identify maintenance cycle boundaries ────────────────────────────
+    # Cycles reset on: DD, UWC, UWC+PP (hull cleaning events)
+    cycle_events = sorted(
+        [m for m in maint if m.get('event_type') in HULL_CLEAN_TYPES],
+        key=lambda x: safe_float(x.get('event_day'), 0)
+    )
+    cycle_boundaries = [safe_float(m.get('event_day'), 0) for m in cycle_events]
+
+    def get_cycle_index(day):
+        """Return which maintenance cycle a given day belongs to."""
+        idx = 0
+        for bd in cycle_boundaries:
+            if day >= bd:
+                idx += 1
+        return idx
+
+    # ── Filter rows: calm condition per competition spec ──────────────────
+    def get_daily_foc(r):
+        """Calculate Daily FOC in VLSFO equivalent, normalized to 24h."""
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
+        if hfs < 22:
+            return None, None
+
+        # Find primary fuel (largest consumption value)
+        best_col = None
+        best_val = 0
+        for fc in FUEL_COLS:
+            v = safe_float(r.get(fc), 0)
+            if v > best_val:
+                best_val = v
+                best_col = fc
+
+        if best_col is None or best_val <= 0:
+            return None, None
+
+        # Convert to VLSFO equivalent via LCV
+        lcv = FUEL_LCV.get(best_col, LCV_VLSFO)
+        vlsfo_equiv = best_val * lcv / LCV_VLSFO
+
+        # Normalize to 24-hour basis (competition formula)
+        daily_foc = vlsfo_equiv / hfs * 24.0
+
+        # Fuel type short name
+        fuel_short = best_col.replace('ME_FULLSPEED_CONSUMP_', '')
+
+        return round(daily_foc, 2), fuel_short
+
+    # Build filtered dataset
+    calm_rows = []
     for r in rows:
-        slip = safe_float(r.get('FULL_SPD_STW_SLIP'))
-        if slip is None or slip < 0 or slip > 30:
+        ws = safe_float(r.get('WIND_SCALE'), 99)
+        hfs = safe_float(r.get('HOURS_FULL_SPEED'), 0)
+        if ws > 4 or hfs < 22:
             continue
-        slip_timeline.append({
-            'noon_day':   safe_float(r.get('NOON_UTC')),
-            'voyage':     safe_float(r.get('VOYAGE')),
-            'slip_pct':   round(slip, 2),
-            'wind_scale': safe_float(r.get('WIND_SCALE')),
-            'hours_full_speed': safe_float(r.get('HOURS_FULL_SPEED')),
+
+        daily_foc, fuel_type = get_daily_foc(r)
+        if daily_foc is None or daily_foc < 10:
+            continue  # Skip anomalously low FOC
+
+        rpm = safe_float(r.get('ME_AVG_RPM'))
+        stw = safe_float(r.get('SPEED_THROUGH_WATER'))
+        day = safe_float(r.get('NOON_UTC'), 0)
+        cargo = safe_float(r.get('CARGO_ON_BOARD'), 0)
+
+        calm_rows.append({
+            '_row': r,  # keep reference for STW calc
+            'noon_day': day,
+            'voyage': safe_float(r.get('VOYAGE')),
+            'rpm': rpm,
+            'stw': stw,
+            'daily_foc_vlsfo': daily_foc,
+            'fuel_type': fuel_type,
+            'hours_full_speed': hfs,
+            'wind_scale': ws,
+            'cargo_on_board': cargo,
+            'load_condition': 'ballast' if cargo < ballast_threshold else 'laden',
+            'cycle': get_cycle_index(day),
         })
-    slip_timeline.sort(key=lambda x: x['noon_day'] or 0)
 
-    avg_slip = round(mean([t['slip_pct'] for t in slip_timeline]), 2) if slip_timeline else None
+    calm_rows.sort(key=lambda x: x['noon_day'])
 
-    # ── Step 2: ISO 19030-style — RPM-bucket baseline ────────────────────
-    # calm condition: WIND≤3, HOURS_FULL_SPEED≥22
-    calm = [r for r in rows
-            if safe_float(r.get('WIND_SCALE'), 99) <= 3
-            and safe_float(r.get('HOURS_FULL_SPEED'), 0) >= 22
-            and r.get('ME_AVG_RPM') and r.get('SPEED_THROUGH_WATER')]
+    # ── Layer 1: FOC-based Speed Loss with per-cycle RPM-bin baseline ────
+    # Group by cycle, build baseline from first N records of each cycle
+    cycles_data = defaultdict(list)
+    for cr in calm_rows:
+        cycles_data[cr['cycle']].append(cr)
 
-    # baseline = first 10% of calm records (earliest days = cleanest hull)
-    calm_sorted = sorted(calm, key=lambda x: safe_float(x.get('NOON_UTC'), 0))
-    baseline_n  = max(5, len(calm_sorted) // 10)
-    baseline    = calm_sorted[:baseline_n]
+    # Build per-cycle RPM-bin baselines (first 15% of records or min 5)
+    cycle_baselines_foc = {}   # cycle_idx → {rpm_bucket: median_foc}
+    cycle_baselines_stw = {}   # cycle_idx → {rpm_bucket: median_stw}
 
-    # build RPM → STW lookup (5-RPM bins)
-    rpm_stw = {}
-    for r in baseline:
-        rpm = safe_float(r.get('ME_AVG_RPM'))
-        stw = safe_float(r.get('SPEED_THROUGH_WATER'))
-        if rpm and stw:
-            bucket = int(rpm // 5) * 5  # e.g. 67 → 65
-            if bucket not in rpm_stw:
-                rpm_stw[bucket] = []
-            rpm_stw[bucket].append(stw)
-    rpm_baseline = {k: round(mean(v), 3) for k, v in rpm_stw.items()}
+    for cyc_idx, cyc_rows in cycles_data.items():
+        n_baseline = max(5, len(cyc_rows) // 7)  # ~15% of cycle
+        baseline_subset = cyc_rows[:n_baseline]
 
-    # calculate speed loss per calm record
-    iso_timeline = []
-    for r in calm_sorted:
-        rpm = safe_float(r.get('ME_AVG_RPM'))
-        stw = safe_float(r.get('SPEED_THROUGH_WATER'))
-        if not rpm or not stw:
-            continue
+        # FOC by RPM bin
+        rpm_foc = defaultdict(list)
+        rpm_stw_map = defaultdict(list)
+        for cr in baseline_subset:
+            if cr['rpm'] and cr['rpm'] > 0:
+                bucket = int(cr['rpm'] // 5) * 5
+                rpm_foc[bucket].append(cr['daily_foc_vlsfo'])
+                if cr['stw'] and cr['stw'] > 0:
+                    rpm_stw_map[bucket].append(cr['stw'])
+
+        # Use median for robustness against outliers
+        cycle_baselines_foc[cyc_idx] = {
+            k: round(sorted(v)[len(v)//2], 2) for k, v in rpm_foc.items() if v
+        }
+        cycle_baselines_stw[cyc_idx] = {
+            k: round(sorted(v)[len(v)//2], 3) for k, v in rpm_stw_map.items() if v
+        }
+
+    def get_baseline_foc(cycle_idx, rpm):
+        """Get baseline FOC for a given cycle and RPM."""
+        bl = cycle_baselines_foc.get(cycle_idx, {})
+        if not bl:
+            return None
         bucket = int(rpm // 5) * 5
-        ref = rpm_baseline.get(bucket)
+        ref = bl.get(bucket)
         if ref is None:
-            # find nearest bucket
-            buckets = list(rpm_baseline.keys())
+            # Find nearest bucket
+            buckets = list(bl.keys())
             if not buckets:
-                continue
+                return None
             bucket = min(buckets, key=lambda b: abs(b - bucket))
-            ref = rpm_baseline[bucket]
-        iso_timeline.append({
-            'noon_day':    safe_float(r.get('NOON_UTC')),
-            'voyage':      safe_float(r.get('VOYAGE')),
-            'rpm':         round(rpm, 1),
-            'stw':         round(stw, 2),
-            'ref_stw':     ref,
-            'speed_loss_kn': round(ref - stw, 3),
-            'wind_scale':  safe_float(r.get('WIND_SCALE')),
-        })
+            ref = bl[bucket]
+        return ref
 
-    avg_iso_loss = round(mean([t['speed_loss_kn'] for t in iso_timeline]), 3) if iso_timeline else None
+    def get_baseline_stw(cycle_idx, rpm):
+        """Get baseline STW for a given cycle and RPM."""
+        bl = cycle_baselines_stw.get(cycle_idx, {})
+        if not bl:
+            return None
+        bucket = int(rpm // 5) * 5
+        ref = bl.get(bucket)
+        if ref is None:
+            buckets = list(bl.keys())
+            if not buckets:
+                return None
+            bucket = min(buckets, key=lambda b: abs(b - bucket))
+            ref = bl[bucket]
+        return ref
+
+    # Calculate speed loss for each record
+    foc_timeline = []
+    stw_timeline = []
+
+    for cr in calm_rows:
+        rpm = cr['rpm']
+        if not rpm or rpm <= 0:
+            continue
+
+        # FOC-based speed loss
+        baseline_foc = get_baseline_foc(cr['cycle'], rpm)
+        if baseline_foc and baseline_foc > 0:
+            foc_sl_pct = max(0.0, (cr['daily_foc_vlsfo'] - baseline_foc) / baseline_foc * 100)
+            foc_timeline.append({
+                'noon_day': cr['noon_day'],
+                'voyage': cr['voyage'],
+                'rpm': round(rpm, 1),
+                'stw': round(cr['stw'], 2) if cr['stw'] else None,
+                'daily_foc_vlsfo': cr['daily_foc_vlsfo'],
+                'baseline_foc': baseline_foc,
+                'speed_loss_pct': round(foc_sl_pct, 2),
+                'fuel_type': cr['fuel_type'],
+                'hours_full_speed': cr['hours_full_speed'],
+                'wind_scale': cr['wind_scale'],
+                'cargo_on_board': cr['cargo_on_board'],
+                'load_condition': cr['load_condition'],
+                'maintenance_cycle': cr['cycle'],
+            })
+
+        # STW-based speed loss
+        stw = cr['stw']
+        if stw and stw > 0:
+            ref_stw = get_baseline_stw(cr['cycle'], rpm)
+            if ref_stw and ref_stw > 0:
+                stw_sl_pct = max(0.0, (ref_stw - stw) / ref_stw * 100)
+                stw_timeline.append({
+                    'noon_day': cr['noon_day'],
+                    'voyage': cr['voyage'],
+                    'rpm': round(rpm, 1),
+                    'stw': round(stw, 2),
+                    'ref_stw': ref_stw,
+                    'speed_loss_pct': round(stw_sl_pct, 2),
+                    'wind_scale': cr['wind_scale'],
+                    'load_condition': cr['load_condition'],
+                    'maintenance_cycle': cr['cycle'],
+                })
+
+    # ── Summaries ────────────────────────────────────────────────────────
+    avg_foc_sl = round(mean([t['speed_loss_pct'] for t in foc_timeline]), 2) if foc_timeline else None
+    avg_stw_sl = round(mean([t['speed_loss_pct'] for t in stw_timeline]), 2) if stw_timeline else None
+
+    # Build flat baseline maps for response
+    # Merge all cycle baselines (show the one with most data)
+    all_foc_baselines = {}
+    for cyc_bl in cycle_baselines_foc.values():
+        for k, v in cyc_bl.items():
+            all_foc_baselines[k] = v  # last cycle wins for display
+    all_stw_baselines = {}
+    for cyc_bl in cycle_baselines_stw.values():
+        for k, v in cyc_bl.items():
+            all_stw_baselines[k] = v
+
+    # Maintenance cycles summary
+    maintenance_cycles = []
+    for cyc_idx in sorted(cycles_data.keys()):
+        cyc_rows_sorted = cycles_data[cyc_idx]
+        if not cyc_rows_sorted:
+            continue
+        start_day = cyc_rows_sorted[0]['noon_day']
+        end_day = cyc_rows_sorted[-1]['noon_day']
+        # What event triggered this cycle?
+        trigger = None
+        if cyc_idx > 0 and cyc_idx - 1 < len(cycle_events):
+            trigger = cycle_events[cyc_idx - 1].get('event_type')
+
+        # Baseline vs end-of-cycle FOC
+        bl_focs = [cr['daily_foc_vlsfo'] for cr in cyc_rows_sorted[:max(5, len(cyc_rows_sorted)//7)]]
+        end_focs = [cr['daily_foc_vlsfo'] for cr in cyc_rows_sorted[-min(10, len(cyc_rows_sorted)):]]
+        bl_avg = round(mean(bl_focs), 1) if bl_focs else None
+        end_avg = round(mean(end_focs), 1) if end_focs else None
+        degrad = round((end_avg - bl_avg) / bl_avg * 100, 1) if bl_avg and end_avg and bl_avg > 0 else None
+
+        maintenance_cycles.append({
+            'cycle_index': cyc_idx,
+            'start_day': start_day,
+            'end_day': end_day,
+            'trigger_event': trigger,
+            'records': len(cyc_rows_sorted),
+            'baseline_foc_avg': bl_avg,
+            'end_foc_avg': end_avg,
+            'degradation_pct': degrad,
+        })
 
     return resp(200, {
         'vessel_id': vessel_id,
-        'method': 'FULL_SPD_STW_SLIP + ISO19030-RPM-baseline',
-        # FULL_SPD_STW_SLIP 趨勢（所有有效資料）
-        'slip_summary': {
-            'avg_slip_pct':    avg_slip,
-            'valid_records':   len(slip_timeline),
-            'total_records':   len(rows),
+        'method': 'ISO19030_FOC_normalized + STW_RPM_baseline',
+        'filter_criteria': {
+            'wind_scale_max': 4,
+            'hours_full_speed_min': 22,
         },
-        'slip_timeline': slip_timeline,
-        # ISO 19030-style speed loss（calm condition only）
-        'iso_summary': {
-            'avg_speed_loss_kn': avg_iso_loss,
-            'baseline_records':  len(baseline),
-            'calm_records':      len(calm_sorted),
-            'rpm_baseline':      rpm_baseline,
+        # Layer 1: FOC-based (primary indicator per competition spec)
+        'foc_summary': {
+            'avg_daily_foc_vlsfo': round(mean([t['daily_foc_vlsfo'] for t in foc_timeline]), 2) if foc_timeline else None,
+            'avg_speed_loss_pct': avg_foc_sl,
+            'baseline_foc_by_rpm': all_foc_baselines,
+            'valid_records': len(foc_timeline),
+            'total_records': len(rows),
         },
-        'iso_timeline': iso_timeline,
+        'foc_timeline': foc_timeline,
+        # Layer 2: STW-based (ISO 19030 verification)
+        'stw_summary': {
+            'avg_speed_loss_pct': avg_stw_sl,
+            'baseline_stw_by_rpm': all_stw_baselines,
+            'valid_records': len(stw_timeline),
+        },
+        'stw_timeline': stw_timeline,
+        # Maintenance cycle breakdown
+        'maintenance_cycles': maintenance_cycles,
     })
 
 
