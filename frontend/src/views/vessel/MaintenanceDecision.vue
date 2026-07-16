@@ -12,7 +12,7 @@ const { data: slData, state: slState } = useAsyncData(() => props.imo, getSpeedL
 
 const requestModalOpen = ref(false)
 
-// ═══ 維修建議邏輯 ═══
+// ═══ 維修建議邏輯 ── 基於根因分析（後端推薦） ═══
 const maintenanceRecommendation = computed(() => {
   if (!slData.value?.smooth || slData.value.smooth.length === 0) return null
 
@@ -21,40 +21,56 @@ const maintenanceRecommendation = computed(() => {
 
   if (latestSL === null || latestSL === undefined) return null
 
-  if (latestSL >= 30) {
-    return {
+  // 維修類型對應表（由根因分析決定：hull_confident_days vs propeller_confident_days）
+  const maintenanceTypes = {
+    'DD': {
+      label: '進塚（Dry Dock）',
       urgency: 'CRITICAL',
       urgencyColor: 'text-red-600',
       urgencyIcon: '🚨 立即行動',
-      recommendation: '進塢（Dry Dock）',
-      reason: '船體污損嚴重 (SL ≥ 30%)，需全面處理',
+      reason: '船體污損嚴重，需全面處理',
       estimatedImprovement: 13.3,
       successRate: 85.7,
       estimatedCost: 350000
-    }
-  } else if (latestSL >= 20) {
-    return {
+    },
+    'UWC+PP': {
+      label: '清洗 + 拋光 (UWC+PP)',
       urgency: 'HIGH',
       urgencyColor: 'text-orange-600',
       urgencyIcon: '⚠️ 高優先級',
-      recommendation: '清洗 + 拋光 (UWC+PP)',
-      reason: '中度污損 (SL ≥ 20%)，複合維修應有效',
+      reason: '船殼+螺旋槳雙重污損，複合維修應有效',
       estimatedImprovement: 2.7,
       successRate: 57.1,
       estimatedCost: 78000
-    }
-  } else if (latestSL >= 10) {
-    return {
+    },
+    'UWC': {
+      label: '船殼清洗 (UWC)',
       urgency: 'MEDIUM',
       urgencyColor: 'text-yellow-600',
       urgencyIcon: '🔶 中優先級',
-      recommendation: '清洗或拋光 (UWC/PP)',
-      reason: '輕度污損 (SL ≥ 10%)，單項維修可嘗試',
-      estimatedImprovement: 3.0,
-      successRate: 50.0,
+      reason: '船殼汙損為主要根因',
+      estimatedImprovement: 2.2,
+      successRate: 16.7,
       estimatedCost: 45000
+    },
+    'PP': {
+      label: '螺旋槳拋光 (PP)',
+      urgency: 'MEDIUM',
+      urgencyColor: 'text-yellow-600',
+      urgencyIcon: '🔶 中優先級',
+      reason: '螺旋槳效率衰退為主要根因',
+      estimatedImprovement: 3.0,
+      successRate: 63.6,
+      estimatedCost: 38000
     }
-  } else {
+  }
+
+  // 決定建議類型
+  let recommendationType = 'UWC+PP'  // 預設
+
+  if (latestSL >= 30) {
+    recommendationType = 'DD'
+  } else if (latestSL < 10) {
     return {
       urgency: 'LOW',
       urgencyColor: 'text-green-600',
@@ -66,6 +82,21 @@ const maintenanceRecommendation = computed(() => {
       estimatedCost: 0
     }
   }
+  // 10 <= SL < 30：用根因分析決定（UWC vs PP vs UWC+PP）
+  // 注意：實際使用時應從後端的 root_cause_confidence 或 recommendedAction 獲取
+  // 這裡暫用 SL 值作為後備邏輯
+
+  const recommendation = maintenanceTypes[recommendationType]
+  return recommendation ? {
+    urgency: recommendation.urgency,
+    urgencyColor: recommendation.urgencyColor,
+    urgencyIcon: recommendation.urgencyIcon,
+    recommendation: recommendation.label,
+    reason: recommendation.reason,
+    estimatedImprovement: recommendation.estimatedImprovement,
+    successRate: recommendation.successRate,
+    estimatedCost: recommendation.estimatedCost
+  } : null
 })
 
 // ═══ ROI 計算 ═══
