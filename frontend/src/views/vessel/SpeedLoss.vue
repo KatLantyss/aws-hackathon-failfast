@@ -352,7 +352,7 @@ const chartOption = computed(() => {
               <dd class="font-data text-xl">{{ stats.avgLoss.toFixed(2) }}%</dd>
             </div>
             <div>
-              <dt class="text-xs text-[var(--color-ink-slate)]/60">近90天平均（DynamoDB）</dt>
+              <dt class="text-xs text-[var(--color-ink-slate)]/60">近90天平均</dt>
               <dd class="font-data text-base">
                 {{ vessel.avgSpeedLossPct != null ? vessel.avgSpeedLossPct.toFixed(2) + '%' : '—' }}
                 <span class="text-xs text-[var(--color-ink-slate)]/50 ml-1">/ 最新 {{ vessel.speedLossPct.toFixed(2) }}%</span>

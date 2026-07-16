@@ -463,7 +463,7 @@ function alertLevelColor(level: 'CRITICAL' | 'WARNING' | 'OK'): string {
         <div class="panel p-3 text-center">
           <p class="text-xs text-[var(--color-ink-slate)]/60">目前超額成本</p>
           <p class="font-data text-xl text-[var(--color-signal-red)]">{{ formatUsd(vessel.excessFuelCostUsdMtd) }}<span class="text-xs">/天</span></p>
-          <p class="text-xs text-[var(--color-ink-slate)]/50">來自 DynamoDB</p>
+          <p class="text-xs text-[var(--color-ink-slate)]/50">模型估計</p>
         </div>
         <div class="panel p-3 text-center">
           <p class="text-xs text-[var(--color-ink-slate)]/60">異常事件</p>

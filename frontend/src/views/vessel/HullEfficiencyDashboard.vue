@@ -18,6 +18,10 @@ const chart = useChartTheme()
 // Tab 切換
 const activeTab = ref<'attribution' | 'maintenance'>('attribution')
 
+// 左側趨勢圖 hover 時，右側歸因卡片顯示當天數值
+const hoverInfo = ref<{ day: number; hull: number; prop: number } | null>(null)
+const clearHoverInfo = () => { hoverInfo.value = null }
+
 // 維修成本編輯
 const costEditorOpen = ref(false)
 const selectedEventId = ref('')
@@ -94,80 +98,7 @@ function calculateRegressionLine(data: Array<[number, number | null]>) {
 const hullPct = computed(() => slData.value?.summary.hull_pct ?? 50)
 const propPct = computed(() => slData.value?.summary.prop_pct ?? 50)
 
-// Attribution 堆疊圖
-const attributionOption = computed(() => {
-  if (!slData.value) return {}
-  const c = chart.value
-  const smooth = slData.value.smooth
-
-  // 從 smooth 陣列提取船殼和螺旋槳貢獻 (indices 2 & 3)
-  const hullData = smooth.filter(s => s[1] !== null && s[1]! > 0).map(s => [s[0], s[2]])
-  const propData = smooth.filter(s => s[1] !== null && s[1]! > 0).map(s => [s[0], s[3]])
-
-  return {
-    animation: false,
-    grid: { left: 60, right: 20, top: 16, bottom: 50 },
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: c.marineNavy,
-      textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
-      formatter: (params: any[]) => {
-        const day = params[0]?.axisValue
-        const hull = params.find((p: any) => p.seriesName === '船殼')?.value?.[1] ?? 0
-        const prop = params.find((p: any) => p.seriesName === '螺旋槳')?.value?.[1] ?? 0
-        return `Day ${day}<br/>船殼：${(hull as number)?.toFixed(3)} %<br/>螺旋槳：${(prop as number)?.toFixed(3)} %<br/>合計：${((hull as number) + (prop as number)).toFixed(2)} %`
-      },
-    },
-    xAxis: {
-      type: 'value',
-      min: slData.value.day_min,
-      max: slData.value.day_max,
-      name: '相對天數',
-      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 9 },
-      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate },
-      axisLine: { lineStyle: { color: c.axisLine } },
-      splitLine: { show: false },
-    },
-    yAxis: {
-      type: 'value',
-      name: 'Speed Loss 貢獻 %',
-      nameTextStyle: { fontFamily: 'IBM Plex Mono', fontSize: 9 },
-      axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, formatter: '{value}%' },
-      splitLine: { lineStyle: { color: c.splitLine } },
-    },
-    series: [
-      {
-        name: '船殼',
-        type: 'line',
-        stack: 'attribution',
-        areaStyle: { color: '#E07B39', opacity: 0.65 },
-        lineStyle: { width: 0 },
-        itemStyle: { color: '#E07B39' },
-        symbol: 'none',
-        data: hullData,
-        connectNulls: false,
-      },
-      {
-        name: '螺旋槳',
-        type: 'line',
-        stack: 'attribution',
-        areaStyle: { color: '#4A9B8E', opacity: 0.65 },
-        lineStyle: { width: 0 },
-        itemStyle: { color: '#4A9B8E' },
-        symbol: 'none',
-        data: propData,
-        connectNulls: false,
-      },
-    ],
-    legend: {
-      data: ['船殼', '螺旋槳'],
-      textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 11, color: c.inkSlate },
-      bottom: 8,
-    },
-  }
-})
-
-// Speed Loss 趨勢圖
+// Speed Loss 趨勢圖（含船殼/螺旋槳貢獻堆疊面積疊圖）
 const trendOption = computed(() => {
   if (!slData.value) return {}
   const c = chart.value
@@ -177,6 +108,10 @@ const trendOption = computed(() => {
 
   const smoothLine = smooth.filter(s => s[1] !== null).map(s => [s[0], s[1]])
   const regressionLine = calculateRegressionLine(smooth)
+
+  // 從 smooth 陣列提取船殼和螺旋槳貢獻 (indices 2 & 3)，疊加於同一 Speed Loss % 軸
+  const hullData = smooth.filter(s => s[1] !== null && s[1]! > 0).map(s => [s[0], s[2]])
+  const propData = smooth.filter(s => s[1] !== null && s[1]! > 0).map(s => [s[0], s[3]])
 
   const EVENT_COLOR: Record<string, string> = {
     DD: '#A6672E', 'UWC+PP': '#E07B39', UWC: '#C8A84B', PP: '#4A9B8E', 'UWI+PP': '#6B9BB8', UWI: '#6B7A8D',
@@ -197,13 +132,18 @@ const trendOption = computed(() => {
 
   return {
     animation: false,
-    grid: { left: 60, right: 20, top: 16, bottom: 50 },
+    grid: { left: 60, right: 20, top: 16, bottom: 70 },
     tooltip: {
       trigger: 'axis',
       backgroundColor: c.marineNavy,
       textStyle: { color: c.chartPaperHi, fontFamily: 'IBM Plex Sans', fontSize: 12 },
       formatter: (params: any[]) => {
         const day = params[0]?.axisValue
+        const hull = params.find((p: any) => p.seriesName === '船殼')?.value?.[1]
+        const prop = params.find((p: any) => p.seriesName === '螺旋槳')?.value?.[1]
+        if (hull != null || prop != null) {
+          hoverInfo.value = { day: Number(day), hull: hull ?? 0, prop: prop ?? 0 }
+        }
         const lines = params.map((p: any) => `${p.seriesName}：${p.value?.[1] != null ? p.value[1].toFixed(2) + ' %' : '—'}`)
         return `Day ${day}<br/>${lines.join('<br/>')}`
       },
@@ -225,7 +165,36 @@ const trendOption = computed(() => {
       axisLabel: { fontFamily: 'IBM Plex Mono', fontSize: 10, color: c.inkSlate, formatter: '{value}%' },
       splitLine: { lineStyle: { color: c.splitLine } },
     },
+    legend: {
+      data: ['逐日原始點', '滾動中位數平滑', '衰退趨勢線 (線性回歸)', '船殼', '螺旋槳'],
+      textStyle: { fontFamily: 'IBM Plex Sans', fontSize: 10, color: c.inkSlate },
+      bottom: 4,
+    },
     series: [
+      {
+        name: '船殼',
+        type: 'line',
+        stack: 'attribution',
+        areaStyle: { color: '#E07B39', opacity: 0.5 },
+        lineStyle: { width: 0 },
+        itemStyle: { color: '#E07B39' },
+        symbol: 'none',
+        data: hullData,
+        connectNulls: false,
+        z: 0,
+      },
+      {
+        name: '螺旋槳',
+        type: 'line',
+        stack: 'attribution',
+        areaStyle: { color: '#4A9B8E', opacity: 0.5 },
+        lineStyle: { width: 0 },
+        itemStyle: { color: '#4A9B8E' },
+        symbol: 'none',
+        data: propData,
+        connectNulls: false,
+        z: 0,
+      },
       {
         name: '逐日原始點',
         type: 'scatter',
@@ -271,10 +240,10 @@ const trendOption = computed(() => {
         <!-- 左側：Speed Loss 趨勢圖 -->
         <div class="panel p-3">
           <p class="font-display text-xs tracking-wide text-[var(--color-ink-slate)]/70 mb-2">
-            🚢 船體污損趨勢 — 灰色圓點 (原始) / 藍線 (平滑) / 琥珀虛線 (衰退趨勢預測)
+            🚢 船體污損趨勢 — 灰色圓點 (原始) / 藍線 (平滑) / 琥珀虛線 (衰退趨勢預測) / 船殼（橙）vs 螺旋槳（綠）貢獻疊圖
           </p>
-          <div class="h-[320px]">
-            <VChart :option="trendOption" autoresize class="h-full w-full" />
+          <div class="h-[360px]">
+            <VChart :option="trendOption" autoresize class="h-full w-full" @globalout="clearHoverInfo" />
           </div>
         </div>
 
@@ -295,23 +264,15 @@ const trendOption = computed(() => {
 
           <!-- Tab 1: 污損歸因 -->
           <div v-if="activeTab === 'attribution'" class="flex-1 overflow-y-auto space-y-3">
-            <!-- 占比卡片 -->
+            <!-- 占比卡片：hover 左側趨勢圖時顯示當天數值，否則顯示全期占比 -->
             <div class="grid grid-cols-2 gap-2">
               <div class="panel p-3 border-l-4" style="border-left-color:#E07B39">
-                <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">全期船殼貢獻</p>
-                <p class="font-data text-2xl" style="color:#E07B39">{{ hullPct.toFixed(1) }}<span class="text-sm ml-0.5">%</span></p>
+                <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">{{ hoverInfo ? `Day ${hoverInfo.day} 船殼貢獻` : '全期船殼貢獻' }}</p>
+                <p class="font-data text-2xl" style="color:#E07B39">{{ (hoverInfo ? hoverInfo.hull : hullPct).toFixed(1) }}<span class="text-sm ml-0.5">%</span></p>
               </div>
               <div class="panel p-3 border-l-4" style="border-left-color:#4A9B8E">
-                <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">全期螺旋槳貢獻</p>
-                <p class="font-data text-2xl" style="color:#4A9B8E">{{ propPct.toFixed(1) }}<span class="text-sm ml-0.5">%</span></p>
-              </div>
-            </div>
-
-            <!-- 堆疊圖 -->
-            <div class="panel p-2">
-              <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">時間序列：船殼（橙）vs 螺旋槳（綠）</p>
-              <div class="h-[180px]">
-                <VChart :option="attributionOption" autoresize class="h-full w-full" />
+                <p class="text-[10px] text-[var(--color-ink-slate)]/60 mb-1">{{ hoverInfo ? `Day ${hoverInfo.day} 螺旋槳貢獻` : '全期螺旋槳貢獻' }}</p>
+                <p class="font-data text-2xl" style="color:#4A9B8E">{{ (hoverInfo ? hoverInfo.prop : propPct).toFixed(1) }}<span class="text-sm ml-0.5">%</span></p>
               </div>
             </div>
 
