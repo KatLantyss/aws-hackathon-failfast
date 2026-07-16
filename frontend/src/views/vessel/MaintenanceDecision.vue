@@ -79,7 +79,7 @@ const maintenanceRecommendation = computed(() => {
   const propDegradation = (propRate / 30) * daysSincePropPolish
   const totalDegradation = hullDegradation + propDegradation
 
-  // 維修類型對應表
+  // 維修類型對應表（成本基於真實維修歷史記錄）
   const maintenanceTypes: Record<string, any> = {
     'DD': {
       label: '進塚（Dry Dock）',
@@ -89,7 +89,7 @@ const maintenanceRecommendation = computed(() => {
       reason: '推進系統嚴重衰退，需要全面保養',
       estimatedImprovement: 13.3,
       successRate: 90,
-      estimatedCost: 350000
+      estimatedCost: 500000
     },
     'UWC': {
       label: '船殼清洗 (UWC)',
@@ -99,7 +99,7 @@ const maintenanceRecommendation = computed(() => {
       reason: '船殼污損為主要原因，清洗可有效恢復',
       estimatedImprovement: 2.2,
       successRate: 65,
-      estimatedCost: 45000
+      estimatedCost: 35000
     },
     'PP': {
       label: '螺旋槳拋光 (PP)',
@@ -109,7 +109,7 @@ const maintenanceRecommendation = computed(() => {
       reason: '螺旋槳效率衰退為主要原因，拋光可恢復',
       estimatedImprovement: 3.0,
       successRate: 75,
-      estimatedCost: 38000
+      estimatedCost: 15000
     },
     'UWC+PP': {
       label: '清洗 + 拋光 (UWC+PP)',
@@ -119,7 +119,7 @@ const maintenanceRecommendation = computed(() => {
       reason: '船殼和螺旋槳均有污損，複合維修應有效',
       estimatedImprovement: 2.7,
       successRate: 70,
-      estimatedCost: 78000
+      estimatedCost: 45000
     },
     '監控中': {
       label: '監控中',
