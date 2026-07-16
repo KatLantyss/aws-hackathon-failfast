@@ -22,7 +22,7 @@ const dsKpi: DataSourceInfo = {
   description: '3 張 KPI 卡直接取自 fleet/summary 彙總欄位，無前端加工。',
   fields: [
     { ui: '船隊總數', source: 'total_vessels' },
-    { ui: '待安排維修船數', source: 'pending_maintenance' },
+    { ui: '待安排維修船數', source: '前端計算：per_vessel 中 urgency = HIGH 的船舶數（與右側「需優先處理」清單的「高」標籤同一欄位），不取後端 pending_maintenance' },
     { ui: '船隊超額燃油成本 (USD/天)', source: 'total_excess_fuel_cost_usd_per_day' },
   ],
 }
@@ -58,6 +58,13 @@ const priorityRanked = computed(() => {
   return [...vessels.value].sort((a, b) => b.speedLossPct - a.speedLossPct).slice(0, 6)
 })
 
+// 待安排維修船數：改為前端直接算「急迫度 = 高」的船舶數，
+// 與右側「需優先處理」清單同一份 urgency 欄位，取代後端 pending_maintenance
+const pendingMaintenanceCount = computed(() => {
+  if (!vessels.value) return kpis.value?.pendingMaintenance ?? 0
+  return vessels.value.filter((v) => v.maintenanceUrgency === 'HIGH').length
+})
+
 function goToVessel(imo: string) {
   router.push(`/vessels/${imo}/overview`)
 }
@@ -77,7 +84,7 @@ function goToVessel(imo: string) {
       <DataSourceTag :info="dsKpi" />
       <template v-if="kpiState === 'success' && kpis">
         <KpiCard label="船隊總數" :value="kpis.totalVessels" />
-        <KpiCard label="待安排維修船數" :value="kpis.pendingMaintenance" tone="amber" />
+        <KpiCard label="待安排維修船數" :value="pendingMaintenanceCount" tone="amber" />
         <KpiCard
           label="船隊超額燃油成本 (USD/天)"
           :value="kpis.monthlyExcessFuelCostUsd"
@@ -160,10 +167,6 @@ function goToVessel(imo: string) {
 
               <!-- 第三行：維修相關資訊 -->
               <div class="flex items-center gap-3 pl-6 flex-wrap">
-                <!-- 建議動作 -->
-                <span v-if="v.recommendedAction" class="font-display text-[10px] px-1.5 py-0.5 rounded-[2px] bg-[var(--color-signal-red)]/10 text-[var(--color-signal-red)]">
-                  建議：{{ v.recommendedAction }}
-                </span>
                 <!-- 距上次船殼清洗 -->
                 <span class="font-mono text-[10px] text-[var(--color-ink-muted)]">
                   距清洗 <strong class="font-data text-[var(--color-ink-slate)]">{{ v.daysSinceHullClean }}</strong> 天

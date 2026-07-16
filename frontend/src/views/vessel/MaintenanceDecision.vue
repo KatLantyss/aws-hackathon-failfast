@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted } from 'vue'
+import { computed, ref, watch, onMounted, nextTick } from 'vue'
 import type { VesselSummary } from '@/types/fleet'
 import {
   getSpeedLossDashboard,
@@ -352,7 +352,11 @@ onMounted(() => {
     const script = document.createElement('script')
     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js'
     script.onload = () => {
-      initializeCostChart()
+      // canvas 是在 <div v-if="maintenanceCostAnalysis"> 底下才會掛載，
+      // 若此時 maintenanceCostAnalysis 剛好才從 null 變有值，DOM 可能還沒
+      // patch 完成、costChart.value 仍是 null，導致圖表初始化被靜默跳過、
+      // 首次進頁面完全不會畫圖。用 nextTick 確保等 DOM 更新完再嘗試。
+      nextTick(() => initializeCostChart())
     }
     document.head.appendChild(script)
   }
@@ -360,9 +364,11 @@ onMounted(() => {
 
 // 當分析數據更新時重新初始化圖表
 watch(() => maintenanceCostAnalysis.value, () => {
-  if ((window as any).Chart && costChart.value) {
-    initializeCostChart()
-  }
+  nextTick(() => {
+    if ((window as any).Chart && costChart.value) {
+      initializeCostChart()
+    }
+  })
 }, { deep: true })
 </script>
 
