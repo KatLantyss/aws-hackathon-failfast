@@ -94,21 +94,25 @@ async function selectBaseline(vesselId: string) {
   }
 
   const eligible = reports.records
-    .map((report) => ({
-      report,
-      hoursFullSpeed: report.hours_full_speed ?? hoursByNoonDay.get(report.noon_day) ?? null,
-    }))
-    .filter(({ report, hoursFullSpeed }) => report.noon_day != null
+    .map((report) => {
+      const noonDay = report.noon_utc ?? report.noon_day
+      return {
+        report,
+        noonDay,
+        hoursFullSpeed: report.hours_full_speed ?? (noonDay != null ? hoursByNoonDay.get(noonDay) : null) ?? null,
+      }
+    })
+    .filter(({ report, noonDay, hoursFullSpeed }) => noonDay != null
       && report.wind_scale != null && report.wind_scale <= 4
       && hoursFullSpeed != null && hoursFullSpeed >= 22)
-    .sort((a, b) => b.report.noon_day - a.report.noon_day)[0]
+    .sort((a, b) => b.noonDay - a.noonDay)[0]
 
   if (!eligible) {
     throw new Error('找不到符合 v5 條件（風級 ≤4、全速航行 ≥22 小時）的 NOON Report，無法進行穩態性能分析。')
   }
 
   const baseline = { ...eligible.report, hours_full_speed: eligible.hoursFullSpeed }
-  baselineNoonDay.value = baseline.noon_day
+  baselineNoonDay.value = eligible.noonDay
   baselineReport.value = baseline
   form.speedKn = baseline.avg_speed_kn ?? form.speedKn
   form.foreDraft = baseline.fore_draft ?? form.foreDraft

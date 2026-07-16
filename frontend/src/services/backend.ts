@@ -48,6 +48,8 @@ export interface BackendVesselDetail {
 export interface BackendNoonReport {
   vessel_id: string
   noon_day: number
+  /** Actual field returned by GET /noon-reports (lowercased from NOON_UTC); prefer this over noon_day. */
+  noon_utc?: number
   voyage: number
   avg_speed_kn: number | null
   speed_through_water: number | null
