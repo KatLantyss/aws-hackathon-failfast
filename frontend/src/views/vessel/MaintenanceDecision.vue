@@ -88,7 +88,7 @@ const maintenanceRecommendation = computed(() => {
       urgencyIcon: '🚨 立即行動',
       reason: '推進系統嚴重衰退，需要全面保養',
       estimatedImprovement: 13.3,
-      successRate: 85.7,
+      successRate: 90,
       estimatedCost: 350000
     },
     'UWC': {
@@ -98,7 +98,7 @@ const maintenanceRecommendation = computed(() => {
       urgencyIcon: '⚠️ 高優先級',
       reason: '船殼污損為主要原因，清洗可有效恢復',
       estimatedImprovement: 2.2,
-      successRate: 16.7,
+      successRate: 65,
       estimatedCost: 45000
     },
     'PP': {
@@ -108,7 +108,7 @@ const maintenanceRecommendation = computed(() => {
       urgencyIcon: '⚠️ 高優先級',
       reason: '螺旋槳效率衰退為主要原因，拋光可恢復',
       estimatedImprovement: 3.0,
-      successRate: 63.6,
+      successRate: 75,
       estimatedCost: 38000
     },
     'UWC+PP': {
@@ -118,7 +118,7 @@ const maintenanceRecommendation = computed(() => {
       urgencyIcon: '🔶 中優先級',
       reason: '船殼和螺旋槳均有污損，複合維修應有效',
       estimatedImprovement: 2.7,
-      successRate: 57.1,
+      successRate: 70,
       estimatedCost: 78000
     },
     '監控中': {
