@@ -173,13 +173,23 @@ const maintenanceRecommendation = computed(() => {
   // 否則（SL < 12）→ 監控中
 
   const recommendation = maintenanceTypes[recommendationType]
+
+  // 根據當前污損程度動態調整預期改善（用戶心理預期管理）
+  let adjustedImprovement = recommendation.estimatedImprovement
+  if (currentSpeedLoss < 15) {
+    adjustedImprovement = recommendation.estimatedImprovement * 0.7  // 輕度污損，改善空間小
+  } else if (currentSpeedLoss >= 25) {
+    adjustedImprovement = recommendation.estimatedImprovement * 1.2  // 重度污損，改善空間大
+  }
+  // 否則（15-25%）保持原值
+
   return recommendation ? {
     urgency: recommendation.urgency,
     urgencyColor: recommendation.urgencyColor,
     urgencyIcon: recommendation.urgencyIcon,
     recommendation: recommendation.label,
     reason: recommendation.reason,
-    estimatedImprovement: recommendation.estimatedImprovement,
+    estimatedImprovement: adjustedImprovement,
     successRate: recommendation.successRate,
     estimatedCost: recommendation.estimatedCost,
     type: recommendationType,
