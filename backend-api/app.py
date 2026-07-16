@@ -3,7 +3,6 @@ FastAPI wrapper around handler.py
 Maps each HTTP route to the corresponding handler function via the Lambda-style
 route() dispatcher, so no business logic is duplicated here.
 """
-import asyncio
 import json
 
 from fastapi import FastAPI, Request
@@ -11,7 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import handler
-import nlu
 
 app = FastAPI(title="Ship Performance Analysis API", version="1.0.0")
 
@@ -57,23 +55,6 @@ def _event(method: str, path: str, query_params: dict | None = None, body: str |
 def health():
     result = handler.route(_event("GET", "/health"), None)
     return _json_response(result)
-
-
-@app.post("/api/nlu")
-async def classify_nlu(request: Request):
-    """Classify a chat turn server-side without exposing AWS credentials to the browser."""
-    try:
-        body = await request.json()
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return JSONResponse(content={"error": "invalid JSON body"}, status_code=400)
-
-    if not isinstance(body, dict) or not isinstance(body.get("message"), str) or not body["message"].strip():
-        return JSONResponse(content={"error": "message is required"}, status_code=400)
-
-    try:
-        return await asyncio.to_thread(nlu.classify_nlu, body)
-    except Exception as exc:
-        return JSONResponse(content={"error": str(exc) or "AWS AI request failed"}, status_code=502)
 
 
 @app.get("/api/v1/vessels")

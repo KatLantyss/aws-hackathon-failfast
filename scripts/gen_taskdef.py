@@ -6,7 +6,6 @@ Generates the ECS task definition JSON for ship-api and writes it to output-json
 Called by Makefile prod-backend target.
 """
 import json
-import os
 import sys
 
 if len(sys.argv) < 5:
@@ -17,19 +16,6 @@ image      = sys.argv[1]  # e.g. 151274905459.dkr.ecr.us-east-1.amazonaws.com/sh
 region     = sys.argv[2]  # e.g. us-east-1
 account_id = sys.argv[3]  # e.g. 151274905459
 output     = sys.argv[4]  # e.g. /tmp/ship-api-taskdef.json
-runtime_arn = os.environ.get("AGENTCORE_RUNTIME_ARN", "").strip()
-qualifier = os.environ.get("AGENTCORE_QUALIFIER", "").strip()
-
-if not runtime_arn:
-    print("ERROR: AGENTCORE_RUNTIME_ARN must be set for the AgentCore-only NLU deployment.", file=sys.stderr)
-    sys.exit(1)
-
-runtime_environment = [
-    {"name": "AI_PROVIDER", "value": "agentcore"},
-    {"name": "AGENTCORE_RUNTIME_ARN", "value": runtime_arn},
-]
-if qualifier:
-    runtime_environment.append({"name": "AGENTCORE_QUALIFIER", "value": qualifier})
 
 td = {
     "family": "ship-api",
@@ -52,7 +38,6 @@ td = {
                 {"name": "MAINT_TABLE",         "value": "ship-analysis-dev-maintenance-events"},
                 {"name": "FLEET_SUMMARY_TABLE", "value": "ship-analysis-dev-fleet-summary"},
                 {"name": "FUEL_ANOMALY_TABLE",  "value": "ship-analysis-dev-fuel-anomaly-cause"},
-                *runtime_environment,
             ],
             "logConfiguration": {
                 "logDriver": "awslogs",
