@@ -1065,17 +1065,29 @@ def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
     weather_confident_days = 0
     excess_mt_total = 0.0
 
+    # 用於返回給前端的信度聚合（用於參考和調試）
+    hull_confidence_scores = []
+    prop_confidence_scores = []
+
+    # ── 信度閾值：SHAP contribution > 60% 才算 confident ──
+    CONFIDENCE_THRESHOLD_PCT = 60.0
+
     for it in anomaly_items:
         cause = it.get('primary_cause')
         agrees = bool(it.get('cause_model_agrees'))
+        confidence_pct = safe_float(it.get('primary_cause_contribution_pct'), 0.0)
+
         if cause in FUEL_ANOMALY_MAINTAINABLE_CAUSES:
             maintainable_days += 1
-            if agrees:
+            # 改用信度閾值判斷，而不是單純的 agrees 布尔值
+            if confidence_pct >= CONFIDENCE_THRESHOLD_PCT:
                 maintainable_confident_days += 1
                 if cause == '船殼汙損':
                     hull_confident_days += 1
+                    hull_confidence_scores.append(confidence_pct)
                 elif cause == '螺旋槳汙損':
                     propeller_confident_days += 1
+                    prop_confidence_scores.append(confidence_pct)
                 if it.get('direction') == 'over':
                     actual = safe_float(it.get('daily_foc_actual'), 0.0)
                     expected = safe_float(it.get('daily_foc_expected'), 0.0)
@@ -1088,6 +1100,10 @@ def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
     avg_excess_mt_per_day = (excess_mt_total / total_days_analyzed) if total_days_analyzed else 0.0
     pricing = _calculate_energy_pricing(avg_excess_mt_per_day, 'VLSFO_equivalent', LCV_VLSFO)
 
+    # 計算信度平均（供前端參考）
+    hull_confidence_avg = round(sum(hull_confidence_scores) / len(hull_confidence_scores), 1) if hull_confidence_scores else 0.0
+    prop_confidence_avg = round(sum(prop_confidence_scores) / len(prop_confidence_scores), 1) if prop_confidence_scores else 0.0
+
     return {
         'maintainable_vs_weather': {
             'maintainable_days': maintainable_days,
@@ -1096,11 +1112,17 @@ def _fuel_anomaly_roi(anomaly_items, total_days_analyzed):
             'weather_confident_days': weather_confident_days,
         },
         'recommended_action': _recommend_maintenance_action(hull_confident_days, propeller_confident_days),
+        # ── 添加信度數據（前端參考）──
+        'root_cause_confidence': {
+            'hull_confidence_pct': hull_confidence_avg,
+            'propeller_confidence_pct': prop_confidence_avg,
+            'confidence_threshold_pct': CONFIDENCE_THRESHOLD_PCT,
+        },
         'roi': {
             'avg_excess_fuel_mt_per_day': round(avg_excess_mt_per_day, 3),
             'annual_excess_fuel_mt': round(avg_excess_mt_per_day * SEA_DAYS_PER_YEAR, 1),
             'annual_saving_usd_if_fixed': pricing['annual_saving_usd'],
-            'basis': 'confident, over-consuming, maintainable-cause (hull/propeller) days only; weather excluded',
+            'basis': 'confident (>60% SHAP), over-consuming, maintainable-cause (hull/propeller) days only; weather excluded',
             'energy_pricing': pricing,
         },
     }
