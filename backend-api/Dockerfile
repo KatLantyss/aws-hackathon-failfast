@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 RUN pip install --no-cache-dir \
     fastapi \
     "uvicorn[standard]==0.34.0" \
-    boto3 \
+    boto3==1.42.58 \
     pandas \
     "xgboost[cpu]==2.1.4" \
     lightgbm==4.6.0 \
@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir \
     shap==0.52.0
 
 # Copy application files
-COPY handler.py app.py ./
+COPY handler.py app.py nlu.py ./
 COPY model/ ./model/
 
 EXPOSE 8000

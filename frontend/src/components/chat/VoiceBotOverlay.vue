@@ -43,6 +43,7 @@ const SUGGESTED_QUESTIONS = [
 
 const loading = ref(false)
 const pendingUserText = ref<string | null>(null)
+const nluApiBaseUrl = (import.meta.env.VITE_BACKEND_BASE_URL ?? '').replace(/\/$/, '')
 const revealedCount = ref(0)
 let revealTimers: ReturnType<typeof setTimeout>[] = []
 
@@ -106,7 +107,7 @@ async function handleSubmit(text: string) {
       history: chatContext.history,
       sessionMemory: chatContext.sessionMemory,
     }
-    const res = await fetch('/api/nlu', {
+    const res = await fetch(`${nluApiBaseUrl}/api/nlu`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
